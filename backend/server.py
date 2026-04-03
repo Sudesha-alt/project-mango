@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, WebSocket, WebSocketDisconnect, Query
+from fastapi import FastAPI, APIRouter, WebSocket, WebSocketDisconnect
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -7,9 +7,7 @@ import logging
 import json
 import asyncio
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional, Dict, Any
-import uuid
+from typing import List, Dict, Any
 from datetime import datetime, timezone
 
 ROOT_DIR = Path(__file__).parent
@@ -17,14 +15,16 @@ load_dotenv(ROOT_DIR / '.env')
 
 from services.cricket_service import (
     get_live_matches, get_match_info, get_match_scorecard,
-    get_match_squad, get_ipl_fixtures, get_player_info, IPL_SHORT, get_short_name
+    get_match_squad, get_short_name
 )
 import services.cricket_service as cricket_svc
 from services.probability_engine import (
-    ensemble_probability, calculate_odds_from_probability,
-    calculate_momentum
+    ensemble_probability, calculate_odds_from_probability, calculate_momentum
 )
-from services.ai_service import get_match_prediction, get_player_prediction
+from services.ai_service import (
+    fetch_ipl_schedule, fetch_ipl_squads, fetch_live_match_update,
+    get_match_prediction, get_player_predictions
+)
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -36,214 +36,294 @@ api_router = APIRouter(prefix="/api")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# In-memory state for WebSocket connections and match data
 ws_connections: Dict[str, List[WebSocket]] = {}
-match_cache: Dict[str, Any] = {}
-ball_history_cache: Dict[str, List[Dict]] = {}
-odds_history_cache: Dict[str, List[Dict]] = {}
-probability_history_cache: Dict[str, List[Dict]] = {}
+live_match_state: Dict[str, Any] = {}
 
 
-# ─── REST ENDPOINTS ───────────────────────────────────────────
+# ─── HEALTH & STATUS ─────────────────────────────────────────
 
 @api_router.get("/")
 async def root():
-    import time as _time
-    blocked = _time.time() < cricket_svc._blocked_until
+    import time
+    blocked = time.time() < cricket_svc._blocked_until
+    schedule_count = await db.ipl_schedule.count_documents({})
+    squad_count = await db.ipl_squads.count_documents({})
     return {
         "message": "PPL Board API",
-        "version": "1.0.0",
-        "apiStatus": "blocked" if blocked else "available",
-        "blockRemaining": max(0, int(cricket_svc._blocked_until - _time.time())) if blocked else 0,
-        "cachedEndpoints": len(cricket_svc._api_cache)
+        "version": "2.0.0",
+        "cricapiStatus": "blocked" if blocked else "available",
+        "blockRemaining": max(0, int(cricket_svc._blocked_until - time.time())) if blocked else 0,
+        "scheduleLoaded": schedule_count > 0,
+        "squadsLoaded": squad_count > 0,
+        "matchesInDB": schedule_count,
+        "squadsInDB": squad_count,
     }
 
-@api_router.get("/matches/live")
-async def api_live_matches():
-    matches = await get_live_matches()
-    # If API returned matches, cache them in MongoDB
+
+# ─── IPL SCHEDULE (AI-powered + cached in MongoDB) ──────────
+
+@api_router.get("/schedule/load")
+async def load_ipl_schedule(force: bool = False):
+    """Load IPL 2026 schedule using GPT and store in MongoDB."""
+    existing = await db.ipl_schedule.count_documents({})
+    if existing > 0 and not force:
+        return {"status": "already_loaded", "count": existing}
+    logger.info("Fetching IPL 2026 schedule via GPT...")
+    matches = await fetch_ipl_schedule()
     if matches:
+        await db.ipl_schedule.delete_many({})
         for m in matches:
-            mid = m.get("matchId")
-            if mid:
-                await db.matches_cache.update_one(
-                    {"matchId": mid},
-                    {"$set": {**m, "cachedAt": datetime.now(timezone.utc).isoformat()}},
-                    upsert=True
-                )
-            if mid and mid in match_cache:
-                cached = match_cache[mid]
-                m["probabilities"] = cached.get("probabilities", {})
-                m["odds"] = cached.get("odds", {})
-    else:
-        # Fallback to MongoDB cached matches
-        cached_matches = await db.matches_cache.find({}, {"_id": 0}).to_list(50)
-        if cached_matches:
-            matches = cached_matches
-            logger.info(f"Serving {len(matches)} cached matches from MongoDB")
-    return {"matches": matches}
+            m["loadedAt"] = datetime.now(timezone.utc).isoformat()
+        await db.ipl_schedule.insert_many(matches)
+        return {"status": "loaded", "count": len(matches)}
+    return {"status": "error", "count": 0}
 
-@api_router.get("/matches/fixtures")
-async def api_fixtures():
-    fixtures = await get_ipl_fixtures()
-    return {"fixtures": fixtures if fixtures else []}
-
-@api_router.get("/matches/{match_id}")
-async def api_match_detail(match_id: str):
-    info = await get_match_info(match_id)
-    if not info:
-        return {"error": "Match not found", "matchId": match_id}
-    squad = await get_match_squad(match_id)
-    result = {
-        "matchId": match_id,
-        "info": info,
-        "squad": squad,
-        "probabilities": match_cache.get(match_id, {}).get("probabilities", {}),
-        "odds": match_cache.get(match_id, {}).get("odds", {}),
-        "ballHistory": ball_history_cache.get(match_id, []),
-        "oddsHistory": odds_history_cache.get(match_id, []),
-        "probabilityHistory": probability_history_cache.get(match_id, []),
+@api_router.get("/schedule")
+async def get_schedule():
+    """Get the full IPL 2026 schedule from MongoDB."""
+    matches = await db.ipl_schedule.find({}, {"_id": 0}).sort("match_number", 1).to_list(100)
+    if not matches:
+        return {"matches": [], "loaded": False}
+    live = [m for m in matches if m.get("status", "").lower() in ["live", "in progress"]]
+    upcoming = [m for m in matches if m.get("status", "").lower() in ["upcoming", "scheduled"]]
+    completed = [m for m in matches if m.get("status", "").lower() in ["completed", "result"]]
+    return {
+        "matches": matches,
+        "loaded": True,
+        "live": live,
+        "upcoming": upcoming,
+        "completed": completed,
+        "total": len(matches)
     }
-    return result
 
-@api_router.get("/matches/{match_id}/scorecard")
-async def api_scorecard(match_id: str):
-    sc = await get_match_scorecard(match_id)
-    return {"matchId": match_id, "scorecard": sc}
 
-@api_router.get("/matches/{match_id}/squad")
-async def api_squad(match_id: str):
-    sq = await get_match_squad(match_id)
-    return {"matchId": match_id, "squad": sq}
+# ─── SQUADS (AI-powered + cached) ───────────────────────────
 
-@api_router.get("/matches/{match_id}/predictions")
-async def api_predictions(match_id: str):
-    match_data = match_cache.get(match_id, {})
-    if not match_data:
-        matches = await get_live_matches()
-        for m in matches:
-            if m["matchId"] == match_id:
-                match_data = m
+@api_router.get("/squads/load")
+async def load_squads(force: bool = False):
+    """Load all IPL 2026 squads using GPT."""
+    existing = await db.ipl_squads.count_documents({})
+    if existing > 0 and not force:
+        return {"status": "already_loaded", "count": existing}
+    logger.info("Fetching IPL 2026 squads via GPT...")
+    squads = await fetch_ipl_squads()
+    if squads:
+        await db.ipl_squads.delete_many({})
+        for s in squads:
+            s["loadedAt"] = datetime.now(timezone.utc).isoformat()
+        await db.ipl_squads.insert_many(squads)
+        return {"status": "loaded", "count": len(squads)}
+    return {"status": "error", "count": 0}
+
+@api_router.get("/squads")
+async def get_all_squads():
+    squads = await db.ipl_squads.find({}, {"_id": 0}).to_list(20)
+    return {"squads": squads}
+
+@api_router.get("/squads/{team_short}")
+async def get_team_squad(team_short: str):
+    squad = await db.ipl_squads.find_one(
+        {"teamShort": team_short.upper()}, {"_id": 0}
+    )
+    if not squad:
+        squad = await db.ipl_squads.find_one(
+            {"teamShort": {"$regex": team_short, "$options": "i"}}, {"_id": 0}
+        )
+    return {"squad": squad}
+
+
+# ─── LIVE MATCH (on-demand via button) ───────────────────────
+
+@api_router.post("/matches/{match_id}/fetch-live")
+async def fetch_live_data(match_id: str):
+    """Button-triggered: Fetch live data from CricAPI first, fallback to GPT."""
+    # Get match info from schedule
+    match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
+    if not match_info:
+        return {"error": "Match not found in schedule"}
+
+    team1 = match_info.get("team1", "")
+    team2 = match_info.get("team2", "")
+    venue = match_info.get("venue", "")
+
+    # Try CricAPI first
+    cricapi_data = None
+    cricapi_matches = await get_live_matches()
+    if cricapi_matches:
+        for m in cricapi_matches:
+            if m.get("matchId") == match_id or (
+                team1.lower() in m.get("team1", "").lower() and
+                team2.lower() in m.get("team2", "").lower()
+            ):
+                cricapi_data = m
                 break
-    if not match_data:
-        info = await get_match_info(match_id)
-        if info:
-            match_data = {
-                "matchId": match_id,
-                "team1": info.get("teams", ["Team A"])[0] if info.get("teams") else "Team A",
-                "team2": info.get("teams", ["", "Team B"])[1] if info.get("teams") and len(info["teams"]) > 1 else "Team B",
-                "venue": info.get("venue", ""),
-                "status": info.get("status", ""),
-                "score": str(info.get("score", "")),
-            }
-    ai_pred = await get_match_prediction(match_data)
-    return {"matchId": match_id, "predictions": ai_pred}
 
-@api_router.get("/matches/{match_id}/odds")
-async def api_odds(match_id: str):
-    cached = match_cache.get(match_id, {})
-    odds = cached.get("odds", {})
-    history = odds_history_cache.get(match_id, [])
-    return {"matchId": match_id, "odds": odds, "history": history[-50:]}
+    # If no CricAPI data, use GPT for live simulation
+    live_data = None
+    source = "cricapi"
+    if cricapi_data and cricapi_data.get("score"):
+        live_data = {
+            "matchId": match_id,
+            "team1": team1,
+            "team2": team2,
+            "venue": venue,
+            "score": {
+                "runs": cricapi_data.get("runs", 0),
+                "wickets": cricapi_data.get("wickets", 0),
+                "overs": cricapi_data.get("overs", 0),
+                "target": None,
+            },
+            "innings": cricapi_data.get("innings", 1),
+            "status": cricapi_data.get("status", "Live"),
+            "isLive": True,
+            "source": "cricapi",
+        }
+    else:
+        logger.info(f"Using GPT for live data: {team1} vs {team2}")
+        gpt_data = await fetch_live_match_update(match_info)
+        if gpt_data:
+            live_data = gpt_data
+            live_data["source"] = "gpt"
+            source = "gpt"
 
-@api_router.post("/matches/{match_id}/calculate")
-async def api_calculate(match_id: str):
-    result = await compute_match_probabilities(match_id)
-    return {"matchId": match_id, "result": result}
+    if not live_data:
+        return {"error": "Could not fetch live data"}
 
-@api_router.get("/matches/{match_id}/player-predictions")
-async def api_player_predictions(match_id: str):
-    sq = await get_match_squad(match_id)
-    if not sq:
-        return {"matchId": match_id, "players": []}
-    cached = match_cache.get(match_id, {})
-    venue = cached.get("venue", "")
-    team1 = cached.get("team1", "Team A")
-    team2 = cached.get("team2", "Team B")
-    players = []
-    if isinstance(sq, list):
-        for team_data in sq[:2]:
-            team_name = team_data.get("teamName", "Unknown")
-            opponent = team2 if team_name == team1 else team1
-            player_list = team_data.get("players", [])[:11]
-            for p in player_list:
-                pred = await get_player_prediction(p.get("name", ""), team_name, opponent, venue)
-                players.append({
-                    "name": p.get("name", ""),
-                    "team": team_name,
-                    "role": p.get("role", ""),
-                    "prediction": pred
-                })
-    return {"matchId": match_id, "players": players}
+    # Run probability algorithms
+    score = live_data.get("score", {})
+    runs = score.get("runs", 0) if isinstance(score, dict) else 0
+    wickets = score.get("wickets", 0) if isinstance(score, dict) else 0
+    overs = score.get("overs", 0) if isinstance(score, dict) else 0
+    target = score.get("target") if isinstance(score, dict) else None
+    innings = live_data.get("innings", 1)
 
-@api_router.get("/players/{player_id}")
-async def api_player(player_id: str):
-    info = await get_player_info(player_id)
-    return {"playerId": player_id, "info": info}
-
-
-# ─── PROBABILITY COMPUTATION ─────────────────────────────────
-
-async def compute_match_probabilities(match_id):
-    matches = await get_live_matches()
-    match_data = None
-    for m in matches:
-        if m["matchId"] == match_id:
-            match_data = m
-            break
-    if not match_data:
-        return None
-    runs = match_data.get("runs", 0)
-    wickets = match_data.get("wickets", 0)
-    overs = match_data.get("overs", 0)
-    innings = match_data.get("innings", 1)
-    target = None
-    if innings == 2:
-        score_str = match_data.get("score", "")
-        if "Target" in str(score_str):
-            try:
-                target = int(str(score_str).split("Target")[1].strip().split()[0])
-            except (ValueError, IndexError):
-                pass
-    cached_odds = match_cache.get(match_id, {}).get("odds", {})
-    odds_a = cached_odds.get("team1", 2.0) if cached_odds else None
-    probs = ensemble_probability(runs, wickets, overs, target, innings, odds_a)
+    probs = ensemble_probability(runs, wickets, overs, target, innings)
     team1_odds = calculate_odds_from_probability(probs["ensemble"])
     team2_odds = calculate_odds_from_probability(1 - probs["ensemble"])
-    now_str = datetime.now(timezone.utc).isoformat()
-    match_cache[match_id] = {
-        **match_data,
+
+    # Get AI prediction
+    ai_pred = await get_match_prediction({
+        "matchId": match_id, "team1": team1, "team2": team2,
+        "venue": venue, "score": score
+    })
+
+    # Build balls from recentBalls
+    recent_balls = live_data.get("recentBalls", [])
+    ball_objects = []
+    for b in recent_balls:
+        ball_obj = {"runs": 0, "isWicket": False, "isWide": False, "isNoBall": False}
+        if b == "W":
+            ball_obj["isWicket"] = True
+        elif b == "WD":
+            ball_obj["isWide"] = True
+            ball_obj["runs"] = 1
+        elif b == "NB":
+            ball_obj["isNoBall"] = True
+            ball_obj["runs"] = 1
+        elif b in ["0", "\u2022"]:
+            ball_obj["runs"] = 0
+        else:
+            try:
+                ball_obj["runs"] = int(b)
+            except (ValueError, TypeError):
+                pass
+        ball_objects.append(ball_obj)
+
+    result = {
+        "matchId": match_id,
+        "team1": team1,
+        "team1Short": get_short_name(team1),
+        "team2": team2,
+        "team2Short": get_short_name(team2),
+        "venue": venue,
+        "liveData": live_data,
         "probabilities": probs,
         "odds": {"team1": team1_odds, "team2": team2_odds},
-        "momentum": calculate_momentum(ball_history_cache.get(match_id, [])),
-        "lastUpdated": now_str,
+        "aiPrediction": ai_pred,
+        "momentum": calculate_momentum(ball_objects),
+        "ballHistory": ball_objects,
+        "batsmen": live_data.get("batsmen", []),
+        "bowler": live_data.get("bowler", {}),
+        "fallOfWickets": live_data.get("fallOfWickets", []),
+        "lastBallCommentary": live_data.get("lastBallCommentary", ""),
+        "source": source,
+        "fetchedAt": datetime.now(timezone.utc).isoformat(),
     }
-    odds_history_cache.setdefault(match_id, []).append({
-        "time": now_str,
-        "team1": team1_odds,
-        "team2": team2_odds,
-    })
-    probability_history_cache.setdefault(match_id, []).append({
-        "time": now_str,
-        **probs
-    })
-    if len(odds_history_cache[match_id]) > 200:
-        odds_history_cache[match_id] = odds_history_cache[match_id][-200:]
-    if len(probability_history_cache[match_id]) > 200:
-        probability_history_cache[match_id] = probability_history_cache[match_id][-200:]
-    await db.match_snapshots.update_one(
+
+    # Cache in memory and MongoDB
+    live_match_state[match_id] = result
+    await db.live_snapshots.update_one(
         {"matchId": match_id},
-        {"$set": {
-            "matchId": match_id,
-            "team1": match_data.get("team1"),
-            "team2": match_data.get("team2"),
-            "probabilities": probs,
-            "odds": {"team1": team1_odds, "team2": team2_odds},
-            "lastUpdated": now_str,
-        }},
+        {"$set": {**{k: v for k, v in result.items()}, "updatedAt": datetime.now(timezone.utc).isoformat()}},
         upsert=True
     )
-    return match_cache[match_id]
+
+    # Broadcast to WebSocket connections
+    if match_id in ws_connections and ws_connections[match_id]:
+        await broadcast_update(match_id, result)
+
+    return result
+
+
+@api_router.get("/matches/{match_id}/state")
+async def get_match_state(match_id: str):
+    """Get last known state of a live match."""
+    if match_id in live_match_state:
+        return live_match_state[match_id]
+    cached = await db.live_snapshots.find_one({"matchId": match_id}, {"_id": 0})
+    if cached:
+        return cached
+    match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
+    return {"matchId": match_id, "info": match_info, "noLiveData": True}
+
+
+# ─── PLAYER PREDICTIONS (on-demand) ─────────────────────────
+
+@api_router.post("/matches/{match_id}/player-predictions")
+async def api_player_predictions(match_id: str):
+    """Fetch AI player predictions for a match."""
+    match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
+    if not match_info:
+        return {"error": "Match not found"}
+
+    team1 = match_info.get("team1", "")
+    team2 = match_info.get("team2", "")
+    venue = match_info.get("venue", "")
+    t1_short = match_info.get("team1Short", get_short_name(team1))
+    t2_short = match_info.get("team2Short", get_short_name(team2))
+
+    sq1 = await db.ipl_squads.find_one({"teamShort": t1_short}, {"_id": 0})
+    sq2 = await db.ipl_squads.find_one({"teamShort": t2_short}, {"_id": 0})
+
+    players = await get_player_predictions(
+        team1, team2, venue,
+        sq1.get("players") if sq1 else None,
+        sq2.get("players") if sq2 else None
+    )
+
+    return {"matchId": match_id, "players": players}
+
+
+# ─── MATCH PREDICTION (on-demand) ───────────────────────────
+
+@api_router.post("/matches/{match_id}/predict")
+async def api_predict(match_id: str):
+    match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
+    if not match_info:
+        return {"error": "Match not found"}
+    live_state = live_match_state.get(match_id)
+    if live_state:
+        match_info["score"] = live_state.get("liveData", {}).get("score", {})
+    pred = await get_match_prediction(match_info)
+    return {"matchId": match_id, "prediction": pred}
+
+
+# ─── CRICAPI LIVE (for cross-check) ─────────────────────────
+
+@api_router.get("/matches/cricapi-live")
+async def api_cricapi_live():
+    matches = await get_live_matches()
+    return {"matches": matches, "count": len(matches)}
 
 
 # ─── WEBSOCKET ────────────────────────────────────────────────
@@ -252,30 +332,18 @@ async def compute_match_probabilities(match_id):
 async def websocket_endpoint(websocket: WebSocket, match_id: str):
     await websocket.accept()
     ws_connections.setdefault(match_id, []).append(websocket)
-    logger.info(f"WS connected for match {match_id}. Total: {len(ws_connections[match_id])}")
+    logger.info(f"WS connected: {match_id}")
     try:
-        cached = match_cache.get(match_id)
+        cached = live_match_state.get(match_id)
         if cached:
-            await websocket.send_json({
-                "type": "LIVE_UPDATE",
-                "matchId": match_id,
-                **{k: cached[k] for k in ["probabilities", "odds", "momentum", "lastUpdated"] if k in cached},
-                "ballHistory": ball_history_cache.get(match_id, [])[-30:],
-                "oddsHistory": odds_history_cache.get(match_id, [])[-30:],
-                "probabilityHistory": probability_history_cache.get(match_id, [])[-30:],
-            })
+            await websocket.send_json({"type": "LIVE_UPDATE", **cached})
         while True:
             data = await websocket.receive_text()
             msg = json.loads(data)
             if msg.get("type") == "PING":
                 await websocket.send_json({"type": "PONG"})
-            elif msg.get("type") == "REQUEST_UPDATE":
-                result = await compute_match_probabilities(match_id)
-                if result:
-                    await broadcast_update(match_id, result)
     except WebSocketDisconnect:
         ws_connections[match_id].remove(websocket)
-        logger.info(f"WS disconnected for match {match_id}")
     except Exception as e:
         logger.error(f"WS error: {e}")
         if websocket in ws_connections.get(match_id, []):
@@ -284,62 +352,22 @@ async def websocket_endpoint(websocket: WebSocket, match_id: str):
 async def broadcast_update(match_id, data):
     if match_id not in ws_connections:
         return
-    payload = {
-        "type": "LIVE_UPDATE",
-        "matchId": match_id,
-        "score": data.get("score", ""),
-        "runs": data.get("runs", 0),
-        "overs": data.get("overs", 0),
-        "wickets": data.get("wickets", 0),
-        "innings": data.get("innings", 1),
-        "probabilities": data.get("probabilities", {}),
-        "odds": data.get("odds", {}),
-        "momentum": data.get("momentum", {}),
-        "lastUpdated": data.get("lastUpdated", ""),
-        "team1": data.get("team1", ""),
-        "team2": data.get("team2", ""),
-        "team1Short": data.get("team1Short", ""),
-        "team2Short": data.get("team2Short", ""),
-        "ballHistory": ball_history_cache.get(match_id, [])[-30:],
-        "probabilityHistory": probability_history_cache.get(match_id, [])[-30:],
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-    disconnected = []
+    payload = {"type": "LIVE_UPDATE", **data}
+    dead = []
     for ws in ws_connections[match_id]:
         try:
             await ws.send_json(payload)
         except Exception:
-            disconnected.append(ws)
-    for ws in disconnected:
+            dead.append(ws)
+    for ws in dead:
         ws_connections[match_id].remove(ws)
 
 
-# ─── BACKGROUND WORKER ───────────────────────────────────────
-
-async def background_updater():
-    await asyncio.sleep(10)  # Initial delay
-    while True:
-        try:
-            matches = await get_live_matches()
-            live_matches = [m for m in matches if m.get("isLive")]
-            for m in live_matches[:3]:  # Only process first 3 live matches
-                mid = m["matchId"]
-                if mid:
-                    await compute_match_probabilities(mid)
-                    cached = match_cache.get(mid)
-                    if cached and mid in ws_connections and ws_connections[mid]:
-                        await broadcast_update(mid, cached)
-        except Exception as e:
-            logger.error(f"Background updater error: {e}")
-        await asyncio.sleep(120)  # 2 minutes to respect CricAPI rate limits
-
-
-# ─── STARTUP / SHUTDOWN ──────────────────────────────────────
+# ─── STARTUP ─────────────────────────────────────────────────
 
 @app.on_event("startup")
 async def startup():
-    logger.info("PPL Board starting up...")
-    asyncio.create_task(background_updater())
+    logger.info("PPL Board v2 starting up...")
 
 @app.on_event("shutdown")
 async def shutdown():

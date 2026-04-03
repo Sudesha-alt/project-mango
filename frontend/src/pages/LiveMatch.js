@@ -6,86 +6,80 @@ import LiveScoreboard from "@/components/LiveScoreboard";
 import BallLog from "@/components/BallLog";
 import AlgorithmPanel from "@/components/AlgorithmPanel";
 import OddsPanel from "@/components/OddsPanel";
-import { WinProbabilityChart, ManhattanChart, AlgorithmRadarChart } from "@/components/Charts";
+import { WinProbabilityChart, AlgorithmRadarChart } from "@/components/Charts";
 import PlayerPredictions from "@/components/PlayerPredictions";
 import PlayingXI from "@/components/PlayingXI";
-import { WifiHigh, WifiSlash, ArrowsClockwise } from "@phosphor-icons/react";
+import { WifiHigh, WifiSlash, Lightning, Spinner, UserCircle } from "@phosphor-icons/react";
 
 export default function LiveMatch() {
   const { matchId } = useParams();
-  const { fetchMatchDetail, fetchSquad, triggerCalculation, fetchOdds, fetchPlayerPredictions } = useMatchData();
-  const { data: wsData, connected, requestUpdate } = useWebSocket(matchId);
+  const { fetchLiveData, getMatchState, getTeamSquad, fetchPlayerPredictions } = useMatchData();
+  const { data: wsData, connected } = useWebSocket(matchId);
 
-  const [matchDetail, setMatchDetail] = useState(null);
-  const [squad, setSquad] = useState([]);
-  const [odds, setOdds] = useState({});
-  const [oddsHistory, setOddsHistory] = useState([]);
-  const [probHistory, setProbHistory] = useState([]);
-  const [ballHistory, setBallHistory] = useState([]);
+  const [matchState, setMatchState] = useState(null);
+  const [squads, setSquads] = useState([]);
   const [playerPreds, setPlayerPreds] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [fetchingLive, setFetchingLive] = useState(false);
+  const [fetchingPlayers, setFetchingPlayers] = useState(false);
   const [activeTab, setActiveTab] = useState("models");
+  const [probHistory, setProbHistory] = useState([]);
 
   useEffect(() => {
     const load = async () => {
       setLoading(true);
-      const [detail, sq, calc, oddsData] = await Promise.all([
-        fetchMatchDetail(matchId),
-        fetchSquad(matchId),
-        triggerCalculation(matchId),
-        fetchOdds(matchId),
-      ]);
-      setMatchDetail(detail);
-      setSquad(sq?.squad || []);
-      setOdds(oddsData?.odds || {});
-      setOddsHistory(oddsData?.history || []);
-      setProbHistory(detail?.probabilityHistory || []);
-      setBallHistory(detail?.ballHistory || []);
+      const state = await getMatchState(matchId);
+      if (state && !state.noLiveData) {
+        setMatchState(state);
+        if (state.probabilities) setProbHistory(prev => [...prev, state.probabilities]);
+      } else if (state?.info) {
+        setMatchState({ ...state.info, matchId, noLiveData: true });
+        // Load squads
+        if (state.info.team1Short) {
+          const s1 = await getTeamSquad(state.info.team1Short);
+          const s2 = await getTeamSquad(state.info.team2Short);
+          setSquads([s1, s2].filter(Boolean));
+        }
+      }
       setLoading(false);
     };
     if (matchId) load();
-  }, [matchId, fetchMatchDetail, fetchSquad, triggerCalculation, fetchOdds]);
+  }, [matchId, getMatchState, getTeamSquad]);
 
-  // Update from WebSocket
   useEffect(() => {
-    if (wsData) {
-      if (wsData.odds) setOdds(wsData.odds);
-      if (wsData.probabilityHistory) setProbHistory((prev) => [...prev, ...wsData.probabilityHistory].slice(-100));
-      if (wsData.ballHistory) setBallHistory(wsData.ballHistory);
+    if (wsData && wsData.probabilities) {
+      setMatchState(prev => ({ ...prev, ...wsData }));
+      setProbHistory(prev => [...prev, wsData.probabilities].slice(-50));
     }
   }, [wsData]);
 
-  // Auto-refresh every 15s
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (matchId) {
-        requestUpdate();
-        triggerCalculation(matchId);
-      }
-    }, 15000);
-    return () => clearInterval(interval);
-  }, [matchId, requestUpdate, triggerCalculation]);
-
-  const handleRefresh = useCallback(async () => {
-    requestUpdate();
-    const calc = await triggerCalculation(matchId);
-    if (calc?.result) {
-      setOdds(calc.result.odds || {});
+  const handleFetchLive = useCallback(async () => {
+    setFetchingLive(true);
+    const data = await fetchLiveData(matchId);
+    if (data && !data.error) {
+      setMatchState(data);
+      if (data.probabilities) setProbHistory(prev => [...prev, data.probabilities].slice(-50));
     }
-  }, [matchId, requestUpdate, triggerCalculation]);
+    setFetchingLive(false);
+  }, [matchId, fetchLiveData]);
 
-  const loadPlayerPreds = useCallback(async () => {
+  const handleFetchPlayers = useCallback(async () => {
+    setFetchingPlayers(true);
     const data = await fetchPlayerPredictions(matchId);
-    setPlayerPreds(data?.players || []);
+    if (data?.players) setPlayerPreds(data.players);
+    setFetchingPlayers(false);
   }, [matchId, fetchPlayerPredictions]);
 
-  const info = matchDetail?.info || {};
-  const teams = info.teams || [];
-  const team1 = wsData?.team1 || teams[0] || "Team A";
-  const team2 = wsData?.team2 || teams[1] || "Team B";
-  const t1Short = wsData?.team1Short || team1.slice(0, 3).toUpperCase();
-  const t2Short = wsData?.team2Short || team2.slice(0, 3).toUpperCase();
-  const probs = wsData?.probabilities || matchDetail?.probabilities || {};
+  const liveData = matchState?.liveData || {};
+  const score = liveData.score || {};
+  const probs = matchState?.probabilities || {};
+  const odds = matchState?.odds || {};
+  const balls = matchState?.ballHistory || [];
+  const team1 = matchState?.team1 || liveData.team1 || "Team A";
+  const team2 = matchState?.team2 || liveData.team2 || "Team B";
+  const t1Short = matchState?.team1Short || team1.slice(0, 3).toUpperCase();
+  const t2Short = matchState?.team2Short || team2.slice(0, 3).toUpperCase();
+  const hasLiveData = !matchState?.noLiveData && matchState?.liveData;
 
   const rightTabs = [
     { key: "models", label: "Models" },
@@ -102,80 +96,151 @@ export default function LiveMatch() {
         </div>
       ) : (
         <>
-          {/* Top bar */}
+          {/* Top bar with Fetch Live button */}
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-1.5">
-                {connected ? (
-                  <WifiHigh weight="fill" className="w-4 h-4 text-[#22C55E]" />
-                ) : (
-                  <WifiSlash weight="fill" className="w-4 h-4 text-[#FF3B30]" />
-                )}
-                <span className="text-[10px] font-bold uppercase tracking-wider text-[#A1A1AA]">
-                  {connected ? "Connected" : "Reconnecting..."}
-                </span>
+                {connected ? <WifiHigh weight="fill" className="w-4 h-4 text-[#22C55E]" /> : <WifiSlash weight="fill" className="w-4 h-4 text-[#FF3B30]" />}
+                <span className="text-[10px] font-bold uppercase tracking-wider text-[#A1A1AA]">{connected ? "WS Connected" : "WS Disconnected"}</span>
               </div>
+              {matchState?.source && (
+                <span className="text-[10px] px-2 py-0.5 rounded bg-[#1E1E1E] text-[#A1A1AA] font-mono">
+                  Source: {matchState.source.toUpperCase()}
+                </span>
+              )}
             </div>
-            <button
-              onClick={handleRefresh}
-              data-testid="refresh-btn"
-              className="flex items-center gap-1.5 text-[10px] font-bold uppercase px-3 py-1.5 rounded bg-[#1E1E1E] text-[#A1A1AA] hover:bg-[#252525] hover:text-white transition-colors"
-            >
-              <ArrowsClockwise weight="bold" className="w-3.5 h-3.5" />
-              Refresh
+            <button onClick={handleFetchLive} disabled={fetchingLive} data-testid="fetch-live-btn"
+              className="flex items-center gap-2 bg-[#007AFF] text-white px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider hover:bg-[#0066DD] transition-colors disabled:opacity-50">
+              {fetchingLive ? <><Spinner className="w-4 h-4 animate-spin" /> Fetching Live...</> : <><Lightning weight="fill" className="w-4 h-4" /> Fetch Live Scores</>}
             </button>
           </div>
 
-          {/* Main Grid: 8/4 split */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-            {/* LEFT: Scoreboard + Ball Log + Charts */}
-            <div className="lg:col-span-8 space-y-4">
-              <LiveScoreboard matchData={matchDetail} wsData={wsData} />
-              <BallLog balls={ballHistory} />
-              <WinProbabilityChart data={probHistory} team1={t1Short} team2={t2Short} />
-              <ManhattanChart data={[]} />
+          {!hasLiveData && (
+            <div className="bg-[#141414] border border-[#007AFF]/30 rounded-md p-8 text-center mb-4" data-testid="no-live-data">
+              <Lightning weight="duotone" className="w-10 h-10 text-[#007AFF] mx-auto mb-3" />
+              <p className="text-sm text-[#A1A1AA] mb-2">No live data loaded yet for this match.</p>
+              <p className="text-xs text-[#71717A] mb-4">Click "Fetch Live Scores" to get real-time data from CricAPI or GPT simulation.</p>
+              <p className="text-lg font-bold uppercase" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
+                {t1Short} vs {t2Short}
+              </p>
             </div>
+          )}
 
-            {/* RIGHT: Models / Odds / Squad / Players */}
-            <div className="lg:col-span-4 space-y-4">
-              <div className="flex gap-1 bg-[#141414] border border-white/10 rounded-md p-1">
-                {rightTabs.map((tab) => (
-                  <button
-                    key={tab.key}
-                    onClick={() => {
-                      setActiveTab(tab.key);
-                      if (tab.key === "players" && playerPreds.length === 0) loadPlayerPreds();
-                    }}
-                    data-testid={`tab-${tab.key}`}
-                    className={`flex-1 text-[10px] font-bold uppercase tracking-wider py-1.5 rounded transition-colors ${
-                      activeTab === tab.key ? "bg-[#007AFF] text-white" : "text-[#A1A1AA] hover:text-white"
-                    }`}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
+          {hasLiveData && (
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+              {/* LEFT: Scoreboard + Ball Log + Charts */}
+              <div className="lg:col-span-8 space-y-4">
+                <LiveScoreboard
+                  matchData={{
+                    team1, team2, team1Short: t1Short, team2Short: t2Short,
+                    runs: score.runs || 0, overs: score.overs || 0, wickets: score.wickets || 0,
+                    innings: liveData.innings || 1, status: liveData.status || "",
+                    venue: matchState?.venue || "", isLive: true,
+                    probabilities: probs,
+                    score: score.target ? `Target: ${score.target}` : "",
+                  }}
+                />
+
+                {/* Current batsmen + bowler */}
+                {(matchState?.batsmen?.length > 0 || matchState?.bowler?.name) && (
+                  <div className="bg-[#141414] border border-white/10 rounded-md p-4" data-testid="current-players">
+                    <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-[#A1A1AA] mb-3" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
+                      At The Crease
+                    </h4>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      {matchState.batsmen?.map((b, i) => (
+                        <div key={i} className="bg-[#1E1E1E] rounded-md p-3">
+                          <p className="text-xs font-bold mb-1">{b.name}{i === 0 ? " *" : ""}</p>
+                          <div className="flex gap-3 text-[10px] text-[#A1A1AA]">
+                            <span><span className="text-white font-mono font-bold">{b.runs}</span> ({b.balls})</span>
+                            <span>4s: <span className="text-[#007AFF] font-mono">{b.fours}</span></span>
+                            <span>6s: <span className="text-[#22C55E] font-mono">{b.sixes}</span></span>
+                            <span>SR: <span className="font-mono">{b.strikeRate}</span></span>
+                          </div>
+                        </div>
+                      ))}
+                      {matchState.bowler?.name && (
+                        <div className="bg-[#1E1E1E] rounded-md p-3">
+                          <p className="text-xs font-bold mb-1">{matchState.bowler.name} (bowling)</p>
+                          <div className="flex gap-3 text-[10px] text-[#A1A1AA]">
+                            <span>{matchState.bowler.overs} ov</span>
+                            <span><span className="text-[#FF3B30] font-mono">{matchState.bowler.wickets}</span>/{matchState.bowler.runs}</span>
+                            <span>Econ: <span className="font-mono">{matchState.bowler.economy}</span></span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    {matchState.lastBallCommentary && (
+                      <p className="text-xs text-[#A1A1AA] mt-2 italic">{matchState.lastBallCommentary}</p>
+                    )}
+                  </div>
+                )}
+
+                <BallLog balls={balls} />
+                <WinProbabilityChart data={probHistory} team1={t1Short} team2={t2Short} />
+
+                {/* AI Analysis */}
+                {matchState?.aiPrediction && (
+                  <div className="bg-[#141414] border border-white/10 rounded-md p-4" data-testid="ai-analysis">
+                    <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-[#A1A1AA] mb-2" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
+                      GPT Analysis
+                    </h4>
+                    <p className="text-sm text-[#A1A1AA]">{matchState.aiPrediction.analysis}</p>
+                    {matchState.aiPrediction.keyFactors?.length > 0 && (
+                      <div className="flex flex-wrap gap-2 mt-2">
+                        {matchState.aiPrediction.keyFactors.map((f, i) => (
+                          <span key={i} className="text-[10px] px-2 py-0.5 bg-[#1E1E1E] rounded text-[#A1A1AA]">{f}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
-              {activeTab === "models" && (
-                <>
-                  <AlgorithmPanel probabilities={probs} team1={t1Short} team2={t2Short} />
-                  <AlgorithmRadarChart probabilities={probs} />
-                </>
-              )}
+              {/* RIGHT: Tabs */}
+              <div className="lg:col-span-4 space-y-4">
+                <div className="flex gap-1 bg-[#141414] border border-white/10 rounded-md p-1">
+                  {rightTabs.map((tab) => (
+                    <button key={tab.key}
+                      onClick={() => { setActiveTab(tab.key); if (tab.key === "players" && playerPreds.length === 0) handleFetchPlayers(); }}
+                      data-testid={`tab-${tab.key}`}
+                      className={`flex-1 text-[10px] font-bold uppercase tracking-wider py-1.5 rounded transition-colors ${
+                        activeTab === tab.key ? "bg-[#007AFF] text-white" : "text-[#A1A1AA] hover:text-white"
+                      }`}>
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
 
-              {activeTab === "odds" && (
-                <OddsPanel odds={odds} history={oddsHistory} team1={t1Short} team2={t2Short} />
-              )}
-
-              {activeTab === "squad" && (
-                <PlayingXI squad={squad} team1={team1} team2={team2} />
-              )}
-
-              {activeTab === "players" && (
-                <PlayerPredictions players={playerPreds} />
-              )}
+                {activeTab === "models" && (
+                  <>
+                    <AlgorithmPanel probabilities={probs} team1={t1Short} team2={t2Short} />
+                    <AlgorithmRadarChart probabilities={probs} />
+                  </>
+                )}
+                {activeTab === "odds" && <OddsPanel odds={odds} history={[]} team1={t1Short} team2={t2Short} />}
+                {activeTab === "squad" && <PlayingXI squad={squads.map(s => ({ teamName: s?.teamName, players: s?.players?.slice(0, 11) || [] }))} team1={team1} team2={team2} />}
+                {activeTab === "players" && (
+                  <div>
+                    {fetchingPlayers ? (
+                      <div className="bg-[#141414] border border-white/10 rounded-md p-8 text-center">
+                        <Spinner className="w-6 h-6 animate-spin mx-auto mb-2 text-[#007AFF]" />
+                        <p className="text-xs text-[#A1A1AA]">Generating player predictions via GPT...</p>
+                      </div>
+                    ) : (
+                      <PlayerPredictions players={playerPreds} />
+                    )}
+                    {playerPreds.length === 0 && !fetchingPlayers && (
+                      <button onClick={handleFetchPlayers} data-testid="load-player-preds-btn"
+                        className="w-full mt-2 py-2 bg-[#007AFF]/20 text-[#007AFF] rounded-md text-xs font-bold uppercase hover:bg-[#007AFF]/30 transition-colors">
+                        <UserCircle weight="bold" className="inline w-4 h-4 mr-1" /> Generate Player Predictions
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
+          )}
         </>
       )}
     </div>

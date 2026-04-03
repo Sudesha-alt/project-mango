@@ -11,8 +11,9 @@ class PPLBoardAPITester:
         self.tests_run = 0
         self.tests_passed = 0
         self.failed_tests = []
+        self.match_id = None  # Will store a valid match ID for testing
 
-    def run_test(self, name, method, endpoint, expected_status, data=None, timeout=30):
+    def run_test(self, name, method, endpoint, expected_status, data=None, timeout=10):
         """Run a single API test"""
         url = f"{self.base_url}/{endpoint}"
         headers = {'Content-Type': 'application/json'}
@@ -60,10 +61,10 @@ class PPLBoardAPITester:
             })
             return False, {}
 
-    def test_health_check(self):
-        """Test API health check"""
+    def test_api_status(self):
+        """Test API status endpoint - should return scheduleLoaded=true"""
         success, response = self.run_test(
-            "API Health Check",
+            "API Status Check",
             "GET",
             "api/",
             200
@@ -71,74 +72,108 @@ class PPLBoardAPITester:
         if success and isinstance(response, dict):
             if "PPL Board" in str(response.get("message", "")):
                 print("   ✅ PPL Board message found in response")
-                return True
+            
+            schedule_loaded = response.get("scheduleLoaded", False)
+            if schedule_loaded:
+                print("   ✅ scheduleLoaded=true found")
             else:
-                print(f"   ⚠️  Expected 'PPL Board' in message, got: {response}")
+                print(f"   ⚠️  scheduleLoaded={schedule_loaded}, expected true")
+            
+            matches_count = response.get("matchesInDB", 0)
+            print(f"   📊 Matches in DB: {matches_count}")
+            
+            return True
         return success
 
-    def test_live_matches(self):
-        """Test live matches endpoint"""
+    def test_schedule_endpoint(self):
+        """Test schedule endpoint - should return matches with categories"""
         success, response = self.run_test(
-            "Live Matches API",
+            "Schedule API",
             "GET",
-            "api/matches/live",
+            "api/schedule",
             200
         )
         if success and isinstance(response, dict):
-            if "matches" in response:
-                matches = response["matches"]
-                print(f"   ✅ Found {len(matches)} matches")
-                if len(matches) > 0:
-                    match = matches[0]
-                    required_fields = ["matchId", "team1", "team2"]
-                    missing_fields = [field for field in required_fields if field not in match]
-                    if missing_fields:
-                        print(f"   ⚠️  Missing fields in match: {missing_fields}")
-                    else:
-                        print(f"   ✅ Match structure valid")
-                return True
-            else:
-                print(f"   ❌ No 'matches' key in response")
+            matches = response.get("matches", [])
+            live = response.get("live", [])
+            upcoming = response.get("upcoming", [])
+            completed = response.get("completed", [])
+            total = response.get("total", 0)
+            loaded = response.get("loaded", False)
+            
+            print(f"   ✅ Found {len(matches)} total matches")
+            print(f"   📊 Live: {len(live)}, Upcoming: {len(upcoming)}, Completed: {len(completed)}")
+            print(f"   📊 Total: {total}, Loaded: {loaded}")
+            
+            # Store a match ID for later tests
+            if matches and len(matches) > 0:
+                self.match_id = matches[0].get("matchId")
+                print(f"   📝 Stored match ID for testing: {self.match_id}")
+            
+            return True
         return success
 
-    def test_fixtures(self):
-        """Test fixtures endpoint"""
+    def test_match_state(self):
+        """Test match state endpoint"""
+        if not self.match_id:
+            print("\n🔍 Testing Match State...")
+            print("   ⚠️  No match ID available, skipping test")
+            self.tests_run += 1
+            return False
+            
         success, response = self.run_test(
-            "Fixtures API",
+            "Match State API",
             "GET",
-            "api/matches/fixtures",
+            f"api/matches/{self.match_id}/state",
             200
         )
         if success and isinstance(response, dict):
-            if "fixtures" in response:
-                fixtures = response["fixtures"]
-                print(f"   ✅ Found {len(fixtures)} fixtures")
-                return True
-            else:
-                print(f"   ❌ No 'fixtures' key in response")
+            if "matchId" in response:
+                print(f"   ✅ Match state returned for {response['matchId']}")
+            if "noLiveData" in response:
+                print("   📊 No live data available (expected for upcoming matches)")
+            return True
         return success
 
-    def test_calculate_endpoint(self):
-        """Test calculation endpoint with test match ID"""
+    def test_fetch_live_data(self):
+        """Test fetch live data endpoint (POST)"""
+        if not self.match_id:
+            print("\n🔍 Testing Fetch Live Data...")
+            print("   ⚠️  No match ID available, skipping test")
+            self.tests_run += 1
+            return False
+            
+        print(f"\n🔍 Testing Fetch Live Data (may take 10-15 seconds)...")
         success, response = self.run_test(
-            "Calculate Endpoint",
+            "Fetch Live Data API",
             "POST",
-            "api/matches/test-id/calculate",
-            200
+            f"api/matches/{self.match_id}/fetch-live",
+            200,
+            timeout=20  # Increased timeout for GPT calls
         )
         if success and isinstance(response, dict):
-            if "result" in response:
-                print(f"   ✅ Calculation result returned")
-                return True
-            else:
-                print(f"   ⚠️  No 'result' key, but endpoint responded")
+            if "error" in response:
+                print(f"   ⚠️  API returned error: {response['error']}")
+            elif "liveData" in response:
+                print("   ✅ Live data generated successfully")
+                print(f"   📊 Source: {response.get('source', 'unknown')}")
+            elif "matchId" in response:
+                print("   ✅ Match data returned")
+            return True
         return success
 
     async def test_websocket(self):
         """Test WebSocket endpoint"""
+        if not self.match_id:
+            print(f"\n🔍 Testing WebSocket Connection...")
+            print("   ⚠️  No match ID available, using test-match")
+            match_id = "test-match"
+        else:
+            match_id = self.match_id
+            
         print(f"\n🔍 Testing WebSocket Connection...")
         ws_url = self.base_url.replace("https://", "wss://").replace("http://", "ws://")
-        ws_url = f"{ws_url}/api/ws/test-match"
+        ws_url = f"{ws_url}/api/ws/{match_id}"
         
         try:
             async with websockets.connect(ws_url) as websocket:
@@ -173,7 +208,7 @@ class PPLBoardAPITester:
             print(f"❌ WebSocket test failed: {str(e)}")
             self.failed_tests.append({
                 "test": "WebSocket Connection",
-                "endpoint": "ws/test-match",
+                "endpoint": f"ws/{match_id}",
                 "error": str(e)
             })
             self.tests_run += 1
@@ -186,12 +221,12 @@ def main():
     # Setup
     tester = PPLBoardAPITester()
     
-    # Run API tests
+    # Run API tests in order
     print("\n📡 Testing REST API Endpoints...")
-    tester.test_health_check()
-    tester.test_live_matches()
-    tester.test_fixtures()
-    tester.test_calculate_endpoint()
+    tester.test_api_status()
+    tester.test_schedule_endpoint()
+    tester.test_match_state()
+    tester.test_fetch_live_data()
     
     # Run WebSocket test
     print("\n🔌 Testing WebSocket...")

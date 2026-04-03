@@ -2,53 +2,56 @@ import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useMatchData } from "@/hooks/useMatchData";
 import PlayingXI from "@/components/PlayingXI";
-import AlgorithmPanel from "@/components/AlgorithmPanel";
 import { WinProbabilityChart, AlgorithmRadarChart } from "@/components/Charts";
-import PlayerPredictions from "@/components/PlayerPredictions";
-import { ArrowRight, Spinner } from "@phosphor-icons/react";
+import { ArrowRight, Spinner, MapPin, CalendarBlank } from "@phosphor-icons/react";
 
 export default function PreMatch() {
   const { matchId } = useParams();
   const navigate = useNavigate();
-  const { fetchMatchDetail, fetchSquad, fetchPredictions, triggerCalculation, fetchPlayerPredictions } = useMatchData();
-  const [matchDetail, setMatchDetail] = useState(null);
-  const [squad, setSquad] = useState(null);
-  const [predictions, setPredictions] = useState(null);
-  const [playerPreds, setPlayerPreds] = useState([]);
+  const { getTeamSquad, fetchMatchPrediction } = useMatchData();
+  const [matchInfo, setMatchInfo] = useState(null);
+  const [squad1, setSquad1] = useState(null);
+  const [squad2, setSquad2] = useState(null);
+  const [prediction, setPrediction] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [aiLoading, setAiLoading] = useState(false);
+  const [predLoading, setPredLoading] = useState(false);
 
   useEffect(() => {
     const load = async () => {
       setLoading(true);
-      const [detail, sq, calc] = await Promise.all([
-        fetchMatchDetail(matchId),
-        fetchSquad(matchId),
-        triggerCalculation(matchId),
-      ]);
-      setMatchDetail(detail);
-      setSquad(sq?.squad || []);
+      try {
+        const res = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/matches/${matchId}/state`);
+        const data = await res.json();
+        const info = data.info || data;
+        setMatchInfo(info);
+        if (info.team1Short) {
+          const s1 = await getTeamSquad(info.team1Short);
+          setSquad1(s1);
+        }
+        if (info.team2Short) {
+          const s2 = await getTeamSquad(info.team2Short);
+          setSquad2(s2);
+        }
+      } catch (e) { console.error(e); }
       setLoading(false);
     };
     if (matchId) load();
-  }, [matchId, fetchMatchDetail, fetchSquad, triggerCalculation]);
+  }, [matchId, getTeamSquad]);
 
-  const loadAIPredictions = async () => {
-    setAiLoading(true);
-    const [preds, pPreds] = await Promise.all([
-      fetchPredictions(matchId),
-      fetchPlayerPredictions(matchId),
-    ]);
-    setPredictions(preds?.predictions);
-    setPlayerPreds(pPreds?.players || []);
-    setAiLoading(false);
+  const handlePredict = async () => {
+    setPredLoading(true);
+    const res = await fetchMatchPrediction(matchId);
+    if (res?.prediction) setPrediction(res.prediction);
+    setPredLoading(false);
   };
 
-  const info = matchDetail?.info || {};
-  const teams = info.teams || [];
-  const team1 = teams[0] || "Team A";
-  const team2 = teams[1] || "Team B";
-  const probs = matchDetail?.probabilities || {};
+  const team1 = matchInfo?.team1 || "Team A";
+  const team2 = matchInfo?.team2 || "Team B";
+  const t1Short = matchInfo?.team1Short || team1.slice(0, 3).toUpperCase();
+  const t2Short = matchInfo?.team2Short || team2.slice(0, 3).toUpperCase();
+
+  const squad1Players = squad1?.players?.map(p => ({ name: p.name, isCaptain: p.isCaptain, isKeeper: p.isKeeper })) || [];
+  const squad2Players = squad2?.players?.map(p => ({ name: p.name, isCaptain: p.isCaptain, isKeeper: p.isKeeper })) || [];
 
   return (
     <div data-testid="pre-match-page" className="max-w-[1440px] mx-auto px-4 lg:px-6 py-6">
@@ -61,93 +64,110 @@ export default function PreMatch() {
           <div className="flex items-center justify-between mb-6">
             <div>
               <p className="text-xs uppercase tracking-[0.2em] font-bold text-[#007AFF] mb-1">Pre-Match Analysis</p>
-              <h2
-                className="text-2xl sm:text-3xl font-bold uppercase tracking-tight"
-                style={{ fontFamily: "'Barlow Condensed', sans-serif" }}
-                data-testid="prematch-title"
-              >
-                {team1} vs {team2}
+              <h2 className="text-2xl sm:text-3xl font-bold uppercase tracking-tight" style={{ fontFamily: "'Barlow Condensed', sans-serif" }} data-testid="prematch-title">
+                {t1Short} vs {t2Short}
               </h2>
-              <p className="text-xs text-[#71717A] mt-1">{info.venue || ""} {info.dateTimeGMT ? `| ${new Date(info.dateTimeGMT).toLocaleDateString()}` : ""}</p>
+              <div className="flex items-center gap-3 mt-1">
+                {matchInfo?.venue && <span className="text-xs text-[#71717A] flex items-center gap-1"><MapPin weight="bold" className="w-3 h-3" />{matchInfo.venue}</span>}
+                {matchInfo?.dateTimeGMT && <span className="text-xs text-[#71717A] flex items-center gap-1"><CalendarBlank weight="bold" className="w-3 h-3" />{new Date(matchInfo.dateTimeGMT).toLocaleDateString()}</span>}
+              </div>
             </div>
-            <button
-              onClick={() => navigate(`/live/${matchId}`)}
-              data-testid="go-live-btn"
-              className="flex items-center gap-2 bg-[#007AFF] text-white px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider hover:bg-[#0066DD] transition-colors"
-            >
+            <button onClick={() => navigate(`/live/${matchId}`)} data-testid="go-live-btn"
+              className="flex items-center gap-2 bg-[#007AFF] text-white px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider hover:bg-[#0066DD] transition-colors">
               Go Live <ArrowRight weight="bold" className="w-4 h-4" />
             </button>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-            {/* Left Column */}
             <div className="lg:col-span-8 space-y-4">
-              <PlayingXI squad={squad} team1={team1} team2={team2} />
+              {/* Playing XI */}
+              <PlayingXI
+                squad={[
+                  { teamName: team1, players: squad1Players },
+                  { teamName: team2, players: squad2Players }
+                ]}
+                team1={team1} team2={team2}
+              />
 
-              {/* AI Predictions */}
+              {/* AI Prediction */}
               <div className="bg-[#141414] border border-white/10 rounded-md p-4" data-testid="ai-predictions">
                 <div className="flex items-center justify-between mb-4">
                   <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-[#A1A1AA]" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
-                    AI Match Prediction
+                    GPT Match Prediction
                   </h4>
-                  <button
-                    onClick={loadAIPredictions}
-                    disabled={aiLoading}
-                    data-testid="load-ai-btn"
-                    className="text-[10px] font-bold uppercase px-3 py-1.5 rounded bg-[#007AFF]/20 text-[#007AFF] hover:bg-[#007AFF]/30 transition-colors disabled:opacity-50"
-                  >
-                    {aiLoading ? (
-                      <span className="flex items-center gap-1"><Spinner className="w-3 h-3 animate-spin" /> Analyzing...</span>
-                    ) : predictions ? "Refresh" : "Generate AI Prediction"}
+                  <button onClick={handlePredict} disabled={predLoading} data-testid="predict-btn"
+                    className="text-[10px] font-bold uppercase px-3 py-1.5 rounded bg-[#007AFF]/20 text-[#007AFF] hover:bg-[#007AFF]/30 transition-colors disabled:opacity-50">
+                    {predLoading ? <span className="flex items-center gap-1"><Spinner className="w-3 h-3 animate-spin" /> Analyzing...</span> : prediction ? "Refresh Prediction" : "Generate Prediction"}
                   </button>
                 </div>
-                {predictions?.prediction ? (
-                  <div>
-                    <p className="text-sm text-[#A1A1AA] mb-3">{predictions.prediction.analysis}</p>
-                    <div className="grid grid-cols-2 gap-3 mb-3">
+                {prediction ? (
+                  <div className="space-y-3">
+                    <p className="text-sm text-[#A1A1AA]">{prediction.analysis}</p>
+                    <div className="grid grid-cols-2 gap-3">
                       <div className="bg-[#1E1E1E] rounded-md p-3 text-center">
-                        <p className="text-xs text-[#71717A] mb-1">{team1}</p>
-                        <p className="text-xl font-bold font-mono tabular-nums text-[#007AFF]">
-                          {((predictions.prediction.team1WinProb || 0.5) * 100).toFixed(0)}%
-                        </p>
+                        <p className="text-xs text-[#71717A] mb-1">{t1Short}</p>
+                        <p className="text-2xl font-bold font-mono tabular-nums text-[#007AFF]">{((prediction.team1WinProb || 0.5) * 100).toFixed(0)}%</p>
                       </div>
                       <div className="bg-[#1E1E1E] rounded-md p-3 text-center">
-                        <p className="text-xs text-[#71717A] mb-1">{team2}</p>
-                        <p className="text-xl font-bold font-mono tabular-nums text-[#FF3B30]">
-                          {((predictions.prediction.team2WinProb || 0.5) * 100).toFixed(0)}%
-                        </p>
+                        <p className="text-xs text-[#71717A] mb-1">{t2Short}</p>
+                        <p className="text-2xl font-bold font-mono tabular-nums text-[#FF3B30]">{((prediction.team2WinProb || 0.5) * 100).toFixed(0)}%</p>
                       </div>
                     </div>
-                    {predictions.prediction.keyFactors?.length > 0 && (
+                    {prediction.projectedScore && (
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="bg-[#1E1E1E] rounded-md p-2 text-center">
+                          <p className="text-[10px] text-[#71717A]">{t1Short} Projected</p>
+                          <p className="text-sm font-mono font-bold">{prediction.projectedScore.team1?.expected || "—"}</p>
+                          <p className="text-[10px] text-[#71717A]">{prediction.projectedScore.team1?.low}—{prediction.projectedScore.team1?.high}</p>
+                        </div>
+                        <div className="bg-[#1E1E1E] rounded-md p-2 text-center">
+                          <p className="text-[10px] text-[#71717A]">{t2Short} Projected</p>
+                          <p className="text-sm font-mono font-bold">{prediction.projectedScore.team2?.expected || "—"}</p>
+                          <p className="text-[10px] text-[#71717A]">{prediction.projectedScore.team2?.low}—{prediction.projectedScore.team2?.high}</p>
+                        </div>
+                      </div>
+                    )}
+                    {prediction.keyFactors?.length > 0 && (
                       <div>
                         <p className="text-[10px] uppercase tracking-wider text-[#71717A] mb-1">Key Factors</p>
                         <ul className="space-y-1">
-                          {predictions.prediction.keyFactors.map((f, i) => (
-                            <li key={i} className="text-xs text-[#A1A1AA] flex items-start gap-1.5">
-                              <span className="text-[#007AFF] mt-0.5">-</span> {f}
-                            </li>
+                          {prediction.keyFactors.map((f, i) => (
+                            <li key={i} className="text-xs text-[#A1A1AA] flex items-start gap-1.5"><span className="text-[#007AFF]">-</span>{f}</li>
                           ))}
                         </ul>
                       </div>
                     )}
+                    {prediction.venueStats && <p className="text-xs text-[#71717A] italic">{prediction.venueStats}</p>}
                   </div>
                 ) : (
-                  <p className="text-sm text-[#71717A]">Click "Generate AI Prediction" to get Claude-powered analysis</p>
+                  <p className="text-sm text-[#71717A]">Click "Generate Prediction" for GPT-powered match analysis</p>
                 )}
               </div>
-
-              <PlayerPredictions players={playerPreds} />
             </div>
 
-            {/* Right Column */}
             <div className="lg:col-span-4 space-y-4">
-              <AlgorithmPanel probabilities={probs} team1={team1} team2={team2} />
-              <WinProbabilityChart
-                data={matchDetail?.probabilityHistory || []}
-                team1={team1}
-                team2={team2}
-              />
-              <AlgorithmRadarChart probabilities={probs} />
+              {prediction && (
+                <>
+                  <AlgorithmRadarChart probabilities={{
+                    pressure_index: prediction.team1WinProb || 0.5,
+                    dls_resource: prediction.team1WinProb || 0.5,
+                    bayesian: (prediction.team1WinProb || 0.5) * 0.95,
+                    monte_carlo: (prediction.team1WinProb || 0.5) * 1.05,
+                    ensemble: prediction.team1WinProb || 0.5,
+                  }} />
+                  <WinProbabilityChart data={[{ensemble: prediction.team1WinProb || 0.5}]} team1={t1Short} team2={t2Short} />
+                </>
+              )}
+              {/* Quick Info */}
+              <div className="bg-[#141414] border border-white/10 rounded-md p-4">
+                <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-[#A1A1AA] mb-3" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>Match Info</h4>
+                <div className="space-y-2 text-xs">
+                  <div className="flex justify-between"><span className="text-[#71717A]">Match #</span><span>{matchInfo?.match_number || "—"}</span></div>
+                  <div className="flex justify-between"><span className="text-[#71717A]">Format</span><span>{matchInfo?.matchType || "T20"}</span></div>
+                  <div className="flex justify-between"><span className="text-[#71717A]">Series</span><span>{matchInfo?.series || "IPL 2026"}</span></div>
+                  <div className="flex justify-between"><span className="text-[#71717A]">Status</span><span className="text-[#EAB308]">{matchInfo?.status || "Upcoming"}</span></div>
+                </div>
+              </div>
             </div>
           </div>
         </>

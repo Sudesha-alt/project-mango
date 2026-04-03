@@ -1,124 +1,87 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback } from "react";
 import axios from "axios";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 export function useMatchData() {
-  const [liveMatches, setLiveMatches] = useState([]);
-  const [fixtures, setFixtures] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [schedule, setSchedule] = useState({ matches: [], live: [], upcoming: [], completed: [], loaded: false });
+  const [squads, setSquads] = useState([]);
+  const [loading, setLoading] = useState(false);
   const [apiStatus, setApiStatus] = useState(null);
 
-  const fetchLiveMatches = useCallback(async () => {
+  const fetchStatus = useCallback(async () => {
     try {
-      const [matchRes, statusRes] = await Promise.all([
-        axios.get(`${API}/matches/live`),
-        axios.get(`${API}/`).catch(() => null),
-      ]);
-      setLiveMatches(matchRes.data.matches || []);
-      if (statusRes?.data) setApiStatus(statusRes.data);
-      setError(null);
-    } catch (e) {
-      setError("Failed to fetch live matches");
-      console.error(e);
-    }
+      const res = await axios.get(`${API}/`);
+      setApiStatus(res.data);
+      return res.data;
+    } catch (e) { console.error(e); }
   }, []);
 
-  const fetchFixtures = useCallback(async () => {
+  const loadSchedule = useCallback(async (force = false) => {
+    setLoading(true);
     try {
-      const res = await axios.get(`${API}/matches/fixtures`);
-      setFixtures(res.data.fixtures || []);
-    } catch (e) {
-      console.error("Fixtures fetch error:", e);
-    }
-  }, []);
-
-  const fetchMatchDetail = useCallback(async (matchId) => {
-    try {
-      const res = await axios.get(`${API}/matches/${matchId}`);
+      // Trigger GPT load if needed
+      await axios.get(`${API}/schedule/load${force ? "?force=true" : ""}`);
+      const res = await axios.get(`${API}/schedule`);
+      setSchedule(res.data);
       return res.data;
     } catch (e) {
-      console.error("Match detail error:", e);
+      console.error("Schedule load error:", e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const loadSquads = useCallback(async (force = false) => {
+    try {
+      await axios.get(`${API}/squads/load${force ? "?force=true" : ""}`);
+      const res = await axios.get(`${API}/squads`);
+      setSquads(res.data.squads || []);
+      return res.data.squads;
+    } catch (e) { console.error("Squads load error:", e); }
+  }, []);
+
+  const getTeamSquad = useCallback(async (teamShort) => {
+    try {
+      const res = await axios.get(`${API}/squads/${teamShort}`);
+      return res.data.squad;
+    } catch (e) { return null; }
+  }, []);
+
+  const fetchLiveData = useCallback(async (matchId) => {
+    try {
+      const res = await axios.post(`${API}/matches/${matchId}/fetch-live`);
+      return res.data;
+    } catch (e) {
+      console.error("Live fetch error:", e);
       return null;
     }
   }, []);
 
-  const fetchScorecard = useCallback(async (matchId) => {
+  const getMatchState = useCallback(async (matchId) => {
     try {
-      const res = await axios.get(`${API}/matches/${matchId}/scorecard`);
+      const res = await axios.get(`${API}/matches/${matchId}/state`);
       return res.data;
-    } catch (e) {
-      console.error("Scorecard error:", e);
-      return null;
-    }
-  }, []);
-
-  const fetchSquad = useCallback(async (matchId) => {
-    try {
-      const res = await axios.get(`${API}/matches/${matchId}/squad`);
-      return res.data;
-    } catch (e) {
-      console.error("Squad error:", e);
-      return null;
-    }
-  }, []);
-
-  const fetchPredictions = useCallback(async (matchId) => {
-    try {
-      const res = await axios.get(`${API}/matches/${matchId}/predictions`);
-      return res.data;
-    } catch (e) {
-      console.error("Predictions error:", e);
-      return null;
-    }
-  }, []);
-
-  const fetchOdds = useCallback(async (matchId) => {
-    try {
-      const res = await axios.get(`${API}/matches/${matchId}/odds`);
-      return res.data;
-    } catch (e) {
-      console.error("Odds error:", e);
-      return null;
-    }
-  }, []);
-
-  const triggerCalculation = useCallback(async (matchId) => {
-    try {
-      const res = await axios.post(`${API}/matches/${matchId}/calculate`);
-      return res.data;
-    } catch (e) {
-      console.error("Calculation error:", e);
-      return null;
-    }
+    } catch (e) { return null; }
   }, []);
 
   const fetchPlayerPredictions = useCallback(async (matchId) => {
     try {
-      const res = await axios.get(`${API}/matches/${matchId}/player-predictions`);
+      const res = await axios.post(`${API}/matches/${matchId}/player-predictions`);
       return res.data;
-    } catch (e) {
-      console.error("Player predictions error:", e);
-      return null;
-    }
+    } catch (e) { return null; }
   }, []);
 
-  useEffect(() => {
-    const load = async () => {
-      setLoading(true);
-      await Promise.all([fetchLiveMatches(), fetchFixtures()]);
-      setLoading(false);
-    };
-    load();
-    const interval = setInterval(fetchLiveMatches, 30000);
-    return () => clearInterval(interval);
-  }, [fetchLiveMatches, fetchFixtures]);
+  const fetchMatchPrediction = useCallback(async (matchId) => {
+    try {
+      const res = await axios.post(`${API}/matches/${matchId}/predict`);
+      return res.data;
+    } catch (e) { return null; }
+  }, []);
 
   return {
-    liveMatches, fixtures, loading, error, apiStatus,
-    fetchLiveMatches, fetchFixtures, fetchMatchDetail,
-    fetchScorecard, fetchSquad, fetchPredictions,
-    fetchOdds, triggerCalculation, fetchPlayerPredictions
+    schedule, squads, loading, apiStatus,
+    fetchStatus, loadSchedule, loadSquads, getTeamSquad,
+    fetchLiveData, getMatchState, fetchPlayerPredictions, fetchMatchPrediction,
   };
 }
