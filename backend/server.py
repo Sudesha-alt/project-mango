@@ -26,8 +26,9 @@ from services.ai_service import (
 )
 from services.beta_prediction_engine import run_beta_prediction
 from services.consultant_engine import run_consultation, build_features
-from services.cricdata_service import fetch_live_ipl_details
+from services.cricdata_service import fetch_live_ipl_details, fetch_venue_stats_from_cricapi
 from services.pre_match_predictor import compute_prediction
+from services.ai_service import fetch_playing_xi
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -136,24 +137,24 @@ from pydantic import BaseModel
 from typing import Optional
 
 class FetchLiveRequest(BaseModel):
-    betting_team1_odds: Optional[float] = None
-    betting_team2_odds: Optional[float] = None
+    betting_team1_pct: Optional[float] = None   # 0-100 probability %
+    betting_team2_pct: Optional[float] = None   # 0-100 probability %
     betting_confidence: Optional[float] = None  # 0-100
 
 class BetaPredictRequest(BaseModel):
-    market_team1_odds: Optional[float] = None
-    market_team2_odds: Optional[float] = None
+    market_team1_pct: Optional[float] = None    # 0-100 probability %
+    market_team2_pct: Optional[float] = None    # 0-100 probability %
 
 class ConsultRequest(BaseModel):
-    market_team1_odds: Optional[float] = None
-    market_team2_odds: Optional[float] = None
+    market_pct_team1: Optional[float] = None   # 0-100 probability %
+    market_pct_team2: Optional[float] = None   # 0-100 probability %
     risk_tolerance: Optional[str] = "balanced"  # "safe", "balanced", "aggressive"
 
 class ChatRequest(BaseModel):
     question: str
     risk_tolerance: Optional[str] = "balanced"
-    market_team1_odds: Optional[float] = None
-    market_team2_odds: Optional[float] = None
+    market_pct_team1: Optional[float] = None   # 0-100 probability %
+    market_pct_team2: Optional[float] = None   # 0-100 probability %
 
 # ─── LIVE MATCH (on-demand via button) ───────────────────────
 
@@ -226,15 +227,20 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
                 pass
         ball_objects.append(ball_obj)
 
-    # Convert betting odds to implied probability for Bayesian prior
+    # Convert 0-100 pct inputs to decimal odds for probability engine
     odds_team_a = None
-    if body.betting_team1_odds and body.betting_team2_odds:
-        raw_implied = 1.0 / body.betting_team1_odds
-        total_implied = raw_implied + (1.0 / body.betting_team2_odds)
-        odds_team_a = raw_implied / total_implied  # normalized
+    if body.betting_team1_pct and body.betting_team2_pct:
+        t1_prob = max(0.01, body.betting_team1_pct / 100)
+        t2_prob = max(0.01, body.betting_team2_pct / 100)
+        total_implied = t1_prob + t2_prob
+        odds_team_a = t1_prob / total_implied  # normalized
         if body.betting_confidence is not None:
             confidence = body.betting_confidence / 100
             odds_team_a = odds_team_a * confidence + 0.5 * (1 - confidence)
+
+    # Compute decimal odds from pct for edge detection
+    betting_t1_decimal = round(1 / max(0.01, body.betting_team1_pct / 100), 2) if body.betting_team1_pct else None
+    betting_t2_decimal = round(1 / max(0.01, body.betting_team2_pct / 100), 2) if body.betting_team2_pct else None
 
     # Run all 4 algorithms + ensemble with ball history and odds
     probs = ensemble_probability(runs, wickets, overs, target, innings,
@@ -245,10 +251,10 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
     # Calculate betting edge
     edge_team1 = None
     edge_team2 = None
-    if body.betting_team1_odds:
-        edge_team1 = calculate_betting_edge(probs["ensemble"], body.betting_team1_odds)
-    if body.betting_team2_odds:
-        edge_team2 = calculate_betting_edge(1 - probs["ensemble"], body.betting_team2_odds)
+    if betting_t1_decimal:
+        edge_team1 = calculate_betting_edge(probs["ensemble"], betting_t1_decimal)
+    if betting_t2_decimal:
+        edge_team2 = calculate_betting_edge(1 - probs["ensemble"], betting_t2_decimal)
 
     # Get AI prediction
     ai_pred = await get_match_prediction({
@@ -266,8 +272,8 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
         "odds": {"team1": team1_odds, "team2": team2_odds},
         "bettingEdge": {"team1": edge_team1, "team2": edge_team2},
         "bettingInput": {
-            "team1Odds": body.betting_team1_odds,
-            "team2Odds": body.betting_team2_odds,
+            "team1Pct": body.betting_team1_pct,
+            "team2Pct": body.betting_team2_pct,
             "confidence": body.betting_confidence,
         },
         "aiPrediction": ai_pred,
@@ -546,6 +552,67 @@ async def api_cricdata_cached():
     return {"matches": matches, "count": len(matches), "source": "cache"}
 
 
+
+@api_router.get("/cricket-api/venue/{venue_name}")
+async def api_cricdata_venue(venue_name: str):
+    """On-demand venue data from CricketData.org. Costs 1 API hit."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    usage = await db.api_usage.find_one({"date": today, "service": "cricketdata"}, {"_id": 0})
+    if usage and usage.get("hits", 0) >= 100:
+        return {"error": "Daily API limit reached (100/day)."}
+    result = await fetch_venue_stats_from_cricapi(venue_name)
+    if not result.get("error"):
+        api_info = result.get("api_info", {})
+        await db.api_usage.update_one(
+            {"date": today, "service": "cricketdata"},
+            {"$set": {"hits": api_info.get("hits_today", 0), "limit": 100,
+                       "remaining": 100 - api_info.get("hits_today", 0),
+                       "last_fetched": api_info.get("fetched_at")}},
+            upsert=True,
+        )
+    return result
+
+
+# ─── PLAYING XI (GPT Web Search) ────────────────────────────
+
+@api_router.post("/matches/{match_id}/playing-xi")
+async def api_fetch_playing_xi(match_id: str):
+    """Fetch expected/confirmed Playing XI via GPT-5.4 web search with luck biasness."""
+    match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
+    if not match_info:
+        return {"error": "Match not found"}
+
+    team1 = match_info.get("team1", "")
+    team2 = match_info.get("team2", "")
+    venue = match_info.get("venue", "")
+
+    xi_data = await fetch_playing_xi(team1, team2, venue)
+
+    # Apply luck biasness to expected performance
+    import random
+    for team_key in ["team1_xi", "team2_xi"]:
+        for player in xi_data.get(team_key, []):
+            # Luck biasness: random variance +-15% representing unpredictable match-day factors
+            luck_factor = random.uniform(0.85, 1.15)
+            player["expected_runs"] = round(player.get("expected_runs", 15) * luck_factor, 1)
+            player["expected_wickets"] = round(player.get("expected_wickets", 0) * random.uniform(0.80, 1.20), 1)
+            player["luck_factor"] = round(luck_factor, 3)
+
+    xi_data["matchId"] = match_id
+    xi_data["venue"] = venue
+    xi_data["fetched_at"] = datetime.now(timezone.utc).isoformat()
+
+    # Cache in DB
+    await db.playing_xi.update_one(
+        {"matchId": match_id},
+        {"$set": {k: v for k, v in xi_data.items()}},
+        upsert=True,
+    )
+
+    return xi_data
+
+
+
 # ─── CONSULTANT ENGINE ──────────────────────────────────────
 
 @api_router.post("/matches/{match_id}/consult")
@@ -624,14 +691,14 @@ async def api_consult(match_id: str, body: ConsultRequest = None):
     from services.beta_prediction_engine import predict_player_performance
     player_preds = [predict_player_performance(p) for p in player_stats]
 
-    # Run consultation engine
+    # Run consultation engine (market inputs are 0-100 percentages)
     result = run_consultation(
         snapshot=snapshot,
         player_predictions=player_preds,
         team1_data={"name": team1, "rating": 55, "batting_depth": 7, "bowling_rating": 52},
         team2_data={"name": team2, "rating": 52, "batting_depth": 6, "bowling_rating": 50},
-        market_odds_team1=body.market_team1_odds,
-        market_odds_team2=body.market_team2_odds,
+        market_pct_team1=body.market_pct_team1,
+        market_pct_team2=body.market_pct_team2,
         risk_tolerance=body.risk_tolerance,
     )
 
@@ -678,8 +745,8 @@ async def api_chat(match_id: str, body: ChatRequest):
     # Quick consultation (no player stats fetch for speed)
     result = run_consultation(
         snapshot=snapshot,
-        market_odds_team1=body.market_team1_odds,
-        market_odds_team2=body.market_team2_odds,
+        market_pct_team1=body.market_pct_team1,
+        market_pct_team2=body.market_pct_team2,
         risk_tolerance=body.risk_tolerance,
     )
 
@@ -753,6 +820,10 @@ async def api_beta_predict(match_id: str, body: BetaPredictRequest = None):
         logger.warning("No player stats returned, using defaults")
         player_stats = _generate_default_player_stats(t1_players, t2_players, team1, team2)
 
+    # Convert 0-100 pct to decimal odds for beta prediction engine
+    beta_market_t1_odds = round(1 / max(0.01, body.market_team1_pct / 100), 2) if body.market_team1_pct else None
+    beta_market_t2_odds = round(1 / max(0.01, body.market_team2_pct / 100), 2) if body.market_team2_pct else None
+
     # Run beta prediction engine
     result = run_beta_prediction(
         player_predictions=player_stats,
@@ -765,8 +836,8 @@ async def api_beta_predict(match_id: str, body: BetaPredictRequest = None):
         innings=innings,
         venue_avg=165,
         ball_history=ball_history,
-        market_team1_odds=body.market_team1_odds,
-        market_team2_odds=body.market_team2_odds,
+        market_team1_odds=beta_market_t1_odds,
+        market_team2_odds=beta_market_t2_odds,
     )
 
     # GPT-5.4 mini contextual analysis

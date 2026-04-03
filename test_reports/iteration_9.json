@@ -1,0 +1,114 @@
+{
+  "summary": "Completed testing of Iteration 9 features: 0-100 odds scale, info tooltips, Playing XI endpoint, and venue fetch endpoint. All features working correctly. Backend accepts new field names (market_pct_team1/team2), frontend shows correct placeholders (e.g. 55), 10 info tooltips visible on consultation results page, Playing XI returns luck_factor per player, venue fetch endpoint returns data.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "passed_tests": [
+    "GET /api/ returns version 4.0.0",
+    "POST /api/matches/{id}/consult accepts market_pct_team1/market_pct_team2 (0-100 values)",
+    "POST /api/matches/{id}/consult returns correct edge calculation (model 68.5% vs market 55% = +13.5% edge)",
+    "POST /api/matches/{id}/consult returns bookmaker_pct_team1/team2 in odds_detail",
+    "POST /api/matches/{id}/chat accepts market_pct_team1/market_pct_team2 (0-100 values)",
+    "POST /api/matches/{id}/chat returns consultation_summary with win_probability and edge_pct",
+    "POST /api/matches/{id}/beta-predict accepts market_team1_pct/market_team2_pct (0-100 values)",
+    "POST /api/matches/{id}/fetch-live accepts betting_team1_pct/betting_team2_pct (0-100 values)",
+    "POST /api/matches/{id}/playing-xi returns team1_xi and team2_xi with 11 players each",
+    "POST /api/matches/{id}/playing-xi returns luck_factor (0.85-1.15 range) on each player",
+    "GET /api/cricket-api/venue/{venue_name} returns venue data with api_info",
+    "Frontend market odds inputs have placeholder 'e.g. 55' (0-100 format)",
+    "Frontend market odds inputs have min=0, max=100, step=1",
+    "Frontend shows 'BOOKMAKER WIN % (0-100)' label",
+    "Frontend ConsultantDashboard sends market_pct_team1/market_pct_team2 to backend",
+    "Frontend shows 10 info tooltips after consultation results load",
+    "Info tooltip on Algorithm Prediction explains 5 weighted factors",
+    "Info tooltip on Risk Tolerance explains betting styles",
+    "Info tooltip on Bookmaker Win % explains 0-100 scale",
+    "Info tooltip on Win Probability Gauge explains 6-layer decision engine",
+    "Info tooltip on Edge explains model vs market probability",
+    "Info tooltip on Simulations explains 10K negative binomial",
+    "Info tooltip on Top Drivers explains key prediction factors",
+    "Info tooltip on Player Impact explains weighted formula with luck biasness",
+    "Info tooltip on Match State explains live features",
+    "Win Probability Gauge displays correctly",
+    "Edge Meter shows AVOID-EDGE-VALUE scale with percentage",
+    "Value Signal Badge shows STRONG_VALUE when edge > 8%",
+    "Simulation Summary shows 10,000 simulations with team probabilities",
+    "Top Drivers panel shows prediction factors",
+    "Player Impact panel shows predicted runs/wickets per player",
+    "Match State panel shows phase and metrics"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_new_features_iteration9.py",
+    "/app/test_reports/pytest/iteration9_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/backend/tests/test_new_features_iteration9.py"
+  ],
+  "success_rate": {
+    "backend": "100% (all endpoints accept new 0-100 field names)",
+    "frontend": "100% (all UI elements working correctly)"
+  },
+  "test_credentials": "No authentication required - open access app",
+  "seed_data_creation": "None - used existing match ipl2026_007 (CSK vs PBKS)",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration 9 features fully working. Key changes: (1) Backend endpoints now accept 0-100 probability scale instead of decimal odds - field names are market_pct_team1/team2 for consult/chat, market_team1_pct/team2_pct for beta-predict, betting_team1_pct/team2_pct for fetch-live. (2) Playing XI endpoint returns luck_factor (0.85-1.15) per player. (3) Venue fetch endpoint uses CricketData.org API. (4) Frontend has 10 info tooltips explaining all prediction models and metrics.",
+  "feature_verification": {
+    "0_100_odds_scale": {
+      "backend_endpoints": {
+        "POST /api/matches/{id}/consult": "PASS - accepts market_pct_team1/market_pct_team2",
+        "POST /api/matches/{id}/chat": "PASS - accepts market_pct_team1/market_pct_team2",
+        "POST /api/matches/{id}/beta-predict": "PASS - accepts market_team1_pct/market_team2_pct",
+        "POST /api/matches/{id}/fetch-live": "PASS - accepts betting_team1_pct/betting_team2_pct"
+      },
+      "frontend_inputs": {
+        "placeholder": "e.g. 55 (correct 0-100 format)",
+        "min": "0",
+        "max": "100",
+        "step": "1",
+        "label": "BOOKMAKER WIN % (0-100)"
+      },
+      "edge_calculation": "PASS - model 68.5% vs market 55% = +13.5% edge"
+    },
+    "info_tooltips": {
+      "total_count": 10,
+      "sections_with_tooltips": [
+        "Algorithm Prediction",
+        "Risk Tolerance",
+        "Bookmaker Win %",
+        "Win Probability Gauge",
+        "Edge Meter",
+        "Simulation Summary",
+        "Top Drivers",
+        "Player Impact",
+        "Match State"
+      ]
+    },
+    "playing_xi_endpoint": {
+      "endpoint": "POST /api/matches/{id}/playing-xi",
+      "team1_xi_count": 11,
+      "team2_xi_count": 11,
+      "luck_factor_present": true,
+      "luck_factor_range": "0.85-1.15",
+      "sample_player": {
+        "name": "Ruturaj Gaikwad",
+        "role": "Batsman",
+        "luck_factor": 1.084,
+        "expected_runs": 34.7
+      }
+    },
+    "venue_fetch_endpoint": {
+      "endpoint": "GET /api/cricket-api/venue/{venue_name}",
+      "status": "PASS",
+      "returns_api_info": true
+    }
+  }
+}

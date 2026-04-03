@@ -83,8 +83,8 @@ export function useMatchData() {
   const fetchBetaPrediction = useCallback(async (matchId, marketOdds = {}) => {
     try {
       const res = await axios.post(`${API}/matches/${matchId}/beta-predict`, {
-        market_team1_odds: marketOdds.team1 || null,
-        market_team2_odds: marketOdds.team2 || null,
+        market_team1_pct: marketOdds.team1 || null,
+        market_team2_pct: marketOdds.team2 || null,
       });
       return res.data;
     } catch (e) {
@@ -96,8 +96,8 @@ export function useMatchData() {
   const fetchConsultation = useCallback(async (matchId, opts = {}) => {
     try {
       const res = await axios.post(`${API}/matches/${matchId}/consult`, {
-        market_team1_odds: opts.marketTeam1Odds || null,
-        market_team2_odds: opts.marketTeam2Odds || null,
+        market_pct_team1: opts.marketPctTeam1 || null,
+        market_pct_team2: opts.marketPctTeam2 || null,
         risk_tolerance: opts.riskTolerance || "balanced",
       });
       return res.data;
@@ -112,8 +112,8 @@ export function useMatchData() {
       const res = await axios.post(`${API}/matches/${matchId}/chat`, {
         question,
         risk_tolerance: opts.riskTolerance || "balanced",
-        market_team1_odds: opts.marketTeam1Odds || null,
-        market_team2_odds: opts.marketTeam2Odds || null,
+        market_pct_team1: opts.marketPctTeam1 || null,
+        market_pct_team2: opts.marketPctTeam2 || null,
       });
       return res.data;
     } catch (e) {

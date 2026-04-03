@@ -3,6 +3,7 @@ import {
   Crosshair, Spinner, PaperPlaneTilt, ShieldCheck,
   Warning, XCircle, Clock, TrendUp, CaretDown, CaretUp
 } from "@phosphor-icons/react";
+import InfoTooltip from "./InfoTooltip";
 
 const SIGNAL_STYLES = {
   STRONG_VALUE: { bg: "bg-[#34C759]/10", border: "border-[#34C759]/50", text: "text-[#34C759]", label: "STRONG VALUE" },
@@ -26,6 +27,9 @@ function WinGauge({ probability }) {
 
   return (
     <div data-testid="win-probability-gauge" className="flex flex-col items-center">
+      <div className="flex items-center gap-1 mb-1">
+        <InfoTooltip text="Win probability from the 6-layer decision engine: features, logistic model, live model, 10K negative-binomial simulations, Platt calibration, and odds comparison." />
+      </div>
       <svg viewBox="0 0 200 110" className="w-full max-w-[220px]">
         <path d="M 20 95 A 80 80 0 0 1 180 95" fill="none" stroke="#262626" strokeWidth="10" strokeLinecap="round" />
         <path d={`M 20 95 A 80 80 0 ${angle > 90 ? 1 : 0} 1 ${x} ${y}`} fill="none" stroke={color} strokeWidth="10" strokeLinecap="round" />
@@ -57,7 +61,7 @@ function EdgeMeter({ edge }) {
     <div data-testid="edge-meter" className="space-y-1">
       <div className="flex justify-between text-[10px] uppercase tracking-wider font-semibold">
         <span className="text-[#FF3B30]">AVOID</span>
-        <span className="text-[#A3A3A3]">NEUTRAL</span>
+        <span className="text-[#A3A3A3] flex items-center gap-1">EDGE <InfoTooltip text="Edge = your model's probability minus the bookmaker's implied probability. Positive edge means the market is undervaluing this team — a potential value bet." /></span>
         <span className="text-[#34C759]">VALUE</span>
       </div>
       <div className="h-2 bg-[#262626] rounded-full relative overflow-hidden">
@@ -75,7 +79,7 @@ function OddsComparison({ data }) {
     <div data-testid="odds-comparison" className="space-y-2">
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <p className="text-[10px] text-[#737373] uppercase tracking-wider font-semibold mb-0.5">Fair Odds</p>
+          <p className="text-[10px] text-[#737373] uppercase tracking-wider font-semibold mb-0.5 flex items-center gap-1">Fair Odds <InfoTooltip text="Decimal odds calculated from the model's calibrated win probability. If the bookmaker offers higher odds, it's a value bet." /></p>
           <p className="text-2xl font-black font-mono tabular-nums text-white" style={{ fontFamily: "'Barlow Condensed'" }}>{data.fair_decimal_odds}</p>
           <p className="text-[10px] text-[#A3A3A3] font-mono">{data.fair_probability}% implied</p>
         </div>
@@ -94,7 +98,7 @@ function DriversPanel({ drivers }) {
   if (!drivers || drivers.length === 0) return null;
   return (
     <div data-testid="top-drivers" className="space-y-1.5">
-      <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold">Top Drivers</p>
+      <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold flex items-center gap-1">Top Drivers <InfoTooltip text="Key factors driving the current prediction — wickets in hand, run rate comparison, chase difficulty, collapse risk, and momentum patterns." /></p>
       {drivers.map((d, i) => (
         <div key={i} className="flex items-start gap-2 text-xs text-[#A3A3A3]">
           <TrendUp weight="bold" className="w-3.5 h-3.5 text-[#007AFF] flex-shrink-0 mt-0.5" />
@@ -109,7 +113,7 @@ function PlayerImpact({ players }) {
   if (!players || players.length === 0) return null;
   return (
     <div data-testid="player-impact" className="space-y-1.5">
-      <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold">Player Impact</p>
+      <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold flex items-center gap-1">Player Impact <InfoTooltip text="Individual player predictions from the weighted formula: 40% Last-5 avg, 30% venue average, 20% opponent-adjusted, 10% form momentum. Includes a luck biasness variance (+-12%) for realism." /></p>
       <div className="space-y-1">
         {players.map((p, i) => (
           <div key={i} className="flex items-center justify-between py-1 border-b border-[#262626] last:border-0">
@@ -161,8 +165,8 @@ function ChatBox({ matchId, sendChat, riskTolerance, marketOdds }) {
     setLoading(true);
     const res = await sendChat(matchId, q, {
       riskTolerance,
-      marketTeam1Odds: marketOdds?.team1 || null,
-      marketTeam2Odds: marketOdds?.team2 || null,
+      marketPctTeam1: marketOdds?.team1 || null,
+      marketPctTeam2: marketOdds?.team2 || null,
     });
     if (res) {
       setMessages(prev => [...prev, { role: "ai", text: res.answer, summary: res.consultation_summary }]);
@@ -239,7 +243,7 @@ function SimulationSummary({ sim, team1, team2 }) {
   if (!sim) return null;
   return (
     <div data-testid="simulation-summary" className="space-y-2">
-      <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold">{sim.simulations?.toLocaleString()} Simulations (Neg. Binomial)</p>
+      <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold flex items-center gap-1">{sim.simulations?.toLocaleString()} Simulations (Neg. Binomial) <InfoTooltip text="10,000 match simulations using Negative Binomial distribution for each innings. Right-skewed like real cricket scores. Chase pressure adjusts the chasing team's expected score." /></p>
       <div className="grid grid-cols-2 gap-2">
         {[
           { label: team1, data: sim.team1_scores, prob: sim.team1_win_prob, color: "#007AFF" },
@@ -284,8 +288,8 @@ export default function ConsultantDashboard({ matchId, team1, team2, fetchConsul
     setLoading(true);
     const opts = {
       riskTolerance: risk,
-      marketTeam1Odds: marketOdds.team1 ? parseFloat(marketOdds.team1) : null,
-      marketTeam2Odds: marketOdds.team2 ? parseFloat(marketOdds.team2) : null,
+      marketPctTeam1: marketOdds.team1 ? parseFloat(marketOdds.team1) : null,
+      marketPctTeam2: marketOdds.team2 ? parseFloat(marketOdds.team2) : null,
     };
     const res = await fetchConsultation(matchId, opts);
     if (res && !res.error) setData(res);
@@ -304,7 +308,7 @@ export default function ConsultantDashboard({ matchId, team1, team2, fetchConsul
       <div className="bg-[#141414] border border-[#262626] rounded-lg p-5 space-y-4">
         {/* Risk Tolerance */}
         <div>
-          <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold mb-2">Risk Tolerance</p>
+          <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold mb-2 flex items-center gap-1">Risk Tolerance <InfoTooltip text="Your betting style. 'Play Safe' flags even small edges as risky. 'Balanced' follows model signals. 'Risk Taker' leans into marginal edges." /></p>
           <div className="flex gap-1 bg-[#0A0A0A] rounded-md p-1" data-testid="risk-tolerance-toggle">
             {riskOptions.map((o) => (
               <button key={o.key} onClick={() => setRisk(o.key)}
@@ -318,20 +322,20 @@ export default function ConsultantDashboard({ matchId, team1, team2, fetchConsul
           </div>
         </div>
 
-        {/* Market Odds */}
+        {/* Market Odds — 0-100 probability scale */}
         <div>
-          <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold mb-2">Bookmaker Odds (for edge detection)</p>
+          <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold mb-2 flex items-center gap-1">Bookmaker Win % (0-100) <InfoTooltip text="Enter the bookmaker's implied win probability for each team on a 0-100 scale. E.g., if odds are 1.80, that's ~56%. The engine compares this to its own probability to find value bets." /></p>
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="text-[9px] text-[#737373] block mb-0.5">{team1}</label>
-              <input type="number" step="0.01" min="1.01" placeholder="e.g. 1.85" value={marketOdds.team1}
+              <label className="text-[9px] text-[#737373] block mb-0.5">{team1} win %</label>
+              <input type="number" step="1" min="0" max="100" placeholder="e.g. 55" value={marketOdds.team1}
                 onChange={(e) => setMarketOdds(p => ({ ...p, team1: e.target.value }))}
                 data-testid="market-odds-input-team1"
                 className="w-full bg-[#0A0A0A] border border-[#262626] rounded-md px-3 py-2 text-xs font-mono text-white placeholder:text-[#333] focus:border-[#007AFF] focus:outline-none" />
             </div>
             <div>
-              <label className="text-[9px] text-[#737373] block mb-0.5">{team2}</label>
-              <input type="number" step="0.01" min="1.01" placeholder="e.g. 2.10" value={marketOdds.team2}
+              <label className="text-[9px] text-[#737373] block mb-0.5">{team2} win %</label>
+              <input type="number" step="1" min="0" max="100" placeholder="e.g. 45" value={marketOdds.team2}
                 onChange={(e) => setMarketOdds(p => ({ ...p, team2: e.target.value }))}
                 data-testid="market-odds-input-team2"
                 className="w-full bg-[#0A0A0A] border border-[#262626] rounded-md px-3 py-2 text-xs font-mono text-white placeholder:text-[#333] focus:border-[#007AFF] focus:outline-none" />
@@ -385,7 +389,7 @@ export default function ConsultantDashboard({ matchId, team1, team2, fetchConsul
             </div>
             {/* Features */}
             <div className="bg-[#141414] border border-[#262626] rounded-lg p-5 space-y-2">
-              <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold">Match State</p>
+              <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold flex items-center gap-1">Match State <InfoTooltip text="Live match features: CRR (Current Run Rate), RRR (Required Run Rate), Pressure Index, Batting Depth remaining, and Collapse Risk probability." /></p>
               <div className="grid grid-cols-3 gap-2">
                 {[
                   { label: "Phase", value: data.features?.phase?.toUpperCase() },

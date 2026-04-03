@@ -68,26 +68,28 @@ def predict_player_performance(player_stats):
     """
     Weighted prediction formula:
     Final Score = 0.4 * Last5Avg + 0.3 * VenueAvg + 0.2 * OpponentAdjusted + 0.1 * FormMomentum
-
-    player_stats: dict with keys:
-      - last5_avg_runs, venue_avg_runs, opponent_adj_runs, form_momentum_runs
-      - last5_avg_wickets, venue_avg_wickets, opponent_adj_wickets, form_momentum_wickets
-      - name, team, role
+    
+    Includes "luck biasness" — a random variance factor (+-12%) representing
+    unpredictable match-day conditions (dew, toss, pitch behavior, player mood).
     """
-    predicted_runs = round(
+    base_runs = (
         0.4 * player_stats.get("last5_avg_runs", 20) +
         0.3 * player_stats.get("venue_avg_runs", 18) +
         0.2 * player_stats.get("opponent_adj_runs", 16) +
-        0.1 * player_stats.get("form_momentum_runs", 15),
-        1
+        0.1 * player_stats.get("form_momentum_runs", 15)
     )
-    predicted_wickets = round(
+    base_wickets = (
         0.4 * player_stats.get("last5_avg_wickets", 0.5) +
         0.3 * player_stats.get("venue_avg_wickets", 0.4) +
         0.2 * player_stats.get("opponent_adj_wickets", 0.3) +
-        0.1 * player_stats.get("form_momentum_wickets", 0.3),
-        1
+        0.1 * player_stats.get("form_momentum_wickets", 0.3)
     )
+
+    # Apply luck biasness — random variance representing unpredictable factors
+    luck_bias = random.uniform(0.88, 1.12)
+    predicted_runs = round(base_runs * luck_bias, 1)
+    predicted_wickets = round(base_wickets * random.uniform(0.85, 1.15), 1)
+
     # Confidence based on data availability and consistency
     confidence = _calculate_confidence(player_stats)
 
@@ -100,6 +102,7 @@ def predict_player_performance(player_stats):
         "predicted_sr": player_stats.get("predicted_sr", 130),
         "predicted_economy": player_stats.get("predicted_economy", 8.0),
         "confidence": confidence,
+        "luck_bias": round(luck_bias, 3),
     }
 
 

@@ -417,12 +417,21 @@ def remove_overround(odds_list: List[float]) -> List[float]:
     return [round(p / total, 4) for p in implied]
 
 
+def pct_to_decimal_odds(pct: float) -> float:
+    """Convert a 0-100 probability percentage to decimal odds."""
+    prob = max(0.01, min(0.99, pct / 100))
+    return round(1 / prob, 2)
+
+
 def compute_odds_and_edge(
     calibrated_prob: float,
-    market_odds: float = None,
-    market_odds_opponent: float = None,
+    market_pct_team1: float = None,
+    market_pct_team2: float = None,
 ) -> Dict:
-    """Full odds computation with overround removal and edge detection."""
+    """
+    Full odds computation with overround removal and edge detection.
+    market_pct_team1/team2: bookmaker implied probability on a 0-100 scale.
+    """
     fair_odds = round(1 / calibrated_prob, 2) if calibrated_prob > 0 else 99.0
     opponent_prob = 1 - calibrated_prob
     fair_odds_opponent = round(1 / opponent_prob, 2) if opponent_prob > 0 else 99.0
@@ -433,14 +442,16 @@ def compute_odds_and_edge(
         "fair_odds_opponent": fair_odds_opponent,
     }
 
-    if market_odds and market_odds > 1:
-        raw_implied = 1 / market_odds
+    if market_pct_team1 and market_pct_team1 > 0:
+        # Convert 0-100 percentage inputs to decimal odds internally
+        market_odds = pct_to_decimal_odds(market_pct_team1)
+        raw_implied = market_pct_team1 / 100
 
-        # If we have both sides, remove overround
-        if market_odds_opponent and market_odds_opponent > 1:
-            normalized = remove_overround([market_odds, market_odds_opponent])
+        if market_pct_team2 and market_pct_team2 > 0:
+            market_odds_opp = pct_to_decimal_odds(market_pct_team2)
+            normalized = remove_overround([market_odds, market_odds_opp])
             market_prob = normalized[0]
-            overround = round((1 / market_odds + 1 / market_odds_opponent) * 100, 1)
+            overround = round((raw_implied + market_pct_team2 / 100) * 100, 1)
         else:
             market_prob = raw_implied
             overround = None
@@ -453,6 +464,8 @@ def compute_odds_and_edge(
             "normalized_market_probability": round(market_prob * 100, 1),
             "overround": overround,
             "edge_pct": edge,
+            "bookmaker_pct_team1": market_pct_team1,
+            "bookmaker_pct_team2": market_pct_team2,
         })
 
     return result
@@ -522,8 +535,8 @@ def run_consultation(
     player_predictions: List[Dict] = None,
     team1_data: Dict = None,
     team2_data: Dict = None,
-    market_odds_team1: float = None,
-    market_odds_team2: float = None,
+    market_pct_team1: float = None,
+    market_pct_team2: float = None,
     risk_tolerance: str = "balanced",  # "safe", "balanced", "aggressive"
 ) -> Dict:
     """
@@ -579,9 +592,9 @@ def run_consultation(
     # Layer 5: Calibration
     cal = calibrate_probability(blended_raw)
 
-    # Layer 6: Odds & Edge
+    # Layer 6: Odds & Edge (market inputs are 0-100 percentages)
     odds_edge = compute_odds_and_edge(
-        cal["calibrated"], market_odds_team1, market_odds_team2
+        cal["calibrated"], market_pct_team1, market_pct_team2
     )
 
     # Signal classification

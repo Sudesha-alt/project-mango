@@ -512,15 +512,21 @@ async def fetch_pre_match_stats(team1: str, team2: str, venue: str) -> Dict:
     """
     GPT-5.4 Web Search: Fetch real head-to-head (last 5 years),
     venue stats, recent form, and squad strength for two IPL teams.
+    Expanded: requests match-by-match H2H detail, deeper form data.
     """
     raw_text = await _web_search(
-        f"Search for IPL cricket stats for {team1} vs {team2}. "
-        f"I need: 1) Head-to-head record between {team1} and {team2} in the last 5 years (2021-2026) in IPL. "
-        f"How many matches has each team won against the other? "
-        f"2) Performance at {venue} - average scores, win percentages at this ground for both teams. "
-        f"3) Recent form - how have both teams performed in their last 5 IPL matches? "
-        f"4) Key players and squad strength assessment for both teams in IPL 2026. "
-        f"Search ESPNcricinfo, Cricbuzz for real statistics."
+        f"Search ESPNcricinfo and Cricbuzz for detailed IPL cricket stats for {team1} vs {team2}. "
+        f"I need COMPREHENSIVE data: "
+        f"1) COMPLETE head-to-head record between {team1} and {team2} in IPL from 2021 to 2026. "
+        f"List every single match with date, venue, winner, and margin of victory. "
+        f"How many matches each team won? Any dominant pattern? "
+        f"2) Detailed performance at {venue} — average first innings score, average second innings score, "
+        f"highest and lowest totals, win percentage batting first vs chasing, toss decision trends, "
+        f"and each team's individual record at this ground. "
+        f"3) Recent form — LAST 5 IPL 2026 match results for both teams with opponents and scores. "
+        f"Include Net Run Rate if available. "
+        f"4) Full squad strength — key batsmen averages, strike rates; key bowlers economy, wickets; "
+        f"batting depth rating, bowling attack quality, overseas player impact for both teams."
     )
     logger.info(f"Pre-match stats web search for {team1} vs {team2}: {len(raw_text)} chars")
 
@@ -531,12 +537,20 @@ async def fetch_pre_match_stats(team1: str, team2: str, venue: str) -> Dict:
     "team2_wins": number (wins for {team2} vs {team1} in IPL in last 5 years),
     "no_result": number (ties or no results),
     "total_matches": number,
-    "last_5_results": ["W", "L", "W", "W", "L"] (from {team1}'s perspective, most recent first)
+    "last_5_results": ["W", "L", "W", "W", "L"] (from {team1}'s perspective, most recent first),
+    "match_details": [
+      {{"date": "YYYY-MM-DD", "venue": "Ground", "winner": "Team", "margin": "5 wkts"}}
+    ]
   }},
   "venue_stats": {{
     "venue_name": "{venue}",
     "team1_avg_score": number (average score for {team1} at this venue),
     "team2_avg_score": number (average score for {team2} at this venue),
+    "avg_first_innings_score": number (overall average 1st innings score at venue),
+    "avg_second_innings_score": number (overall average 2nd innings score at venue),
+    "highest_total": number,
+    "lowest_total": number,
+    "bat_first_win_pct": number (win % batting first at this venue, 0-100),
     "team1_win_pct": number (win % for {team1} at this venue, 0-100),
     "team2_win_pct": number (win % for {team2} at this venue, 0-100),
     "team1_matches_at_venue": number,
@@ -548,9 +562,13 @@ async def fetch_pre_match_stats(team1: str, team2: str, venue: str) -> Dict:
     "team1_last5_wins": number,
     "team1_last5_losses": number,
     "team1_last5_win_pct": number (0-100),
+    "team1_recent_results": ["W vs CSK", "L vs MI", "W vs RR", "W vs DC", "L vs SRH"],
+    "team1_nrr": number or null,
     "team2_last5_wins": number,
     "team2_last5_losses": number,
-    "team2_last5_win_pct": number (0-100)
+    "team2_last5_win_pct": number (0-100),
+    "team2_recent_results": ["W vs KKR", "W vs GT", "L vs RCB", "W vs PBKS", "L vs LSG"],
+    "team2_nrr": number or null
   }},
   "squad_strength": {{
     "team1_batting_rating": number (0-100, based on batting lineup quality),
@@ -569,7 +587,8 @@ RULES:
   * Venue avg: if unknown, use 165
   * Form: if unknown, use 50% win rate
   * Squad rating: estimate from known player quality (60-80 range)
-- team1 is always {team1}, team2 is always {team2}"""
+- team1 is always {team1}, team2 is always {team2}
+- match_details should contain as many matches as found in source (up to 20)"""
 
     try:
         data = await _parse_to_json(raw_text, parse_instruction)
@@ -599,3 +618,60 @@ def _default_pre_match_stats():
             "team1_key_players": [], "team2_key_players": [],
         },
     }
+
+
+
+async def fetch_playing_xi(team1: str, team2: str, venue: str) -> Dict:
+    """
+    GPT-5.4 Web Search: Fetch expected/confirmed 2026 Playing XI for an IPL match.
+    Returns player names, roles, and expected performance stats.
+    """
+    raw_text = await _web_search(
+        f"Search for the expected or confirmed Playing XI for {team1} vs {team2} "
+        f"IPL 2026 match at {venue}. "
+        f"Search Cricbuzz, ESPNcricinfo for predicted or announced lineups. "
+        f"For each player, I also need their IPL 2026 season stats so far: "
+        f"runs scored, batting average, strike rate, wickets taken, economy rate. "
+        f"Include whether each player is capped, uncapped, or overseas."
+    )
+    logger.info(f"Playing XI web search for {team1} vs {team2}: {len(raw_text)} chars")
+
+    parse_instruction = f"""Parse the Playing XI data into this exact JSON format:
+{{
+  "team1_name": "{team1}",
+  "team2_name": "{team2}",
+  "team1_xi": [
+    {{
+      "name": "Player Name",
+      "role": "Batsman/Bowler/All-rounder/Wicketkeeper",
+      "is_overseas": boolean,
+      "is_captain": boolean,
+      "season_runs": number (IPL 2026 runs so far, 0 if not available),
+      "season_avg": number (batting average this season),
+      "season_sr": number (strike rate this season),
+      "season_wickets": number (wickets this season),
+      "season_economy": number (economy rate this season),
+      "expected_runs": number (predicted runs for this match based on form),
+      "expected_wickets": number (predicted wickets for this match)
+    }}
+  ],
+  "team2_xi": [same structure as above],
+  "confidence": "confirmed" or "predicted" (whether XI is officially announced or predicted)
+}}
+
+RULES:
+- Include exactly 11 players per team if available
+- Use real stats from source. For missing season stats use reasonable defaults:
+  * Top-order bat: 30 runs, avg 28, SR 135, 0 wkts
+  * Middle-order: 22 runs, avg 22, SR 128, 0 wkts
+  * All-rounder: 18 runs, avg 20, SR 125, 1 wkt, econ 8.0
+  * Bowler: 5 runs, avg 8, SR 100, 1.5 wkts, econ 7.8
+  * Wicketkeeper: 25 runs, avg 25, SR 130
+- team1 is {team1}, team2 is {team2}"""
+
+    try:
+        data = await _parse_to_json(raw_text, parse_instruction)
+        return data
+    except Exception as e:
+        logger.error(f"Playing XI parse error: {e}")
+        return {"team1_xi": [], "team2_xi": [], "confidence": "unavailable"}

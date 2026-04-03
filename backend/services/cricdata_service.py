@@ -143,3 +143,63 @@ async def fetch_live_ipl_details() -> dict:
         "all_matches_count": len(raw.get("data", [])),
         "source": "cricketdata.org",
     }
+
+
+
+async def fetch_match_info(match_id: str) -> dict:
+    """
+    Fetch detailed match info including venue from CricAPI.
+    Costs 1 API hit.
+    """
+    try:
+        data = await _get("match_info", {"id": match_id})
+        return data
+    except Exception as e:
+        logger.error(f"CricAPI match_info error: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+async def fetch_venue_stats_from_cricapi(venue_name: str) -> dict:
+    """
+    On-demand venue data fetch using CricAPI search.
+    Searches current matches for venue info. Returns parsed venue details.
+    Costs 1 API hit (uses currentMatches endpoint).
+    """
+    try:
+        raw = await fetch_current_matches_from_api()
+        if raw.get("status") == "error":
+            return {"error": raw.get("error"), "venue": venue_name}
+
+        api_info = raw.get("info", {})
+        matches = raw.get("data", [])
+
+        # Find matches at this venue
+        venue_matches = []
+        for m in matches:
+            m_venue = (m.get("venue", "") or "").lower()
+            if venue_name.lower() in m_venue or m_venue in venue_name.lower():
+                venue_matches.append({
+                    "match_name": m.get("name", ""),
+                    "venue": m.get("venue", ""),
+                    "status": m.get("status", ""),
+                    "date": m.get("date", ""),
+                    "teams": m.get("teams", []),
+                    "score": m.get("score", []),
+                    "matchStarted": m.get("matchStarted", False),
+                    "matchEnded": m.get("matchEnded", False),
+                })
+
+        return {
+            "venue": venue_name,
+            "matches_found": len(venue_matches),
+            "matches": venue_matches,
+            "api_info": {
+                "hits_today": api_info.get("hitsToday", 0),
+                "hits_limit": api_info.get("hitsLimit", 100),
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+            },
+            "source": "cricketdata.org",
+        }
+    except Exception as e:
+        logger.error(f"CricAPI venue fetch error: {e}")
+        return {"error": str(e), "venue": venue_name}
