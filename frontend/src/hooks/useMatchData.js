@@ -93,10 +93,39 @@ export function useMatchData() {
     }
   }, []);
 
+  const fetchConsultation = useCallback(async (matchId, opts = {}) => {
+    try {
+      const res = await axios.post(`${API}/matches/${matchId}/consult`, {
+        market_team1_odds: opts.marketTeam1Odds || null,
+        market_team2_odds: opts.marketTeam2Odds || null,
+        risk_tolerance: opts.riskTolerance || "balanced",
+      });
+      return res.data;
+    } catch (e) {
+      console.error("Consultation error:", e);
+      return null;
+    }
+  }, []);
+
+  const sendChat = useCallback(async (matchId, question, opts = {}) => {
+    try {
+      const res = await axios.post(`${API}/matches/${matchId}/chat`, {
+        question,
+        risk_tolerance: opts.riskTolerance || "balanced",
+        market_team1_odds: opts.marketTeam1Odds || null,
+        market_team2_odds: opts.marketTeam2Odds || null,
+      });
+      return res.data;
+    } catch (e) {
+      console.error("Chat error:", e);
+      return null;
+    }
+  }, []);
+
   return {
     schedule, squads, loading, apiStatus,
     fetchStatus, loadSchedule, loadSquads, getTeamSquad,
     fetchLiveData, getMatchState, fetchPlayerPredictions, fetchMatchPrediction,
-    fetchBetaPrediction,
+    fetchBetaPrediction, fetchConsultation, sendChat,
   };
 }

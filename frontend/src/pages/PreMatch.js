@@ -3,13 +3,14 @@ import { useParams, useNavigate } from "react-router-dom";
 import { useMatchData } from "@/hooks/useMatchData";
 import PlayingXI from "@/components/PlayingXI";
 import BetaPrediction from "@/components/BetaPrediction";
+import ConsultantDashboard from "@/components/ConsultantDashboard";
 import { WinProbabilityChart, AlgorithmRadarChart, PreMatchRadarChart } from "@/components/Charts";
 import { ArrowRight, Spinner, MapPin, CalendarBlank } from "@phosphor-icons/react";
 
 export default function PreMatch() {
   const { matchId } = useParams();
   const navigate = useNavigate();
-  const { getTeamSquad, fetchMatchPrediction, fetchBetaPrediction } = useMatchData();
+  const { getTeamSquad, fetchMatchPrediction, fetchBetaPrediction, fetchConsultation, sendChat } = useMatchData();
   const [matchInfo, setMatchInfo] = useState(null);
   const [squad1, setSquad1] = useState(null);
   const [squad2, setSquad2] = useState(null);
@@ -147,8 +148,8 @@ export default function PreMatch() {
             </div>
 
             <div className="lg:col-span-4 space-y-4">
-              {/* Beta Prediction Engine */}
-              <BetaPrediction matchId={matchId} team1={t1Short} team2={t2Short} fetchBetaPrediction={fetchBetaPrediction} />
+              {/* Consultant Dashboard */}
+              <ConsultantDashboard matchId={matchId} team1={t1Short} team2={t2Short} fetchConsultation={fetchConsultation} sendChat={sendChat} />
               {prediction && (
                 <>
                   <AlgorithmRadarChart probabilities={{

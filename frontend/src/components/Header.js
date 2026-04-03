@@ -1,5 +1,5 @@
 import { Link, useLocation } from "react-router-dom";
-import { Pulse, ChartLine, Target, Lightning } from "@phosphor-icons/react";
+import { Pulse, ChartLine, Target, Crosshair } from "@phosphor-icons/react";
 
 export default function Header({ selectedMatch }) {
   const location = useLocation();
@@ -16,14 +16,14 @@ export default function Header({ selectedMatch }) {
       data-testid="main-header"
       className="sticky top-0 z-50 bg-black/60 backdrop-blur-xl border-b border-white/10"
     >
-      <div className="max-w-[1440px] mx-auto px-4 lg:px-6 h-14 flex items-center justify-between">
+      <div className="max-w-[1600px] mx-auto px-4 lg:px-8 h-14 flex items-center justify-between">
         <Link to="/" className="flex items-center gap-2" data-testid="logo-link">
-          <Lightning weight="fill" className="text-[#007AFF] w-6 h-6" />
+          <Crosshair weight="fill" className="text-[#007AFF] w-6 h-6" />
           <span
             className="text-lg font-black uppercase tracking-tight"
             style={{ fontFamily: "'Barlow Condensed', sans-serif" }}
           >
-            PPL Board
+            Gamble Consultant
           </span>
         </Link>
 

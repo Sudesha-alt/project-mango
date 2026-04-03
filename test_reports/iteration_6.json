@@ -1,0 +1,118 @@
+{
+  "summary": "Completed comprehensive testing of Gamble Consultant v4.0.0 revamp. Fixed critical bug in consultant_engine.py (pre_match_probability parameter mapping). All backend API tests passed. Frontend shows 'GAMBLE CONSULTANT' branding correctly. ConsultantDashboard with Risk Tolerance toggle, Bookmaker Odds inputs, and Run Consultation button works on both PreMatch and LiveMatch pages. CONSULT tab is default selected on LiveMatch page.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "passed_tests": [
+    "GET /api/ returns 200 with version 4.0.0",
+    "GET /api/ returns message 'Gamble Consultant API'",
+    "GET /api/ returns dataSource 'GPT-5.4 Web Search'",
+    "POST /api/matches/{matchId}/consult returns 200",
+    "Consult returns win_probability (0-100)",
+    "Consult returns value_signal (STRONG_VALUE, VALUE, SMALL_EDGE, NO_BET, AVOID, WAIT_FOR_MORE_DATA, NO_MARKET)",
+    "Consult returns fair_decimal_odds",
+    "Consult with market_team1_odds and market_team2_odds returns edge_pct and overround",
+    "Consult returns confidence (0-1)",
+    "Consult returns uncertainty_band with low and high",
+    "Consult returns top_drivers array",
+    "Consult returns simulation with 10000 simulations and team score ranges (p10-p90)",
+    "Consult returns features object with phase, pressure_index, batting_depth_index, collapse_risk",
+    "Consult with risk_tolerance='safe' adjusts recommendation text",
+    "POST /api/matches/{matchId}/chat returns 200",
+    "Chat returns answer in plain language",
+    "Chat returns consultation_summary with win_probability and value_signal",
+    "Chat with market odds includes edge_pct in response",
+    "Chat respects risk_tolerance parameter",
+    "GET /api/schedule still works (70 matches)",
+    "POST /api/matches/{matchId}/fetch-live still works",
+    "GET /api/squads still works (10 teams)",
+    "Frontend header shows 'GAMBLE CONSULTANT'",
+    "Frontend MatchSelector shows 'GAMBLE CONSULTANT' title",
+    "Frontend LiveMatch page shows CONSULT tab as default selected tab",
+    "Consultant Dashboard shows Risk Tolerance toggle with 3 options: Play Safe, Balanced, Risk Taker",
+    "Consultant Dashboard shows Bookmaker Odds inputs",
+    "Consultant Dashboard shows Run Consultation button",
+    "Frontend PreMatch page shows ConsultantDashboard in right sidebar",
+    "Consultation results show Win Probability Gauge",
+    "Consultation results show Value Signal Badge (STRONG VALUE)",
+    "Consultation results show Edge Meter (+15.3%)",
+    "Consultation results show 10,000 Simulations (Neg. Binomial)",
+    "Consultation results show Player Impact section",
+    "Consultation results show Match State (Phase, Pressure, Depth, Collapse)",
+    "Consultation results show Chat Box"
+  ],
+  "bugs_fixed": [
+    {
+      "file": "/app/backend/services/consultant_engine.py",
+      "issue": "TypeError: pre_match_probability() got an unexpected keyword argument 'T'",
+      "fix": "Mapped compute_team_factors output keys (T, V, X, L, B) to pre_match_probability parameter names (team_strength, venue_advantage, toss_effect, lineup_depth, bowling_strength)",
+      "line": 547
+    }
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_gamble_consultant.py",
+    "/app/test_reports/pytest/gamble_consultant_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/backend/services/consultant_engine.py",
+    "/app/backend/tests/test_gamble_consultant.py"
+  ],
+  "success_rate": {
+    "backend": "100% (all Gamble Consultant API tests passed)",
+    "frontend": "100% (all UI components working correctly)"
+  },
+  "test_credentials": "No authentication required - open access app",
+  "seed_data_creation": "70 IPL 2026 matches already in MongoDB from previous iteration",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Gamble Consultant v4.0.0 fully implemented and working. The consult endpoint takes 20-40 seconds due to GPT-5.4 web search calls for player stats. The chat endpoint takes 5-10 seconds for GPT response. Use --max-time 120 for curl tests. Match IDs: ipl2026_007 (CSK vs PBKS live), ipl2026_008 (DC vs MI upcoming). Do NOT trigger /api/schedule/load?force=true.",
+  "gamble_consultant_verification": {
+    "layered_decision_engine": {
+      "layer1_features": true,
+      "layer2_pre_match_logistic": true,
+      "layer3_live_win_probability": true,
+      "layer4_negative_binomial_simulation": true,
+      "layer5_platt_calibration": true,
+      "layer6_odds_and_edge": true
+    },
+    "consultation_output": {
+      "win_probability": true,
+      "value_signal": true,
+      "fair_decimal_odds": true,
+      "edge_pct": true,
+      "confidence": true,
+      "uncertainty_band": true,
+      "top_drivers": true,
+      "simulation_10k": true,
+      "features": true,
+      "player_impact": true
+    },
+    "chat_endpoint": {
+      "gpt_powered": true,
+      "layman_language": true,
+      "consultation_summary": true
+    },
+    "risk_tolerance": {
+      "safe": true,
+      "balanced": true,
+      "aggressive": true
+    },
+    "value_signals": [
+      "STRONG_VALUE",
+      "VALUE",
+      "SMALL_EDGE",
+      "NO_BET",
+      "AVOID",
+      "WAIT_FOR_MORE_DATA",
+      "NO_MARKET"
+    ]
+  }
+}

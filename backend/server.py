@@ -21,9 +21,11 @@ from services.probability_engine import (
 from services.ai_service import (
     fetch_ipl_schedule, fetch_ipl_squads, fetch_live_match_update,
     get_match_prediction, get_player_predictions,
-    fetch_player_stats_for_prediction, gpt_contextual_analysis
+    fetch_player_stats_for_prediction, gpt_contextual_analysis,
+    gpt_consultation
 )
 from services.beta_prediction_engine import run_beta_prediction
+from services.consultant_engine import run_consultation, build_features
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -46,8 +48,8 @@ async def root():
     schedule_count = await db.ipl_schedule.count_documents({})
     squad_count = await db.ipl_squads.count_documents({})
     return {
-        "message": "PPL Board API",
-        "version": "3.0.0",
+        "message": "Gamble Consultant API",
+        "version": "4.0.0",
         "dataSource": "GPT-5.4 Web Search",
         "scheduleLoaded": schedule_count > 0,
         "squadsLoaded": squad_count > 0,
@@ -137,6 +139,17 @@ class FetchLiveRequest(BaseModel):
     betting_confidence: Optional[float] = None  # 0-100
 
 class BetaPredictRequest(BaseModel):
+    market_team1_odds: Optional[float] = None
+    market_team2_odds: Optional[float] = None
+
+class ConsultRequest(BaseModel):
+    market_team1_odds: Optional[float] = None
+    market_team2_odds: Optional[float] = None
+    risk_tolerance: Optional[str] = "balanced"  # "safe", "balanced", "aggressive"
+
+class ChatRequest(BaseModel):
+    question: str
+    risk_tolerance: Optional[str] = "balanced"
     market_team1_odds: Optional[float] = None
     market_team2_odds: Optional[float] = None
 
@@ -338,6 +351,160 @@ async def api_data_source():
     return {"source": "GPT-5.4 Web Search", "model": "gpt-5.4", "tool": "web_search_preview"}
 
 
+# ─── CONSULTANT ENGINE ──────────────────────────────────────
+
+@api_router.post("/matches/{match_id}/consult")
+async def api_consult(match_id: str, body: ConsultRequest = None):
+    """Run the full layered decision engine for a match."""
+    if body is None:
+        body = ConsultRequest()
+
+    match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
+    if not match_info:
+        return {"error": "Match not found"}
+
+    team1 = match_info.get("team1", "")
+    team2 = match_info.get("team2", "")
+    venue = match_info.get("venue", "")
+    t1_short = match_info.get("team1Short", get_short_name(team1))
+    t2_short = match_info.get("team2Short", get_short_name(team2))
+
+    # Build snapshot from live state or defaults
+    live_state = live_match_state.get(match_id)
+    snapshot = {
+        "match_id": match_id,
+        "batting_team": team1,
+        "bowling_team": team2,
+        "team1": team1,
+        "team2": team2,
+        "venue": venue,
+        "innings": 1,
+        "over": 0,
+        "ball": 0,
+        "score": 0,
+        "wickets_lost": 0,
+        "balls_remaining": 120,
+        "target": None,
+        "venue_par_score": 165,
+        "ball_history": [],
+    }
+
+    if live_state and live_state.get("liveData"):
+        ld = live_state["liveData"]
+        score = ld.get("score", {})
+        if isinstance(score, dict):
+            snapshot["score"] = score.get("runs", 0)
+            snapshot["wickets_lost"] = score.get("wickets", 0)
+            overs = score.get("overs", 0)
+            snapshot["over"] = int(overs)
+            snapshot["ball"] = int((overs % 1) * 10)
+            snapshot["target"] = score.get("target")
+        snapshot["innings"] = ld.get("innings", 1)
+        if ld.get("battingTeam"):
+            snapshot["batting_team"] = ld["battingTeam"]
+        if ld.get("bowlingTeam"):
+            snapshot["bowling_team"] = ld["bowlingTeam"]
+        snapshot["balls_remaining"] = max(int((20 - overs) * 6), 0) if overs else 120
+        snapshot["ball_history"] = live_state.get("ballHistory", [])
+        if ld.get("batsmen"):
+            snapshot["striker"] = ld["batsmen"][0] if ld["batsmen"] else {}
+        if ld.get("bowler"):
+            snapshot["bowler"] = ld["bowler"]
+
+    # Get player predictions from DB or fetch
+    sq1 = await db.ipl_squads.find_one({"teamShort": t1_short}, {"_id": 0})
+    sq2 = await db.ipl_squads.find_one({"teamShort": t2_short}, {"_id": 0})
+    t1_players = sq1.get("players", [])[:11] if sq1 else []
+    t2_players = sq2.get("players", [])[:11] if sq2 else []
+
+    # Fetch player stats via web search
+    logger.info(f"Consultant: fetching player stats for {team1} vs {team2}")
+    player_stats = await fetch_player_stats_for_prediction(
+        team1, team2, t1_players, t2_players, venue
+    )
+    if not player_stats:
+        player_stats = _generate_default_player_stats(t1_players, t2_players, team1, team2)
+
+    # Apply player prediction formula
+    from services.beta_prediction_engine import predict_player_performance
+    player_preds = [predict_player_performance(p) for p in player_stats]
+
+    # Run consultation engine
+    result = run_consultation(
+        snapshot=snapshot,
+        player_predictions=player_preds,
+        team1_data={"name": team1, "rating": 55, "batting_depth": 7, "bowling_rating": 52},
+        team2_data={"name": team2, "rating": 52, "batting_depth": 6, "bowling_rating": 50},
+        market_odds_team1=body.market_team1_odds,
+        market_odds_team2=body.market_team2_odds,
+        risk_tolerance=body.risk_tolerance,
+    )
+
+    result["team1Short"] = t1_short
+    result["team2Short"] = t2_short
+    return result
+
+
+@api_router.post("/matches/{match_id}/chat")
+async def api_chat(match_id: str, body: ChatRequest):
+    """GPT-powered consultation chat — answers user questions in layman language."""
+    match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
+    if not match_info:
+        return {"error": "Match not found"}
+
+    team1 = match_info.get("team1", "")
+    team2 = match_info.get("team2", "")
+    venue = match_info.get("venue", "")
+    t1_short = match_info.get("team1Short", get_short_name(team1))
+    t2_short = match_info.get("team2Short", get_short_name(team2))
+
+    # Build snapshot
+    live_state = live_match_state.get(match_id)
+    snapshot = {
+        "match_id": match_id, "batting_team": team1, "bowling_team": team2,
+        "team1": team1, "team2": team2, "venue": venue,
+        "innings": 1, "over": 0, "ball": 0, "score": 0, "wickets_lost": 0,
+        "balls_remaining": 120, "target": None, "venue_par_score": 165,
+        "ball_history": [],
+    }
+    if live_state and live_state.get("liveData"):
+        ld = live_state["liveData"]
+        score = ld.get("score", {})
+        if isinstance(score, dict):
+            snapshot["score"] = score.get("runs", 0)
+            snapshot["wickets_lost"] = score.get("wickets", 0)
+            overs = score.get("overs", 0)
+            snapshot["over"] = int(overs)
+            snapshot["ball"] = int((overs % 1) * 10)
+            snapshot["target"] = score.get("target")
+        snapshot["innings"] = ld.get("innings", 1)
+        snapshot["balls_remaining"] = max(int((20 - overs) * 6), 0) if overs else 120
+
+    # Quick consultation (no player stats fetch for speed)
+    result = run_consultation(
+        snapshot=snapshot,
+        market_odds_team1=body.market_team1_odds,
+        market_odds_team2=body.market_team2_odds,
+        risk_tolerance=body.risk_tolerance,
+    )
+
+    # GPT answer
+    answer = await gpt_consultation(body.question, result, body.risk_tolerance)
+
+    return {
+        "question": body.question,
+        "answer": answer,
+        "risk_tolerance": body.risk_tolerance,
+        "consultation_summary": {
+            "win_probability": result["win_probability"],
+            "value_signal": result["value_signal"],
+            "edge_pct": result.get("edge_pct"),
+            "confidence": result["confidence"],
+            "fair_odds": result["fair_decimal_odds"],
+        },
+    }
+
+
 # ─── BETA PREDICTION ENGINE ──────────────────────────────────
 
 @api_router.post("/matches/{match_id}/beta-predict")
@@ -502,7 +669,7 @@ async def broadcast_update(match_id, data):
 
 @app.on_event("startup")
 async def startup():
-    logger.info("PPL Board v2 starting up...")
+    logger.info("Gamble Consultant v4 starting up...")
 
 @app.on_event("shutdown")
 async def shutdown():

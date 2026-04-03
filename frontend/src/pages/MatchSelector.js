@@ -49,7 +49,7 @@ export default function MatchSelector() {
         <div className="max-w-[1440px] mx-auto px-4 lg:px-6 pt-12 pb-8 relative">
           <p className="text-xs uppercase tracking-[0.2em] font-bold text-[#007AFF] mb-2">IPL 2026</p>
           <h1 className="text-4xl sm:text-5xl lg:text-6xl font-black uppercase tracking-tight" style={{ fontFamily: "'Barlow Condensed', sans-serif" }} data-testid="page-title">
-            PPL Board
+            Gamble Consultant
           </h1>
           <p className="text-base text-[#A1A1AA] mt-2 max-w-xl" style={{ fontFamily: "'DM Sans', sans-serif" }}>
             Real-time match predictions powered by ensemble probability models, GPT analysis, and live odds tracking.

@@ -3,6 +3,7 @@ import logging
 import json
 import uuid
 import re
+from typing import Dict, List
 from openai import AsyncOpenAI
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
@@ -446,3 +447,62 @@ Return JSON:
             "recommended_strategy": "",
             "key_phase": match_context.get("phase", "unknown"),
         }
+
+
+async def gpt_consultation(user_question: str, consultation_data: Dict, risk_tolerance: str = "balanced"):
+    """
+    GPT-5.4: Answer user's betting question in layman language,
+    analyzing all model outputs and risk profile.
+    """
+    chat = _get_gpt_chat(
+        f"consult-{uuid.uuid4().hex[:8]}",
+        """You are a sharp, no-nonsense gambling consultant. You analyze cricket match data and betting models to give clear, honest advice.
+
+Rules:
+- Speak in plain English. No jargon. As if explaining to a friend at a bar.
+- Be direct: YES do it, NO don't, or WAIT.
+- Always explain WHY in 2-3 sentences.
+- Factor in their risk profile.
+- Never guarantee outcomes. Acknowledge uncertainty.
+- If the data says NO, say NO firmly. Don't sugarcoat.
+- Reference specific numbers from the analysis (probability, edge, odds).
+- Keep it under 150 words."""
+    )
+
+    # Build context from consultation data
+    prob = consultation_data.get("win_probability", 50)
+    signal = consultation_data.get("value_signal", "NO_BET")
+    edge = consultation_data.get("edge_pct")
+    confidence = consultation_data.get("confidence", 0.5)
+    team = consultation_data.get("team", "")
+    opponent = consultation_data.get("opponent", "")
+    fair_odds = consultation_data.get("fair_decimal_odds", 0)
+    market_odds = consultation_data.get("market_decimal_odds")
+    drivers = consultation_data.get("top_drivers", [])
+    uncertainty = consultation_data.get("uncertainty_band", {})
+    recommendation = consultation_data.get("bet_recommendation", "")
+
+    drivers_text = "; ".join(drivers[:4]) if drivers else "No clear drivers"
+
+    prompt = f"""User asks: "{user_question}"
+
+Risk profile: {risk_tolerance.upper()}
+
+Current analysis for {team} vs {opponent}:
+- Win probability: {prob}% (confidence: {confidence})
+- Uncertainty range: {uncertainty.get('low', 0)*100:.0f}% to {uncertainty.get('high', 0)*100:.0f}%
+- Model signal: {signal}
+- Fair odds: {fair_odds}
+- Market odds: {market_odds or 'not provided'}
+- Edge: {edge}% {'(positive - model sees value)' if edge and edge > 0 else '(negative - market is better)' if edge and edge < 0 else ''}
+- Key drivers: {drivers_text}
+- System recommendation: {recommendation}
+
+Answer their question directly. Be honest. Factor in their {risk_tolerance} risk profile."""
+
+    try:
+        response = await chat.send_message(UserMessage(text=prompt))
+        return response.strip()
+    except Exception as e:
+        logger.error(f"GPT consultation error: {e}")
+        return f"I couldn't analyze this right now. Based on the numbers: win probability is {prob}%, signal is {signal}. {recommendation}"

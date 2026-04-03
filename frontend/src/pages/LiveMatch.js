@@ -10,11 +10,12 @@ import OddsPanel from "@/components/OddsPanel";
 import PlayerPredictions from "@/components/PlayerPredictions";
 import PlayingXI from "@/components/PlayingXI";
 import BetaPrediction from "@/components/BetaPrediction";
+import ConsultantDashboard from "@/components/ConsultantDashboard";
 import { WifiHigh, WifiSlash, Lightning, Spinner, UserCircle } from "@phosphor-icons/react";
 
 export default function LiveMatch() {
   const { matchId } = useParams();
-  const { fetchLiveData, getMatchState, getTeamSquad, fetchPlayerPredictions, fetchBetaPrediction } = useMatchData();
+  const { fetchLiveData, getMatchState, getTeamSquad, fetchPlayerPredictions, fetchBetaPrediction, fetchConsultation, sendChat } = useMatchData();
   const { data: wsData, connected } = useWebSocket(matchId);
 
   const [matchState, setMatchState] = useState(null);
@@ -23,7 +24,7 @@ export default function LiveMatch() {
   const [loading, setLoading] = useState(true);
   const [fetchingLive, setFetchingLive] = useState(false);
   const [fetchingPlayers, setFetchingPlayers] = useState(false);
-  const [activeTab, setActiveTab] = useState("beta");
+  const [activeTab, setActiveTab] = useState("consult");
   const [probHistory, setProbHistory] = useState([]);
   const [bettingOdds, setBettingOdds] = useState(null);
 
@@ -97,6 +98,7 @@ export default function LiveMatch() {
   const bettingEdge = matchState?.bettingEdge || null;
 
   const rightTabs = [
+    { key: "consult", label: "Consult" },
     { key: "beta", label: "Beta" },
     { key: "models", label: "Models" },
     { key: "odds", label: "Odds" },
@@ -260,6 +262,9 @@ export default function LiveMatch() {
                   ))}
                 </div>
 
+                {activeTab === "consult" && (
+                  <ConsultantDashboard matchId={matchId} team1={t1Short} team2={t2Short} fetchConsultation={fetchConsultation} sendChat={sendChat} />
+                )}
                 {activeTab === "beta" && (
                   <BetaPrediction matchId={matchId} team1={t1Short} team2={t2Short} fetchBetaPrediction={fetchBetaPrediction} />
                 )}

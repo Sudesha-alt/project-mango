@@ -544,7 +544,14 @@ def run_consultation(
             team1_data or {}, team2_data or {},
             snapshot.get("venue", ""), snapshot.get("toss_winner")
         )
-        raw_prob = pre_match_probability(**factors)
+        # Map factor keys to pre_match_probability parameter names
+        raw_prob = pre_match_probability(
+            team_strength=factors.get("T", 0),
+            venue_advantage=factors.get("V", 0),
+            toss_effect=factors.get("X", 0),
+            lineup_depth=factors.get("L", 0),
+            bowling_strength=factors.get("B", 0),
+        )
         model_source = "pre_match_logistic"
     else:
         raw_prob = live_win_probability(features)
