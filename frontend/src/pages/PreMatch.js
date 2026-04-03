@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useMatchData } from "@/hooks/useMatchData";
 import PlayingXI from "@/components/PlayingXI";
-import { WinProbabilityChart, AlgorithmRadarChart } from "@/components/Charts";
+import { WinProbabilityChart, AlgorithmRadarChart, PreMatchRadarChart } from "@/components/Charts";
 import { ArrowRight, Spinner, MapPin, CalendarBlank } from "@phosphor-icons/react";
 
 export default function PreMatch() {
@@ -168,6 +168,7 @@ export default function PreMatch() {
                   <div className="flex justify-between"><span className="text-[#71717A]">Status</span><span className="text-[#EAB308]">{matchInfo?.status || "Upcoming"}</span></div>
                 </div>
               </div>
+              <PreMatchRadarChart team1={t1Short} team2={t2Short} />
             </div>
           </div>
         </>

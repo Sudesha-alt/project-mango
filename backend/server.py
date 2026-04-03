@@ -19,7 +19,8 @@ from services.cricket_service import (
 )
 import services.cricket_service as cricket_svc
 from services.probability_engine import (
-    ensemble_probability, calculate_odds_from_probability, calculate_momentum
+    ensemble_probability, calculate_odds_from_probability,
+    calculate_momentum, calculate_betting_edge
 )
 from services.ai_service import (
     fetch_ipl_schedule, fetch_ipl_squads, fetch_live_match_update,
@@ -132,12 +133,22 @@ async def get_team_squad(team_short: str):
     return {"squad": squad}
 
 
+from pydantic import BaseModel
+from typing import Optional
+
+class FetchLiveRequest(BaseModel):
+    betting_team1_odds: Optional[float] = None
+    betting_team2_odds: Optional[float] = None
+    betting_confidence: Optional[float] = None  # 0-100
+
 # ─── LIVE MATCH (on-demand via button) ───────────────────────
 
 @api_router.post("/matches/{match_id}/fetch-live")
-async def fetch_live_data(match_id: str):
+async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
     """Button-triggered: Fetch live data from CricAPI first, fallback to GPT."""
-    # Get match info from schedule
+    if body is None:
+        body = FetchLiveRequest()
+
     match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
     if not match_info:
         return {"error": "Match not found in schedule"}
@@ -158,25 +169,16 @@ async def fetch_live_data(match_id: str):
                 cricapi_data = m
                 break
 
-    # If no CricAPI data, use GPT for live simulation
     live_data = None
     source = "cricapi"
     if cricapi_data and cricapi_data.get("score"):
         live_data = {
-            "matchId": match_id,
-            "team1": team1,
-            "team2": team2,
-            "venue": venue,
-            "score": {
-                "runs": cricapi_data.get("runs", 0),
-                "wickets": cricapi_data.get("wickets", 0),
-                "overs": cricapi_data.get("overs", 0),
-                "target": None,
-            },
+            "matchId": match_id, "team1": team1, "team2": team2, "venue": venue,
+            "score": {"runs": cricapi_data.get("runs", 0), "wickets": cricapi_data.get("wickets", 0),
+                      "overs": cricapi_data.get("overs", 0), "target": None},
             "innings": cricapi_data.get("innings", 1),
             "status": cricapi_data.get("status", "Live"),
-            "isLive": True,
-            "source": "cricapi",
+            "isLive": True, "source": "cricapi",
         }
     else:
         logger.info(f"Using GPT for live data: {team1} vs {team2}")
@@ -189,7 +191,7 @@ async def fetch_live_data(match_id: str):
     if not live_data:
         return {"error": "Could not fetch live data"}
 
-    # Run probability algorithms
+    # Parse score
     score = live_data.get("score", {})
     runs = score.get("runs", 0) if isinstance(score, dict) else 0
     wickets = score.get("wickets", 0) if isinstance(score, dict) else 0
@@ -197,17 +199,7 @@ async def fetch_live_data(match_id: str):
     target = score.get("target") if isinstance(score, dict) else None
     innings = live_data.get("innings", 1)
 
-    probs = ensemble_probability(runs, wickets, overs, target, innings)
-    team1_odds = calculate_odds_from_probability(probs["ensemble"])
-    team2_odds = calculate_odds_from_probability(1 - probs["ensemble"])
-
-    # Get AI prediction
-    ai_pred = await get_match_prediction({
-        "matchId": match_id, "team1": team1, "team2": team2,
-        "venue": venue, "score": score
-    })
-
-    # Build balls from recentBalls
+    # Build ball objects from recentBalls
     recent_balls = live_data.get("recentBalls", [])
     ball_objects = []
     for b in recent_balls:
@@ -229,16 +221,50 @@ async def fetch_live_data(match_id: str):
                 pass
         ball_objects.append(ball_obj)
 
+    # Convert betting odds to implied probability for Bayesian prior
+    odds_team_a = None
+    if body.betting_team1_odds and body.betting_team2_odds:
+        raw_implied = 1.0 / body.betting_team1_odds
+        total_implied = raw_implied + (1.0 / body.betting_team2_odds)
+        odds_team_a = raw_implied / total_implied  # normalized
+        if body.betting_confidence is not None:
+            confidence = body.betting_confidence / 100
+            odds_team_a = odds_team_a * confidence + 0.5 * (1 - confidence)
+
+    # Run all 4 algorithms + ensemble with ball history and odds
+    probs = ensemble_probability(runs, wickets, overs, target, innings,
+                                  odds_team_a, ball_objects, venue_avg=165)
+    team1_odds = calculate_odds_from_probability(probs["ensemble"])
+    team2_odds = calculate_odds_from_probability(1 - probs["ensemble"])
+
+    # Calculate betting edge
+    edge_team1 = None
+    edge_team2 = None
+    if body.betting_team1_odds:
+        edge_team1 = calculate_betting_edge(probs["ensemble"], body.betting_team1_odds)
+    if body.betting_team2_odds:
+        edge_team2 = calculate_betting_edge(1 - probs["ensemble"], body.betting_team2_odds)
+
+    # Get AI prediction
+    ai_pred = await get_match_prediction({
+        "matchId": match_id, "team1": team1, "team2": team2,
+        "venue": venue, "score": score
+    })
+
     result = {
         "matchId": match_id,
-        "team1": team1,
-        "team1Short": get_short_name(team1),
-        "team2": team2,
-        "team2Short": get_short_name(team2),
+        "team1": team1, "team1Short": get_short_name(team1),
+        "team2": team2, "team2Short": get_short_name(team2),
         "venue": venue,
         "liveData": live_data,
         "probabilities": probs,
         "odds": {"team1": team1_odds, "team2": team2_odds},
+        "bettingEdge": {"team1": edge_team1, "team2": edge_team2},
+        "bettingInput": {
+            "team1Odds": body.betting_team1_odds,
+            "team2Odds": body.betting_team2_odds,
+            "confidence": body.betting_confidence,
+        },
         "aiPrediction": ai_pred,
         "momentum": calculate_momentum(ball_objects),
         "ballHistory": ball_objects,
@@ -250,15 +276,12 @@ async def fetch_live_data(match_id: str):
         "fetchedAt": datetime.now(timezone.utc).isoformat(),
     }
 
-    # Cache in memory and MongoDB
     live_match_state[match_id] = result
     await db.live_snapshots.update_one(
         {"matchId": match_id},
         {"$set": {**{k: v for k, v in result.items()}, "updatedAt": datetime.now(timezone.utc).isoformat()}},
         upsert=True
     )
-
-    # Broadcast to WebSocket connections
     if match_id in ws_connections and ws_connections[match_id]:
         await broadcast_update(match_id, result)
 

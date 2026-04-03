@@ -4,9 +4,9 @@ import { useMatchData } from "@/hooks/useMatchData";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import LiveScoreboard from "@/components/LiveScoreboard";
 import BallLog from "@/components/BallLog";
-import AlgorithmPanel from "@/components/AlgorithmPanel";
+import { WinProbabilityChart, ManhattanChart, AlgorithmComparisonChart, AlgorithmRadarChart } from "@/components/Charts";
+import BettingOddsInput from "@/components/BettingOddsInput";
 import OddsPanel from "@/components/OddsPanel";
-import { WinProbabilityChart, AlgorithmRadarChart } from "@/components/Charts";
 import PlayerPredictions from "@/components/PlayerPredictions";
 import PlayingXI from "@/components/PlayingXI";
 import { WifiHigh, WifiSlash, Lightning, Spinner, UserCircle } from "@phosphor-icons/react";
@@ -24,6 +24,7 @@ export default function LiveMatch() {
   const [fetchingPlayers, setFetchingPlayers] = useState(false);
   const [activeTab, setActiveTab] = useState("models");
   const [probHistory, setProbHistory] = useState([]);
+  const [bettingOdds, setBettingOdds] = useState(null);
 
   useEffect(() => {
     const load = async () => {
@@ -34,7 +35,6 @@ export default function LiveMatch() {
         if (state.probabilities) setProbHistory(prev => [...prev, state.probabilities]);
       } else if (state?.info) {
         setMatchState({ ...state.info, matchId, noLiveData: true });
-        // Load squads
         if (state.info.team1Short) {
           const s1 = await getTeamSquad(state.info.team1Short);
           const s2 = await getTeamSquad(state.info.team2Short);
@@ -55,13 +55,13 @@ export default function LiveMatch() {
 
   const handleFetchLive = useCallback(async () => {
     setFetchingLive(true);
-    const data = await fetchLiveData(matchId);
+    const data = await fetchLiveData(matchId, bettingOdds);
     if (data && !data.error) {
       setMatchState(data);
       if (data.probabilities) setProbHistory(prev => [...prev, data.probabilities].slice(-50));
     }
     setFetchingLive(false);
-  }, [matchId, fetchLiveData]);
+  }, [matchId, fetchLiveData, bettingOdds]);
 
   const handleFetchPlayers = useCallback(async () => {
     setFetchingPlayers(true);
@@ -69,6 +69,10 @@ export default function LiveMatch() {
     if (data?.players) setPlayerPreds(data.players);
     setFetchingPlayers(false);
   }, [matchId, fetchPlayerPredictions]);
+
+  const handleOddsChange = (odds) => {
+    setBettingOdds(odds);
+  };
 
   const liveData = matchState?.liveData || {};
   const score = liveData.score || {};
@@ -80,6 +84,7 @@ export default function LiveMatch() {
   const t1Short = matchState?.team1Short || team1.slice(0, 3).toUpperCase();
   const t2Short = matchState?.team2Short || team2.slice(0, 3).toUpperCase();
   const hasLiveData = !matchState?.noLiveData && matchState?.liveData;
+  const bettingEdge = matchState?.bettingEdge || null;
 
   const rightTabs = [
     { key: "models", label: "Models" },
@@ -96,57 +101,60 @@ export default function LiveMatch() {
         </div>
       ) : (
         <>
-          {/* Top bar with Fetch Live button */}
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-1.5">
                 {connected ? <WifiHigh weight="fill" className="w-4 h-4 text-[#22C55E]" /> : <WifiSlash weight="fill" className="w-4 h-4 text-[#FF3B30]" />}
-                <span className="text-[10px] font-bold uppercase tracking-wider text-[#A1A1AA]">{connected ? "WS Connected" : "WS Disconnected"}</span>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-[#A1A1AA]">{connected ? "WS Connected" : "Disconnected"}</span>
               </div>
               {matchState?.source && (
                 <span className="text-[10px] px-2 py-0.5 rounded bg-[#1E1E1E] text-[#A1A1AA] font-mono">
                   Source: {matchState.source.toUpperCase()}
                 </span>
               )}
+              {probs.projected_score && (
+                <span className="text-[10px] px-2 py-0.5 rounded bg-[#22C55E]/10 text-[#22C55E] font-mono">
+                  Projected: {Math.round(probs.projected_score)}
+                </span>
+              )}
             </div>
             <button onClick={handleFetchLive} disabled={fetchingLive} data-testid="fetch-live-btn"
               className="flex items-center gap-2 bg-[#007AFF] text-white px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider hover:bg-[#0066DD] transition-colors disabled:opacity-50">
-              {fetchingLive ? <><Spinner className="w-4 h-4 animate-spin" /> Fetching Live...</> : <><Lightning weight="fill" className="w-4 h-4" /> Fetch Live Scores</>}
+              {fetchingLive ? <><Spinner className="w-4 h-4 animate-spin" /> Fetching...</> : <><Lightning weight="fill" className="w-4 h-4" /> Fetch Live Scores</>}
             </button>
           </div>
 
           {!hasLiveData && (
             <div className="bg-[#141414] border border-[#007AFF]/30 rounded-md p-8 text-center mb-4" data-testid="no-live-data">
               <Lightning weight="duotone" className="w-10 h-10 text-[#007AFF] mx-auto mb-3" />
-              <p className="text-sm text-[#A1A1AA] mb-2">No live data loaded yet for this match.</p>
-              <p className="text-xs text-[#71717A] mb-4">Click "Fetch Live Scores" to get real-time data from CricAPI or GPT simulation.</p>
-              <p className="text-lg font-bold uppercase" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
-                {t1Short} vs {t2Short}
-              </p>
+              <p className="text-sm text-[#A1A1AA] mb-2">No live data loaded yet.</p>
+              <p className="text-xs text-[#71717A] mb-4">Click "Fetch Live Scores" to get real-time data. Set betting odds first for Bayesian model input.</p>
+              <p className="text-lg font-bold uppercase" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>{t1Short} vs {t2Short}</p>
+              {/* Pre-match betting input */}
+              <div className="max-w-sm mx-auto mt-4">
+                <BettingOddsInput team1={t1Short} team2={t2Short} onOddsChange={handleOddsChange} currentEdge={bettingEdge} />
+              </div>
             </div>
           )}
 
           {hasLiveData && (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-              {/* LEFT: Scoreboard + Ball Log + Charts */}
               <div className="lg:col-span-8 space-y-4">
                 <LiveScoreboard
                   matchData={{
                     team1, team2, team1Short: t1Short, team2Short: t2Short,
                     runs: score.runs || 0, overs: score.overs || 0, wickets: score.wickets || 0,
                     innings: liveData.innings || 1, status: liveData.status || "",
-                    venue: matchState?.venue || "", isLive: true,
-                    probabilities: probs,
+                    venue: matchState?.venue || "", isLive: true, probabilities: probs,
                     score: score.target ? `Target: ${score.target}` : "",
+                    target: score.target || null,
                   }}
                 />
 
                 {/* Current batsmen + bowler */}
                 {(matchState?.batsmen?.length > 0 || matchState?.bowler?.name) && (
                   <div className="bg-[#141414] border border-white/10 rounded-md p-4" data-testid="current-players">
-                    <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-[#A1A1AA] mb-3" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
-                      At The Crease
-                    </h4>
+                    <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-[#A1A1AA] mb-3" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>At The Crease</h4>
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                       {matchState.batsmen?.map((b, i) => (
                         <div key={i} className="bg-[#1E1E1E] rounded-md p-3">
@@ -176,15 +184,32 @@ export default function LiveMatch() {
                   </div>
                 )}
 
+                {/* Betting Edge Display */}
+                {bettingEdge && (bettingEdge.team1 || bettingEdge.team2) && (
+                  <div className="bg-[#141414] border border-white/10 rounded-md p-4" data-testid="edge-panel">
+                    <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-[#A1A1AA] mb-3" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>Betting Edge</h4>
+                    <div className="grid grid-cols-2 gap-3">
+                      {[{ team: t1Short, edge: bettingEdge.team1 }, { team: t2Short, edge: bettingEdge.team2 }]
+                        .filter(e => e.edge)
+                        .map((e) => (
+                          <div key={e.team} className={`rounded-md p-3 text-center border ${e.edge.edge_positive ? "bg-[#22C55E]/5 border-[#22C55E]/20" : "bg-[#FF3B30]/5 border-[#FF3B30]/20"}`}>
+                            <p className="text-xs text-[#A1A1AA] mb-1">{e.team}</p>
+                            <p className="text-xs font-mono text-[#71717A]">Market: {e.edge.market_implied}% | Model: {e.edge.model_prob}%</p>
+                            <p className={`text-lg font-bold font-mono tabular-nums ${e.edge.edge_positive ? "text-[#22C55E]" : "text-[#FF3B30]"}`}>
+                              Edge: {e.edge.edge > 0 ? "+" : ""}{e.edge.edge}%
+                            </p>
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+                )}
+
                 <BallLog balls={balls} />
                 <WinProbabilityChart data={probHistory} team1={t1Short} team2={t2Short} />
 
-                {/* AI Analysis */}
                 {matchState?.aiPrediction && (
                   <div className="bg-[#141414] border border-white/10 rounded-md p-4" data-testid="ai-analysis">
-                    <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-[#A1A1AA] mb-2" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
-                      GPT Analysis
-                    </h4>
+                    <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-[#A1A1AA] mb-2" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>GPT Analysis</h4>
                     <p className="text-sm text-[#A1A1AA]">{matchState.aiPrediction.analysis}</p>
                     {matchState.aiPrediction.keyFactors?.length > 0 && (
                       <div className="flex flex-wrap gap-2 mt-2">
@@ -197,7 +222,6 @@ export default function LiveMatch() {
                 )}
               </div>
 
-              {/* RIGHT: Tabs */}
               <div className="lg:col-span-4 space-y-4">
                 <div className="flex gap-1 bg-[#141414] border border-white/10 rounded-md p-1">
                   {rightTabs.map((tab) => (
@@ -214,11 +238,16 @@ export default function LiveMatch() {
 
                 {activeTab === "models" && (
                   <>
-                    <AlgorithmPanel probabilities={probs} team1={t1Short} team2={t2Short} />
+                    <AlgorithmComparisonChart probabilities={probs} team1={t1Short} team2={t2Short} />
                     <AlgorithmRadarChart probabilities={probs} />
                   </>
                 )}
-                {activeTab === "odds" && <OddsPanel odds={odds} history={[]} team1={t1Short} team2={t2Short} />}
+                {activeTab === "odds" && (
+                  <>
+                    <BettingOddsInput team1={t1Short} team2={t2Short} onOddsChange={handleOddsChange} currentEdge={bettingEdge} />
+                    <OddsPanel odds={odds} history={[]} team1={t1Short} team2={t2Short} />
+                  </>
+                )}
                 {activeTab === "squad" && <PlayingXI squad={squads.map(s => ({ teamName: s?.teamName, players: s?.players?.slice(0, 11) || [] }))} team1={team1} team2={team2} />}
                 {activeTab === "players" && (
                   <div>
@@ -227,9 +256,7 @@ export default function LiveMatch() {
                         <Spinner className="w-6 h-6 animate-spin mx-auto mb-2 text-[#007AFF]" />
                         <p className="text-xs text-[#A1A1AA]">Generating player predictions via GPT...</p>
                       </div>
-                    ) : (
-                      <PlayerPredictions players={playerPreds} />
-                    )}
+                    ) : <PlayerPredictions players={playerPreds} />}
                     {playerPreds.length === 0 && !fetchingPlayers && (
                       <button onClick={handleFetchPlayers} data-testid="load-player-preds-btn"
                         className="w-full mt-2 py-2 bg-[#007AFF]/20 text-[#007AFF] rounded-md text-xs font-bold uppercase hover:bg-[#007AFF]/30 transition-colors">

@@ -17,12 +17,16 @@ export default function LiveScoreboard({ matchData, wsData }) {
   const crr = overs > 0 ? (runs / overs).toFixed(1) : "0.0";
   const remainingOvers = 20 - overs;
   let rrr = "--";
-  if (innings === 2 && score.includes("Target")) {
+  const scoreStr = typeof score === "string" ? score : "";
+  if (innings === 2 && scoreStr.includes("Target")) {
     try {
-      const target = parseInt(score.split("Target")[1].trim().split(/\s/)[0]);
+      const target = parseInt(scoreStr.split("Target")[1].trim().split(/\s/)[0]);
       const rem = target - runs;
-      if (remainingOvers > 0) rrr = (rem / remainingOvers).toFixed(1);
+      if (remainingOvers > 0 && rem > 0) rrr = (rem / remainingOvers).toFixed(1);
     } catch {}
+  } else if (innings === 2 && data.target) {
+    const rem = data.target - runs;
+    if (remainingOvers > 0 && rem > 0) rrr = (rem / remainingOvers).toFixed(1);
   }
 
   return (

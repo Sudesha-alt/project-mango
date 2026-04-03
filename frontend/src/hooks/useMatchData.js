@@ -48,9 +48,10 @@ export function useMatchData() {
     } catch (e) { return null; }
   }, []);
 
-  const fetchLiveData = useCallback(async (matchId) => {
+  const fetchLiveData = useCallback(async (matchId, bettingOdds = null) => {
     try {
-      const res = await axios.post(`${API}/matches/${matchId}/fetch-live`);
+      const body = bettingOdds || {};
+      const res = await axios.post(`${API}/matches/${matchId}/fetch-live`, body);
       return res.data;
     } catch (e) {
       console.error("Live fetch error:", e);

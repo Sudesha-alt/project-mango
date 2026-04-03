@@ -22,17 +22,21 @@ async def fetch_ipl_schedule():
         f"ipl-schedule-{uuid.uuid4().hex[:8]}",
         "You are an expert cricket database. Provide accurate IPL 2026 data. Always respond ONLY with valid JSON, no markdown."
     )
-    prompt = """Generate the complete IPL 2026 season schedule. Include ALL 74 league stage matches.
+    prompt = """Generate the complete IPL 2026 season schedule. The season opener is RCB vs SRH.
+
+CRITICAL: Match 1 MUST be Royal Challengers Bengaluru (RCB) vs Sunrisers Hyderabad (SRH).
+
+Include ALL 74 league stage matches. Each team plays 14 matches (7 home, 7 away).
 
 For each match provide:
 - matchId (unique string like "ipl2026_001")  
 - match_number (1-74)
 - team1 and team2 (full names from: Chennai Super Kings, Mumbai Indians, Royal Challengers Bengaluru, Kolkata Knight Riders, Delhi Capitals, Rajasthan Royals, Sunrisers Hyderabad, Punjab Kings, Gujarat Titans, Lucknow Super Giants)
 - team1Short and team2Short (CSK, MI, RCB, KKR, DC, RR, SRH, PBKS, GT, LSG)
-- venue (real IPL venues like Wankhede Stadium Mumbai, MA Chidambaram Stadium Chennai, Eden Gardens Kolkata, etc.)
-- dateTimeGMT (dates from March 21 to May 25, 2026, in ISO format)
-- status: "Upcoming" or "Completed" (first 30 matches completed, rest upcoming)
-- For completed matches include: winner, score (e.g. "CSK 185/4 (20) | MI 170/8 (20)"), manOfMatch
+- venue (real IPL venues: M Chinnaswamy Stadium Bengaluru, Wankhede Stadium Mumbai, MA Chidambaram Stadium Chennai, Eden Gardens Kolkata, Arun Jaitley Stadium Delhi, Sawai Mansingh Stadium Jaipur, Rajiv Gandhi Intl Stadium Hyderabad, IS Bindra Stadium Mohali, Narendra Modi Stadium Ahmedabad, Ekana Sports City Lucknow)
+- dateTimeGMT (dates from March 22 to May 25, 2026, in ISO format, matches at 14:00 or 18:00 UTC)
+- status: "Completed" for first 25 matches, "Upcoming" for rest
+- For completed matches: include winner, score (e.g. "RCB 192/4 (20) | SRH 178/7 (20)"), manOfMatch (real player names)
 - matchType: "T20"
 - series: "IPL 2026"
 
