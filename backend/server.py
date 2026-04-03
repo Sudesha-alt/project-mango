@@ -29,7 +29,7 @@ from services.beta_prediction_engine import run_beta_prediction
 from services.consultant_engine import run_consultation, build_features
 from services.cricdata_service import fetch_live_ipl_details, fetch_venue_stats_from_cricapi
 from services.pre_match_predictor import compute_prediction
-from services.ai_service import fetch_playing_xi
+from services.ai_service import fetch_playing_xi, resolve_tbd_venues
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -73,12 +73,40 @@ async def load_ipl_schedule(force: bool = False):
     logger.info("Fetching IPL 2026 schedule via GPT...")
     matches = await fetch_ipl_schedule()
     if matches:
+        # Resolve TBD venues
+        tbd_count = sum(1 for m in matches if not m.get("venue") or m.get("venue") == "TBD")
+        if tbd_count > 0:
+            logger.info(f"Resolving {tbd_count} TBD venues...")
+            matches = await resolve_tbd_venues(matches)
         await db.ipl_schedule.delete_many({})
         for m in matches:
             m["loadedAt"] = datetime.now(timezone.utc).isoformat()
         await db.ipl_schedule.insert_many(matches)
         return {"status": "loaded", "count": len(matches)}
     return {"status": "error", "count": 0}
+
+
+@api_router.post("/schedule/resolve-venues")
+async def api_resolve_venues():
+    """Resolve TBD venues in the schedule using GPT web search."""
+    matches = await db.ipl_schedule.find({}, {"_id": 0}).sort("match_number", 1).to_list(100)
+    tbd = [m for m in matches if not m.get("venue") or m.get("venue") == "TBD"]
+    if not tbd:
+        return {"status": "no_tbd", "message": "All matches already have venues"}
+    
+    resolved_matches = await resolve_tbd_venues(matches)
+    
+    updated = 0
+    for m in resolved_matches:
+        if m.get("venue") and m["venue"] != "TBD":
+            result = await db.ipl_schedule.update_one(
+                {"matchId": m["matchId"]},
+                {"$set": {"venue": m["venue"]}}
+            )
+            if result.modified_count > 0:
+                updated += 1
+    
+    return {"status": "resolved", "total_tbd": len(tbd), "updated": updated}
 
 @api_router.get("/schedule")
 async def get_schedule():

@@ -150,6 +150,75 @@ Use these team name mappings:
         return []
 
 
+
+async def resolve_tbd_venues(matches: list) -> list:
+    """
+    GPT-5.4 Web Search: Resolve TBD venues for IPL 2026 matches.
+    Searches for actual venue assignments based on team home grounds and IPL schedule.
+    """
+    tbd_matches = [m for m in matches if not m.get("venue") or m.get("venue") == "TBD"]
+    if not tbd_matches:
+        return matches
+
+    # Build a compact list for GPT to resolve
+    match_list = "\n".join([
+        f"Match #{m.get('match_number', '?')}: {m.get('team1Short', '?')} vs {m.get('team2Short', '?')} on {m.get('dateTimeGMT', '?')}"
+        for m in tbd_matches[:40]  # Limit to 40 per batch
+    ])
+
+    raw_text = await _web_search(
+        f"Search for IPL 2026 match venues and stadium assignments. "
+        f"I need the confirmed or expected venue/stadium for these IPL 2026 matches. "
+        f"Search ESPNcricinfo, Cricbuzz, BCCI for the schedule with venues. "
+        f"IPL team home grounds: CSK=MA Chidambaram Stadium Chennai, "
+        f"MI=Wankhede Stadium Mumbai, RCB=M Chinnaswamy Stadium Bengaluru, "
+        f"KKR=Eden Gardens Kolkata, DC=Arun Jaitley Stadium Delhi, "
+        f"RR=Sawai Mansingh Stadium Jaipur, SRH=Rajiv Gandhi International Stadium Hyderabad, "
+        f"PBKS=IS Bindra Stadium Mohali, GT=Narendra Modi Stadium Ahmedabad, "
+        f"LSG=BRSABV Ekana Cricket Stadium Lucknow. "
+        f"Matches:\n{match_list}"
+    )
+    logger.info(f"Venue resolution web search: {len(raw_text)} chars for {len(tbd_matches)} matches")
+
+    parse_instruction = """Parse the venue data into this exact JSON format:
+{"venues": [
+  {"match_number": number, "venue": "Stadium Name, City"}
+]}
+
+RULES:
+- Use the actual stadium name from source if found
+- If not found in source, assign the HOME GROUND of the first-listed team (team1)
+- IPL home grounds:
+  CSK = MA Chidambaram Stadium, Chennai
+  MI = Wankhede Stadium, Mumbai
+  RCB = M Chinnaswamy Stadium, Bengaluru
+  KKR = Eden Gardens, Kolkata
+  DC = Arun Jaitley Stadium, Delhi
+  RR = Sawai Mansingh Stadium, Jaipur
+  SRH = Rajiv Gandhi Intl Stadium, Hyderabad
+  PBKS = IS Bindra Stadium, Mohali
+  GT = Narendra Modi Stadium, Ahmedabad
+  LSG = BRSABV Ekana Stadium, Lucknow
+- Return ALL matches from the input list"""
+
+    try:
+        data = await _parse_to_json(raw_text, parse_instruction)
+        venue_map = {v["match_number"]: v["venue"] for v in data.get("venues", [])}
+
+        for m in matches:
+            mn = m.get("match_number")
+            if mn in venue_map and venue_map[mn]:
+                m["venue"] = venue_map[mn]
+
+        resolved = sum(1 for m in matches if m.get("venue") and m["venue"] != "TBD")
+        logger.info(f"Venue resolution: {resolved}/{len(matches)} matches now have venues")
+        return matches
+    except Exception as e:
+        logger.error(f"Venue resolution error: {e}")
+        return matches
+
+
+
 async def fetch_ipl_squads():
     """Fetch real IPL 2026 squads using GPT-5.1 web search (two-step)."""
     raw_text = await _web_search(
@@ -624,14 +693,18 @@ def _default_pre_match_stats():
 async def fetch_playing_xi(team1: str, team2: str, venue: str) -> Dict:
     """
     GPT-5.4 Web Search: Fetch expected/confirmed 2026 Playing XI for an IPL match.
-    Returns player names, roles, and expected performance stats.
+    Returns player names, roles, venue-specific last-5-match stats, and social buzz confidence.
     """
     raw_text = await _web_search(
         f"Search for the expected or confirmed Playing XI for {team1} vs {team2} "
         f"IPL 2026 match at {venue}. "
-        f"Search Cricbuzz, ESPNcricinfo for predicted or announced lineups. "
-        f"For each player, I also need their IPL 2026 season stats so far: "
-        f"runs scored, batting average, strike rate, wickets taken, economy rate. "
+        f"Search Cricbuzz, ESPNcricinfo, social media (Twitter/X), fantasy cricket sites for predicted or announced lineups. "
+        f"For EACH player, I need: "
+        f"1) Their stats specifically at {venue} in the last 5 matches they played there — "
+        f"runs scored, batting average, strike rate at this venue; wickets taken and economy at this venue. "
+        f"2) Their overall IPL 2026 form — total season runs, wickets, avg, SR, economy. "
+        f"3) Social media buzz and fantasy cricket expert sentiment — is this player trending? "
+        f"Are experts picking them? Any injury concerns or recent controversy? "
         f"Include whether each player is capped, uncapped, or overseas."
     )
     logger.info(f"Playing XI web search for {team1} vs {team2}: {len(raw_text)} chars")
@@ -646,13 +719,22 @@ async def fetch_playing_xi(team1: str, team2: str, venue: str) -> Dict:
       "role": "Batsman/Bowler/All-rounder/Wicketkeeper",
       "is_overseas": boolean,
       "is_captain": boolean,
+      "venue_stats": {{
+        "matches_at_venue": number (how many matches played at {venue}),
+        "runs_at_venue": number (total runs at this venue in last 5 matches),
+        "avg_at_venue": number (batting avg at this venue),
+        "sr_at_venue": number (strike rate at this venue),
+        "wickets_at_venue": number (total wickets at this venue),
+        "economy_at_venue": number (economy rate at this venue)
+      }},
       "season_runs": number (IPL 2026 runs so far, 0 if not available),
       "season_avg": number (batting average this season),
       "season_sr": number (strike rate this season),
       "season_wickets": number (wickets this season),
       "season_economy": number (economy rate this season),
-      "expected_runs": number (predicted runs for this match based on form),
-      "expected_wickets": number (predicted wickets for this match)
+      "expected_runs": number (predicted runs for this match based on venue form),
+      "expected_wickets": number (predicted wickets for this match based on venue form),
+      "buzz_confidence": number (0-100, confidence score based on social media buzz, expert picks, form, fitness - 100 means max confidence this player will perform)
     }}
   ],
   "team2_xi": [same structure as above],
@@ -661,12 +743,21 @@ async def fetch_playing_xi(team1: str, team2: str, venue: str) -> Dict:
 
 RULES:
 - Include exactly 11 players per team if available
-- Use real stats from source. For missing season stats use reasonable defaults:
-  * Top-order bat: 30 runs, avg 28, SR 135, 0 wkts
-  * Middle-order: 22 runs, avg 22, SR 128, 0 wkts
-  * All-rounder: 18 runs, avg 20, SR 125, 1 wkt, econ 8.0
-  * Bowler: 5 runs, avg 8, SR 100, 1.5 wkts, econ 7.8
-  * Wicketkeeper: 25 runs, avg 25, SR 130
+- venue_stats: Use the player's stats specifically at {venue}. If no venue data, use overall IPL average with venue_matches=0.
+- buzz_confidence: 
+  * 80-100: Star player, great form, trending positively, experts' top pick
+  * 60-79: Solid player, decent form, moderate buzz
+  * 40-59: Average form, mixed signals, or new/inconsistent player
+  * 20-39: Poor recent form, injury concerns, or dropped recently
+  * 0-19: Likely to underperform, negative buzz, fitness doubts
+- expected_runs: Weighted by venue_stats (60%) and season form (40%)
+- expected_wickets: Weighted by venue_stats (60%) and season form (40%)
+- Use real stats from source. For missing stats use reasonable defaults:
+  * Top-order bat: 30 runs, avg 28, SR 135, 0 wkts, buzz 65
+  * Middle-order: 22 runs, avg 22, SR 128, 0 wkts, buzz 55
+  * All-rounder: 18 runs, avg 20, SR 125, 1 wkt, econ 8.0, buzz 60
+  * Bowler: 5 runs, avg 8, SR 100, 1.5 wkts, econ 7.8, buzz 60
+  * Wicketkeeper: 25 runs, avg 25, SR 130, buzz 60
 - team1 is {team1}, team2 is {team2}"""
 
     try:

@@ -58,6 +58,9 @@ export default function PlayingXIPerformance({ matchId, team1, team2 }) {
 
   const PlayerRow = ({ player, idx }) => {
     const luck = luckLabel(player.luck_factor);
+    const buzz = player.buzz_confidence;
+    const venueStats = player.venue_stats;
+    const buzzColor = buzz >= 80 ? "#34C759" : buzz >= 60 ? "#007AFF" : buzz >= 40 ? "#FFCC00" : "#FF3B30";
     return (
       <div className={`flex items-center gap-2 py-1.5 ${idx > 0 ? "border-t border-[#1E1E1E]" : ""}`}>
         <span className="w-5 text-[10px] text-[#525252] font-mono text-right">{idx + 1}</span>
@@ -67,9 +70,16 @@ export default function PlayingXIPerformance({ matchId, team1, team2 }) {
             {player.is_captain && <span className="text-[8px] px-1 py-0 bg-[#FFCC00]/20 text-[#FFCC00] rounded font-bold">C</span>}
             {player.is_overseas && <span className="text-[8px] px-1 py-0 bg-[#007AFF]/20 text-[#007AFF] rounded">OS</span>}
           </div>
-          <span className="text-[9px] font-bold uppercase tracking-wider" style={{ color: roleColor(player.role) }}>
-            {player.role}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-[9px] font-bold uppercase tracking-wider" style={{ color: roleColor(player.role) }}>
+              {player.role}
+            </span>
+            {venueStats && venueStats.matches_at_venue > 0 && (
+              <span className="text-[8px] text-[#525252] font-mono">
+                @venue: {venueStats.runs_at_venue}r/{venueStats.wickets_at_venue}w in {venueStats.matches_at_venue}m
+              </span>
+            )}
+          </div>
         </div>
         <div className="text-right space-y-0.5 flex-shrink-0">
           <div className="flex items-center gap-2 justify-end">
@@ -79,6 +89,14 @@ export default function PlayingXIPerformance({ matchId, team1, team2 }) {
             <span className="text-[10px] text-[#A1A1AA] font-mono" data-testid="player-expected-wickets">
               {player.expected_wickets}w
             </span>
+            {buzz !== undefined && (
+              <span className="text-[9px] font-mono font-bold px-1 rounded" 
+                style={{ color: buzzColor, backgroundColor: buzzColor + "15" }}
+                title={`Buzz confidence: ${buzz}/100`}
+                data-testid="player-buzz-confidence">
+                {buzz}
+              </span>
+            )}
             {luck && (
               <span className="flex items-center gap-0.5" title={`Luck: ${luck.label} (${player.luck_factor})`}>
                 <luck.icon weight="bold" className="w-2.5 h-2.5" style={{ color: luck.color }} />
@@ -96,7 +114,7 @@ export default function PlayingXIPerformance({ matchId, team1, team2 }) {
         <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-[#A1A1AA] flex items-center gap-1.5" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
           <UsersThree weight="fill" className="w-4 h-4 text-[#7C3AED]" />
           Expected Playing XI + Performance
-          <InfoTooltip text="Predicted or confirmed Playing XI for this match. Expected runs and wickets are calculated from season stats with a 'luck biasness' variance (+-15%) for realistic projections. Green arrow = lucky day, Red = unlucky." />
+          <InfoTooltip text="Predicted or confirmed Playing XI. Expected performance weighted by venue-specific stats (last 5 matches at this ground, 60%) and season form (40%). Buzz score (0-100) reflects social media sentiment, expert picks, and recent form. Luck biasness adds +-15% random variance for realistic projections." />
         </h4>
         {!data && (
           <button onClick={handleFetch} disabled={loading} data-testid="fetch-playing-xi-btn"
@@ -126,7 +144,7 @@ export default function PlayingXIPerformance({ matchId, team1, team2 }) {
           <div>
             <div className="flex items-center justify-between mb-2">
               <p className="text-[10px] font-bold uppercase tracking-wider text-[#007AFF]">{team1}</p>
-              <p className="text-[9px] text-[#525252] font-mono">Runs | Wkts | Luck</p>
+              <p className="text-[9px] text-[#525252] font-mono">Runs | Wkts | Buzz | Luck</p>
             </div>
             {(data.team1_xi || []).map((p, i) => <PlayerRow key={i} player={p} idx={i} />)}
             {(data.team1_xi || []).length === 0 && <p className="text-[10px] text-[#525252]">No XI data</p>}
@@ -143,7 +161,7 @@ export default function PlayingXIPerformance({ matchId, team1, team2 }) {
           <div>
             <div className="flex items-center justify-between mb-2">
               <p className="text-[10px] font-bold uppercase tracking-wider text-[#FF3B30]">{team2}</p>
-              <p className="text-[9px] text-[#525252] font-mono">Runs | Wkts | Luck</p>
+              <p className="text-[9px] text-[#525252] font-mono">Runs | Wkts | Buzz | Luck</p>
             </div>
             {(data.team2_xi || []).map((p, i) => <PlayerRow key={i} player={p} idx={i} />)}
             {(data.team2_xi || []).length === 0 && <p className="text-[10px] text-[#525252]">No XI data</p>}

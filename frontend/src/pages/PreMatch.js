@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useMatchData } from "@/hooks/useMatchData";
-import PlayingXI from "@/components/PlayingXI";
 import PlayingXIPerformance from "@/components/PlayingXIPerformance";
 import BetaPrediction from "@/components/BetaPrediction";
 import ConsultantDashboard from "@/components/ConsultantDashboard";
@@ -14,8 +13,6 @@ export default function PreMatch() {
   const navigate = useNavigate();
   const { getTeamSquad, fetchMatchPrediction, fetchBetaPrediction, fetchConsultation, sendChat } = useMatchData();
   const [matchInfo, setMatchInfo] = useState(null);
-  const [squad1, setSquad1] = useState(null);
-  const [squad2, setSquad2] = useState(null);
   const [prediction, setPrediction] = useState(null);
   const [loading, setLoading] = useState(true);
   const [predLoading, setPredLoading] = useState(false);
@@ -28,19 +25,11 @@ export default function PreMatch() {
         const data = await res.json();
         const info = data.info || data;
         setMatchInfo(info);
-        if (info.team1Short) {
-          const s1 = await getTeamSquad(info.team1Short);
-          setSquad1(s1);
-        }
-        if (info.team2Short) {
-          const s2 = await getTeamSquad(info.team2Short);
-          setSquad2(s2);
-        }
       } catch (e) { console.error(e); }
       setLoading(false);
     };
     if (matchId) load();
-  }, [matchId, getTeamSquad]);
+  }, [matchId]);
 
   const handlePredict = async () => {
     setPredLoading(true);
@@ -53,9 +42,6 @@ export default function PreMatch() {
   const team2 = matchInfo?.team2 || "Team B";
   const t1Short = matchInfo?.team1Short || team1.slice(0, 3).toUpperCase();
   const t2Short = matchInfo?.team2Short || team2.slice(0, 3).toUpperCase();
-
-  const squad1Players = squad1?.players?.map(p => ({ name: p.name, isCaptain: p.isCaptain, isKeeper: p.isKeeper })) || [];
-  const squad2Players = squad2?.players?.map(p => ({ name: p.name, isCaptain: p.isCaptain, isKeeper: p.isKeeper })) || [];
 
   return (
     <div data-testid="pre-match-page" className="max-w-[1440px] mx-auto px-4 lg:px-6 py-6">
@@ -89,15 +75,6 @@ export default function PreMatch() {
 
               {/* Expected Playing XI with Performance */}
               <PlayingXIPerformance matchId={matchId} team1={t1Short} team2={t2Short} />
-
-              {/* Playing XI */}
-              <PlayingXI
-                squad={[
-                  { teamName: team1, players: squad1Players },
-                  { teamName: team2, players: squad2Players }
-                ]}
-                team1={team1} team2={team2}
-              />
 
               {/* AI Prediction */}
               <div className="bg-[#141414] border border-white/10 rounded-md p-4" data-testid="ai-predictions">

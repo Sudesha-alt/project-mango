@@ -136,10 +136,12 @@ export default function MatchSelector() {
           )}
         </div>
 
-        {/* CricketData.org Live Panel */}
-        <div className="mb-6">
-          <CricApiLivePanel />
-        </div>
+        {/* CricketData.org Live Panel — only on Live tab */}
+        {tab === "live" && (
+          <div className="mb-6">
+            <CricApiLivePanel />
+          </div>
+        )}
 
         {/* Tabs + Predict All */}
         <div className="flex items-center justify-between mb-6 gap-4">
