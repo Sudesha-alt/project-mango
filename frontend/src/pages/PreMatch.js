@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useMatchData } from "@/hooks/useMatchData";
 import PlayingXI from "@/components/PlayingXI";
+import PlayingXIPerformance from "@/components/PlayingXIPerformance";
 import BetaPrediction from "@/components/BetaPrediction";
 import ConsultantDashboard from "@/components/ConsultantDashboard";
 import PreMatchPredictionBreakdown from "@/components/PreMatchPredictionBreakdown";
@@ -85,6 +86,9 @@ export default function PreMatch() {
             <div className="lg:col-span-8 space-y-4">
               {/* Algorithm Prediction Breakdown */}
               <PreMatchPredictionBreakdown matchId={matchId} team1={t1Short} team2={t2Short} />
+
+              {/* Expected Playing XI with Performance */}
+              <PlayingXIPerformance matchId={matchId} team1={t1Short} team2={t2Short} />
 
               {/* Playing XI */}
               <PlayingXI

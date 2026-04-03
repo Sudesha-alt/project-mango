@@ -2,9 +2,10 @@ import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import { useMatchData } from "@/hooks/useMatchData";
-import { Lightning, MapPin, Clock, CaretRight, Broadcast, Trophy, CalendarBlank, ArrowsClockwise, Spinner, Target } from "@phosphor-icons/react";
+import { Lightning, MapPin, Clock, CaretRight, Broadcast, Trophy, CalendarBlank, ArrowsClockwise, Spinner, Target, TrendUp, TrendDown, Minus, UsersThree } from "@phosphor-icons/react";
 import { Badge } from "@/components/ui/badge";
 import CricApiLivePanel from "@/components/CricApiLivePanel";
+import InfoTooltip from "@/components/InfoTooltip";
 
 const API = process.env.REACT_APP_BACKEND_URL + "/api";
 
@@ -16,6 +17,8 @@ export default function MatchSelector() {
   const [predictions, setPredictions] = useState({});
   const [predictingAll, setPredictingAll] = useState(false);
   const [predictProgress, setPredictProgress] = useState({ done: 0, total: 0 });
+  const [repredicting, setRepredicting] = useState(false);
+  const [repredictStatus, setRepredictStatus] = useState(null);
 
   useEffect(() => {
     fetchStatus();
@@ -62,6 +65,31 @@ export default function MatchSelector() {
     }
 
     setPredictingAll(false);
+  };
+
+  const handleRepredictAll = async () => {
+    setRepredicting(true);
+    try {
+      await axios.post(`${API}/predictions/repredict-all`);
+      // Poll status every 5s
+      const poll = setInterval(async () => {
+        try {
+          const res = await axios.get(`${API}/predictions/repredict-status`);
+          setRepredictStatus(res.data);
+          if (!res.data.running) {
+            clearInterval(poll);
+            setRepredicting(false);
+            // Reload predictions
+            const predRes = await axios.get(`${API}/predictions/upcoming`);
+            const map = {};
+            for (const p of predRes.data.predictions || []) map[p.matchId] = p;
+            setPredictions(map);
+          }
+        } catch (e) { /* ignore */ }
+      }, 5000);
+    } catch (e) {
+      setRepredicting(false);
+    }
   };
 
   const selectMatch = (match) => {
@@ -133,16 +161,28 @@ export default function MatchSelector() {
           </div>
 
           {tab === "upcoming" && upcomingCount > 0 && (
-            <button onClick={handlePredictAll} disabled={predictingAll || unpredictedCount === 0} data-testid="predict-all-btn"
-              className="flex items-center gap-2 bg-[#141414] border border-[#262626] text-white px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider hover:border-[#007AFF] transition-colors disabled:opacity-40">
-              {predictingAll ? (
-                <><Spinner className="w-3.5 h-3.5 animate-spin" /> Predicting {predictProgress.done}/{predictProgress.total}...</>
-              ) : unpredictedCount === 0 ? (
-                <><Target weight="fill" className="w-3.5 h-3.5 text-[#34C759]" /> All Predicted</>
-              ) : (
-                <><Target weight="fill" className="w-3.5 h-3.5 text-[#007AFF]" /> Predict All ({unpredictedCount} left)</>
+            <div className="flex gap-2">
+              {predictedCount > 0 && (
+                <button onClick={handleRepredictAll} disabled={repredicting || predictingAll} data-testid="repredict-all-btn"
+                  className="flex items-center gap-2 bg-[#1A0A2E] border border-[#7C3AED]/30 text-white px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider hover:border-[#7C3AED] transition-colors disabled:opacity-40">
+                  {repredicting ? (
+                    <><Spinner className="w-3.5 h-3.5 animate-spin" /> Re-Predicting {repredictStatus?.completed || 0}/{repredictStatus?.total || "?"}...</>
+                  ) : (
+                    <><ArrowsClockwise weight="bold" className="w-3.5 h-3.5 text-[#7C3AED]" /> Re-Predict All</>
+                  )}
+                </button>
               )}
-            </button>
+              <button onClick={handlePredictAll} disabled={predictingAll || unpredictedCount === 0 || repredicting} data-testid="predict-all-btn"
+                className="flex items-center gap-2 bg-[#141414] border border-[#262626] text-white px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider hover:border-[#007AFF] transition-colors disabled:opacity-40">
+                {predictingAll ? (
+                  <><Spinner className="w-3.5 h-3.5 animate-spin" /> Predicting {predictProgress.done}/{predictProgress.total}...</>
+                ) : unpredictedCount === 0 ? (
+                  <><Target weight="fill" className="w-3.5 h-3.5 text-[#34C759]" /> All Predicted</>
+                ) : (
+                  <><Target weight="fill" className="w-3.5 h-3.5 text-[#007AFF]" /> Predict All ({unpredictedCount} left)</>
+                )}
+              </button>
+            </div>
           )}
         </div>
 
@@ -151,6 +191,21 @@ export default function MatchSelector() {
             <div className="text-center">
               <div className="w-8 h-8 border-2 border-[#007AFF] border-t-transparent rounded-full animate-spin mx-auto mb-3" />
               <p className="text-sm text-[#A1A1AA]">Loading IPL 2026 schedule via Web Search...</p>
+            </div>
+          </div>
+        )}
+
+        {repredicting && repredictStatus && (
+          <div className="mb-4 bg-[#1A0A2E] border border-[#7C3AED]/30 rounded-md p-3 flex items-center gap-3" data-testid="repredict-banner">
+            <Spinner className="w-4 h-4 animate-spin text-[#7C3AED]" />
+            <div className="flex-1">
+              <p className="text-xs font-bold text-white">Re-Predicting All Matches with Fresh Data + Playing XI</p>
+              <p className="text-[10px] text-[#A1A1AA]">
+                {repredictStatus.completed}/{repredictStatus.total} complete &middot; {repredictStatus.failed} failed &middot; Current: {repredictStatus.current_match}
+              </p>
+            </div>
+            <div className="text-right">
+              <p className="text-xs font-mono text-[#7C3AED]">{repredictStatus.total > 0 ? Math.round(repredictStatus.completed / repredictStatus.total * 100) : 0}%</p>
             </div>
           </div>
         )}
@@ -189,15 +244,27 @@ export default function MatchSelector() {
                     </div>
                   </div>
 
-                  {/* Confidence bar for upcoming matches with predictions */}
+                  {/* Confidence bar + odds direction + playing XI for upcoming matches with predictions */}
                   {isUpcoming && pred && (
-                    <ConfidenceBar
-                      team1={match.team1Short}
-                      team2={match.team2Short}
-                      team1Prob={pred.prediction?.team1_win_prob}
-                      team2Prob={pred.prediction?.team2_win_prob}
-                      confidence={pred.prediction?.confidence}
-                    />
+                    <>
+                      <ConfidenceBar
+                        team1={match.team1Short}
+                        team2={match.team2Short}
+                        team1Prob={pred.prediction?.team1_win_prob}
+                        team2Prob={pred.prediction?.team2_win_prob}
+                        confidence={pred.prediction?.confidence}
+                        oddsDirection={pred.odds_direction}
+                      />
+                      {pred.playing_xi?.confidence && pred.playing_xi.confidence !== "unavailable" && (
+                        <div className="flex items-center gap-1 mt-1 mb-1">
+                          <UsersThree weight="fill" className="w-3 h-3 text-[#7C3AED]" />
+                          <span className="text-[9px] text-[#A1A1AA] font-mono">
+                            Playing XI: {pred.playing_xi.confidence === "confirmed" ? "Confirmed" : "Predicted"} &middot;
+                            {pred.playing_xi.team1_xi?.length || 0} + {pred.playing_xi.team2_xi?.length || 0} players
+                          </span>
+                        </div>
+                      )}
+                    </>
                   )}
 
                   {match.score && <p className="text-xs font-mono text-[#A1A1AA] bg-[#1E1E1E] rounded px-2 py-1 mb-2 truncate tabular-nums" data-testid={`match-score-${i}`}>{match.score}</p>}
@@ -226,19 +293,35 @@ export default function MatchSelector() {
   );
 }
 
-function ConfidenceBar({ team1, team2, team1Prob, team2Prob, confidence }) {
+function ConfidenceBar({ team1, team2, team1Prob, team2Prob, confidence, oddsDirection }) {
   if (!team1Prob && team1Prob !== 0) return null;
   const t1 = Math.round(team1Prob);
   const t2 = Math.round(team2Prob);
   const t1Color = t1 > t2 ? "#34C759" : t1 === t2 ? "#FFCC00" : "#FF3B30";
   const t2Color = t2 > t1 ? "#34C759" : t2 === t1 ? "#FFCC00" : "#FF3B30";
 
+  const dir1 = oddsDirection?.team1;
+  const dir2 = oddsDirection?.team2;
+  const change1 = oddsDirection?.team1_change;
+  const change2 = oddsDirection?.team2_change;
+
+  const DirIcon = ({ dir, change }) => {
+    if (!dir || dir === "new") return null;
+    if (dir === "up") return <span className="inline-flex items-center text-[#34C759]"><TrendUp weight="bold" className="w-2.5 h-2.5" /><span className="text-[8px] ml-0.5">+{Math.abs(change)}</span></span>;
+    if (dir === "down") return <span className="inline-flex items-center text-[#FF3B30]"><TrendDown weight="bold" className="w-2.5 h-2.5" /><span className="text-[8px] ml-0.5">{change}</span></span>;
+    return <span className="inline-flex items-center text-[#737373]"><Minus weight="bold" className="w-2.5 h-2.5" /></span>;
+  };
+
   return (
     <div data-testid="confidence-bar" className="my-2 space-y-1">
       <div className="flex items-center justify-between text-[10px] font-mono font-bold">
-        <span style={{ color: t1Color }}>{team1} {t1}%</span>
+        <span className="flex items-center gap-1" style={{ color: t1Color }}>
+          {team1} {t1}% <DirIcon dir={dir1} change={change1} />
+        </span>
         <span className="text-[9px] text-[#737373]">PREDICTION</span>
-        <span style={{ color: t2Color }}>{t2}% {team2}</span>
+        <span className="flex items-center gap-1" style={{ color: t2Color }}>
+          <DirIcon dir={dir2} change={change2} /> {t2}% {team2}
+        </span>
       </div>
       <div className="flex h-2 rounded-full overflow-hidden bg-[#262626]">
         <div className="h-full transition-all duration-700 rounded-l-full" style={{ width: `${t1}%`, backgroundColor: t1Color }} />

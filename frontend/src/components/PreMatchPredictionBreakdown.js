@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import axios from "axios";
-import { Spinner, Scales, MapPin, TrendUp, UsersThree, House } from "@phosphor-icons/react";
+import { Spinner, Scales, MapPin, TrendUp, UsersThree, House, TrendDown, Minus } from "@phosphor-icons/react";
 import InfoTooltip from "./InfoTooltip";
 
 const API = process.env.REACT_APP_BACKEND_URL + "/api";
@@ -71,6 +71,7 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2 }) {
   const pred = data.prediction || {};
   const factors = pred.factors || {};
   const stats = data.stats || {};
+  const oddsDir = data.odds_direction || {};
   const t1 = data.team1Short || team1;
   const t2 = data.team2Short || team2;
   const t1Prob = pred.team1_win_prob || 50;
@@ -94,6 +95,27 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2 }) {
         <p className="text-center text-[9px] text-[#737373] font-mono mt-1">
           Model confidence: {pred.confidence}% | Calibrated: {(pred.calibrated_probability * 100).toFixed(1)}%
         </p>
+        {/* Odds Direction Indicator */}
+        {oddsDir.team1 && oddsDir.team1 !== "new" && (
+          <div className="flex items-center justify-between mt-2 px-2 py-1.5 bg-[#0A0A0A] rounded-md" data-testid="odds-direction">
+            <div className="flex items-center gap-1.5">
+              {oddsDir.team1 === "up" ? <TrendUp weight="bold" className="w-3.5 h-3.5 text-[#34C759]" /> : oddsDir.team1 === "down" ? <TrendDown weight="bold" className="w-3.5 h-3.5 text-[#FF3B30]" /> : <Minus weight="bold" className="w-3.5 h-3.5 text-[#737373]" />}
+              <span className="text-[10px] font-mono" style={{ color: oddsDir.team1 === "up" ? "#34C759" : oddsDir.team1 === "down" ? "#FF3B30" : "#737373" }}>
+                {t1} {oddsDir.team1_change > 0 ? "+" : ""}{oddsDir.team1_change}%
+              </span>
+            </div>
+            <span className="text-[9px] text-[#525252] font-mono flex items-center gap-1">
+              vs prev: {oddsDir.previous_team1_prob}% / {oddsDir.previous_team2_prob}%
+              <InfoTooltip text="Shows how the prediction changed compared to the previous run. Green = odds improved, Red = odds dropped. This helps you spot momentum shifts." />
+            </span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] font-mono" style={{ color: oddsDir.team2 === "up" ? "#34C759" : oddsDir.team2 === "down" ? "#FF3B30" : "#737373" }}>
+                {oddsDir.team2_change > 0 ? "+" : ""}{oddsDir.team2_change}% {t2}
+              </span>
+              {oddsDir.team2 === "up" ? <TrendUp weight="bold" className="w-3.5 h-3.5 text-[#34C759]" /> : oddsDir.team2 === "down" ? <TrendDown weight="bold" className="w-3.5 h-3.5 text-[#FF3B30]" /> : <Minus weight="bold" className="w-3.5 h-3.5 text-[#737373]" />}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Factor Breakdown */}

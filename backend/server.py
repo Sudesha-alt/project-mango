@@ -7,8 +7,9 @@ import logging
 import json
 import asyncio
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
+from pydantic import BaseModel
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -132,9 +133,6 @@ async def get_team_squad(team_short: str):
         )
     return {"squad": squad}
 
-
-from pydantic import BaseModel
-from typing import Optional
 
 class FetchLiveRequest(BaseModel):
     betting_team1_pct: Optional[float] = None   # 0-100 probability %
@@ -355,14 +353,16 @@ async def api_predict(match_id: str):
 # ─── PRE-MATCH PREDICTION ───────────────────────────────────
 
 @api_router.post("/matches/{match_id}/pre-match-predict")
-async def api_pre_match_predict(match_id: str):
+async def api_pre_match_predict(match_id: str, force: bool = False):
     """
     Predict upcoming match winner using H2H, venue, form, squad algorithms.
     Fetches real stats via GPT-5.4 web search, stores result in DB.
+    Also fetches Playing XI with expected performance and luck biasness.
+    Tracks odds direction (trend) vs previous prediction.
     """
     # Check if we already have a prediction stored
     cached = await db.pre_match_predictions.find_one({"matchId": match_id}, {"_id": 0})
-    if cached:
+    if cached and not force:
         return cached
 
     match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
@@ -382,6 +382,45 @@ async def api_pre_match_predict(match_id: str):
     # Run algorithm stack
     prediction = compute_prediction(stats)
 
+    # Fetch Playing XI with expected performance + luck biasness
+    import random
+    xi_data = await fetch_playing_xi(team1, team2, venue)
+    for team_key in ["team1_xi", "team2_xi"]:
+        for player in xi_data.get(team_key, []):
+            luck_factor = random.uniform(0.85, 1.15)
+            player["expected_runs"] = round(player.get("expected_runs", 15) * luck_factor, 1)
+            player["expected_wickets"] = round(player.get("expected_wickets", 0) * random.uniform(0.80, 1.20), 1)
+            player["luck_factor"] = round(luck_factor, 3)
+
+    # Compute odds direction vs previous prediction
+    odds_direction = {"team1": "new", "team2": "new"}
+    if cached:
+        old_t1 = cached.get("prediction", {}).get("team1_win_prob", 50)
+        new_t1 = prediction["team1_win_prob"]
+        diff = round(new_t1 - old_t1, 1)
+        if diff > 0.5:
+            odds_direction["team1"] = "up"
+            odds_direction["team2"] = "down"
+        elif diff < -0.5:
+            odds_direction["team1"] = "down"
+            odds_direction["team2"] = "up"
+        else:
+            odds_direction["team1"] = "stable"
+            odds_direction["team2"] = "stable"
+        odds_direction["team1_change"] = diff
+        odds_direction["team2_change"] = round(-diff, 1)
+        odds_direction["previous_team1_prob"] = old_t1
+        odds_direction["previous_team2_prob"] = cached.get("prediction", {}).get("team2_win_prob", 50)
+
+    # Store previous prediction in history before overwriting
+    if cached:
+        await db.prediction_history.insert_one({
+            "matchId": match_id,
+            "prediction": cached.get("prediction"),
+            "computed_at": cached.get("computed_at"),
+            "superseded_at": datetime.now(timezone.utc).isoformat(),
+        })
+
     # Build result
     result = {
         "matchId": match_id,
@@ -394,6 +433,12 @@ async def api_pre_match_predict(match_id: str):
         "match_number": match_info.get("match_number"),
         "prediction": prediction,
         "stats": stats,
+        "playing_xi": {
+            "team1_xi": xi_data.get("team1_xi", []),
+            "team2_xi": xi_data.get("team2_xi", []),
+            "confidence": xi_data.get("confidence", "unavailable"),
+        },
+        "odds_direction": odds_direction,
         "computed_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -403,17 +448,17 @@ async def api_pre_match_predict(match_id: str):
         {"$set": result},
         upsert=True,
     )
-    logger.info(f"Stored prediction for {match_id}: {t1_short} {prediction['team1_win_prob']}% vs {t2_short} {prediction['team2_win_prob']}%")
+    logger.info(f"Stored prediction for {match_id}: {t1_short} {prediction['team1_win_prob']}% vs {t2_short} {prediction['team2_win_prob']}% [dir: {odds_direction['team1']}]")
 
     return result
 
 
 @api_router.post("/schedule/predict-upcoming")
-async def api_predict_upcoming():
+async def api_predict_upcoming(force: bool = False):
     """
-    Batch predict all upcoming matches that don't have predictions yet.
+    Batch predict all upcoming matches.
+    If force=true, re-predicts all matches with fresh data (Playing XI + expanded stats).
     Runs sequentially (each takes ~15-30s due to web search).
-    Returns list of predictions already available + count of new ones queued.
     """
     upcoming = []
     async for doc in db.ipl_schedule.find({"status": "Upcoming"}, {"_id": 0}).sort("match_number", 1):
@@ -425,41 +470,81 @@ async def api_predict_upcoming():
 
     for match in upcoming:
         mid = match.get("matchId", "")
-        cached = await db.pre_match_predictions.find_one({"matchId": mid}, {"_id": 0})
-        if cached:
-            predictions.append(cached)
-            already_count += 1
-        else:
-            # Run prediction for this match
-            try:
-                team1 = match.get("team1", "")
-                team2 = match.get("team2", "")
-                venue = match.get("venue", "")
-                t1_short = match.get("team1Short", get_short_name(team1))
-                t2_short = match.get("team2Short", get_short_name(team2))
+        if not force:
+            cached = await db.pre_match_predictions.find_one({"matchId": mid}, {"_id": 0})
+            if cached:
+                predictions.append(cached)
+                already_count += 1
+                continue
 
-                stats = await fetch_pre_match_stats(team1, team2, venue)
-                prediction = compute_prediction(stats)
+        # Run prediction for this match (with Playing XI + odds direction)
+        try:
+            team1 = match.get("team1", "")
+            team2 = match.get("team2", "")
+            venue = match.get("venue", "")
+            t1_short = match.get("team1Short", get_short_name(team1))
+            t2_short = match.get("team2Short", get_short_name(team2))
 
-                result = {
-                    "matchId": mid,
-                    "team1": team1, "team2": team2,
-                    "team1Short": t1_short, "team2Short": t2_short,
-                    "venue": venue,
-                    "dateTimeGMT": match.get("dateTimeGMT", ""),
-                    "match_number": match.get("match_number"),
-                    "prediction": prediction,
-                    "stats": stats,
-                    "computed_at": datetime.now(timezone.utc).isoformat(),
-                }
-                await db.pre_match_predictions.update_one(
-                    {"matchId": mid}, {"$set": result}, upsert=True
-                )
-                predictions.append(result)
-                new_count += 1
-                logger.info(f"Predicted {mid}: {t1_short} {prediction['team1_win_prob']}% vs {t2_short}")
-            except Exception as e:
-                logger.error(f"Failed to predict {mid}: {e}")
+            # Get previous prediction for odds direction
+            import random
+            cached = await db.pre_match_predictions.find_one({"matchId": mid}, {"_id": 0})
+
+            stats = await fetch_pre_match_stats(team1, team2, venue)
+            prediction = compute_prediction(stats)
+
+            # Fetch Playing XI
+            xi_data = await fetch_playing_xi(team1, team2, venue)
+            for team_key in ["team1_xi", "team2_xi"]:
+                for player in xi_data.get(team_key, []):
+                    luck_factor = random.uniform(0.85, 1.15)
+                    player["expected_runs"] = round(player.get("expected_runs", 15) * luck_factor, 1)
+                    player["expected_wickets"] = round(player.get("expected_wickets", 0) * random.uniform(0.80, 1.20), 1)
+                    player["luck_factor"] = round(luck_factor, 3)
+
+            # Odds direction
+            odds_direction = {"team1": "new", "team2": "new"}
+            if cached:
+                old_t1 = cached.get("prediction", {}).get("team1_win_prob", 50)
+                new_t1 = prediction["team1_win_prob"]
+                diff = round(new_t1 - old_t1, 1)
+                if diff > 0.5:
+                    odds_direction = {"team1": "up", "team2": "down", "team1_change": diff, "team2_change": round(-diff, 1), "previous_team1_prob": old_t1, "previous_team2_prob": cached.get("prediction", {}).get("team2_win_prob", 50)}
+                elif diff < -0.5:
+                    odds_direction = {"team1": "down", "team2": "up", "team1_change": diff, "team2_change": round(-diff, 1), "previous_team1_prob": old_t1, "previous_team2_prob": cached.get("prediction", {}).get("team2_win_prob", 50)}
+                else:
+                    odds_direction = {"team1": "stable", "team2": "stable", "team1_change": diff, "team2_change": round(-diff, 1), "previous_team1_prob": old_t1, "previous_team2_prob": cached.get("prediction", {}).get("team2_win_prob", 50)}
+                # Archive old prediction
+                await db.prediction_history.insert_one({
+                    "matchId": mid, "prediction": cached.get("prediction"),
+                    "computed_at": cached.get("computed_at"),
+                    "superseded_at": datetime.now(timezone.utc).isoformat(),
+                })
+
+            result = {
+                "matchId": mid,
+                "team1": team1, "team2": team2,
+                "team1Short": t1_short, "team2Short": t2_short,
+                "venue": venue,
+                "dateTimeGMT": match.get("dateTimeGMT", ""),
+                "match_number": match.get("match_number"),
+                "prediction": prediction,
+                "stats": stats,
+                "playing_xi": {
+                    "team1_xi": xi_data.get("team1_xi", []),
+                    "team2_xi": xi_data.get("team2_xi", []),
+                    "confidence": xi_data.get("confidence", "unavailable"),
+                },
+                "odds_direction": odds_direction,
+                "computed_at": datetime.now(timezone.utc).isoformat(),
+            }
+            await db.pre_match_predictions.update_one(
+                {"matchId": mid}, {"$set": result}, upsert=True
+            )
+            predictions.append(result)
+            new_count += 1
+            logger.info(f"Predicted {mid}: {t1_short} {prediction['team1_win_prob']}% vs {t2_short} [dir: {odds_direction['team1']}]")
+        except Exception as e:
+            logger.error(f"Failed to predict {mid}: {e}")
 
     return {
         "total_upcoming": len(upcoming),
@@ -476,6 +561,121 @@ async def api_get_upcoming_predictions():
     async for doc in db.pre_match_predictions.find({}, {"_id": 0}).sort("match_number", 1):
         predictions.append(doc)
     return {"predictions": predictions, "count": len(predictions)}
+
+
+# ─── BACKGROUND RE-PREDICTION ────────────────────────────────
+
+repredict_status = {"running": False, "total": 0, "completed": 0, "failed": 0, "current_match": "", "started_at": None}
+
+async def _background_repredict_all():
+    """Background task: re-predict all upcoming matches with fresh data + Playing XI."""
+    import random
+    global repredict_status
+    repredict_status["running"] = True
+    repredict_status["completed"] = 0
+    repredict_status["failed"] = 0
+    repredict_status["started_at"] = datetime.now(timezone.utc).isoformat()
+
+    upcoming = []
+    async for doc in db.ipl_schedule.find({"status": "Upcoming"}, {"_id": 0}).sort("match_number", 1):
+        upcoming.append(doc)
+    repredict_status["total"] = len(upcoming)
+
+    for match in upcoming:
+        mid = match.get("matchId", "")
+        team1 = match.get("team1", "")
+        team2 = match.get("team2", "")
+        venue = match.get("venue", "")
+        t1_short = match.get("team1Short", get_short_name(team1))
+        t2_short = match.get("team2Short", get_short_name(team2))
+        repredict_status["current_match"] = f"{t1_short} vs {t2_short}"
+
+        try:
+            # Get old prediction for odds direction
+            cached = await db.pre_match_predictions.find_one({"matchId": mid}, {"_id": 0})
+
+            stats = await fetch_pre_match_stats(team1, team2, venue)
+            prediction = compute_prediction(stats)
+
+            # Fetch Playing XI
+            xi_data = await fetch_playing_xi(team1, team2, venue)
+            for team_key in ["team1_xi", "team2_xi"]:
+                for player in xi_data.get(team_key, []):
+                    luck_factor = random.uniform(0.85, 1.15)
+                    player["expected_runs"] = round(player.get("expected_runs", 15) * luck_factor, 1)
+                    player["expected_wickets"] = round(player.get("expected_wickets", 0) * random.uniform(0.80, 1.20), 1)
+                    player["luck_factor"] = round(luck_factor, 3)
+
+            # Odds direction
+            odds_direction = {"team1": "new", "team2": "new"}
+            if cached and cached.get("prediction"):
+                old_t1 = cached["prediction"].get("team1_win_prob", 50)
+                new_t1 = prediction["team1_win_prob"]
+                diff = round(new_t1 - old_t1, 1)
+                direction = "stable" if abs(diff) <= 0.5 else ("up" if diff > 0 else "down")
+                odds_direction = {
+                    "team1": direction,
+                    "team2": "down" if direction == "up" else ("up" if direction == "down" else "stable"),
+                    "team1_change": diff,
+                    "team2_change": round(-diff, 1),
+                    "previous_team1_prob": old_t1,
+                    "previous_team2_prob": cached["prediction"].get("team2_win_prob", 50),
+                }
+                await db.prediction_history.insert_one({
+                    "matchId": mid, "prediction": cached.get("prediction"),
+                    "computed_at": cached.get("computed_at"),
+                    "superseded_at": datetime.now(timezone.utc).isoformat(),
+                })
+
+            result = {
+                "matchId": mid,
+                "team1": team1, "team2": team2,
+                "team1Short": t1_short, "team2Short": t2_short,
+                "venue": venue,
+                "dateTimeGMT": match.get("dateTimeGMT", ""),
+                "match_number": match.get("match_number"),
+                "prediction": prediction,
+                "stats": stats,
+                "playing_xi": {
+                    "team1_xi": xi_data.get("team1_xi", []),
+                    "team2_xi": xi_data.get("team2_xi", []),
+                    "confidence": xi_data.get("confidence", "unavailable"),
+                },
+                "odds_direction": odds_direction,
+                "computed_at": datetime.now(timezone.utc).isoformat(),
+            }
+            await db.pre_match_predictions.update_one(
+                {"matchId": mid}, {"$set": result}, upsert=True
+            )
+            repredict_status["completed"] += 1
+            logger.info(f"[RePredict {repredict_status['completed']}/{repredict_status['total']}] {t1_short} {prediction['team1_win_prob']}% vs {t2_short} [dir: {odds_direction['team1']}]")
+        except Exception as e:
+            repredict_status["failed"] += 1
+            logger.error(f"[RePredict] Failed {mid}: {e}")
+
+    repredict_status["running"] = False
+    repredict_status["current_match"] = "Done"
+    logger.info(f"[RePredict] Complete: {repredict_status['completed']} predicted, {repredict_status['failed']} failed")
+
+
+@api_router.post("/predictions/repredict-all")
+async def api_repredict_all(background_tasks: Any = None):
+    """
+    Trigger background re-prediction of ALL upcoming matches with fresh data.
+    Includes Playing XI, expanded H2H/venue stats, and odds direction tracking.
+    Returns immediately — poll /api/predictions/repredict-status for progress.
+    """
+    if repredict_status["running"]:
+        return {"status": "already_running", "progress": repredict_status}
+
+    asyncio.create_task(_background_repredict_all())
+    return {"status": "started", "message": "Background re-prediction started. Poll /api/predictions/repredict-status for progress."}
+
+
+@api_router.get("/predictions/repredict-status")
+async def api_repredict_status():
+    """Get the current status of the background re-prediction task."""
+    return repredict_status
 
 
 # ─── DATA SOURCE INFO ────────────────────────────────────────
