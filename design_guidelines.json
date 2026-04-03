@@ -1,97 +1,150 @@
 {
-  "project_name": "PPL Board",
-  "domain": "Sports Analytics & Prediction",
   "theme": "dark",
-  "archetype": "The Performance Pro",
-  "rationale": "As a live sports prediction and odds-tracking dashboard, PPL Board demands an authoritative, high-energy 'command center' feel. Archetype 2 (Performance Pro) combined with a strict dark theme provides the necessary high-contrast tactical minimalism. Deep obsidian backgrounds paired with pure white text and Volt Blue/Electric Blaze accents guarantee scanability and immediate visual recognition of critical live data without visual fatigue.",
-  "colors": {
-    "background": "#0A0A0A",
-    "surface": "#141414",
-    "surface_elevated": "#1E1E1E",
-    "border": "rgba(255, 255, 255, 0.1)",
-    "text": {
-      "primary": "#FFFFFF",
-      "secondary": "#A1A1AA",
-      "muted": "#71717A",
-      "inverse": "#000000"
-    },
-    "accents": {
-      "primary": "#007AFF",
-      "danger": "#FF3B30",
-      "success": "#22C55E",
-      "warning": "#EAB308",
-      "highlight": "#FF2D55"
-    }
+  "archetype": "Archetype 2 (The Performance Pro)",
+  "project_name": "Gamble Consultant",
+  "domain": "Sports Betting Analytics Dashboard",
+  "design_philosophy": {
+    "core_principles": [
+      "Fusion over Imitation: Mix command-center precision with high-stakes casino luxury.",
+      "Emotion First: The UI should feel like a high-end trading terminal. Tension, expertise, adrenaline.",
+      "Zoom in: Highlight 'Value Bet' signals and the 'Win Probability' gauge as the focal points.",
+      "Contrast: Pure white data points cutting through deep obsidian backgrounds. High-saturation tactical accents."
+    ],
+    "anti_patterns": [
+      "NO teal or purple (#1B93A4 or #9D4CDD).",
+      "NO Space Grotesk font.",
+      "NO center-everything disease; use asymmetrical grid tension.",
+      "NO generic gradients. Use flat/matte colors with 1px precise borders."
+    ]
   },
   "typography": {
+    "font_strategy": "The 'Swiss Brutalist / Performance' Pairing. Strong Condensed Sans for high-impact numbers and headings, Geometric Sans for tactical body copy.",
     "fonts": {
-      "heading": "'Barlow Condensed', sans-serif",
-      "body": "'DM Sans', sans-serif",
-      "mono": "'JetBrains Mono', monospace"
+      "headings": {
+        "family": "Barlow Condensed",
+        "weights": ["700", "900"],
+        "usage": "H1-H3, massive score metrics, and Value Badges."
+      },
+      "body": {
+        "family": "IBM Plex Sans",
+        "weights": ["400", "500", "600"],
+        "usage": "Body text, tables, labels, and chat messages."
+      },
+      "mono": {
+        "family": "JetBrains Mono",
+        "weights": ["400"],
+        "usage": "Odds comparison, JSON output, data coordinates."
+      }
     },
-    "rules": {
-      "h1": "text-4xl sm:text-5xl uppercase font-black tracking-tight",
-      "h2": "text-2xl sm:text-3xl uppercase font-bold tracking-tight",
-      "h3": "text-xl sm:text-2xl font-bold",
-      "h4": "text-lg uppercase font-bold tracking-wider",
-      "body": "text-base font-normal leading-relaxed",
-      "small": "text-sm text-[#A1A1AA]",
-      "overline": "text-xs uppercase tracking-[0.2em] font-bold text-[#A1A1AA]",
-      "data_numbers": "font-mono tabular-nums tracking-tight"
+    "hierarchy": {
+      "h1": "text-4xl sm:text-5xl uppercase tracking-tighter leading-none font-black",
+      "h2": "text-2xl sm:text-3xl uppercase tracking-tight font-bold",
+      "h3": "text-xl sm:text-2xl font-bold tracking-tight",
+      "body": "text-base leading-relaxed tracking-normal",
+      "labels": "text-xs uppercase tracking-[0.2em] font-semibold text-neutral-400"
     }
   },
-  "layout_and_spacing": {
-    "strategy": "Control Room Grid (Density & Correlation)",
-    "grid_system": {
-      "base": "grid-cols-1 lg:grid-cols-12 gap-4 or gap-6",
-      "split_view": "Left panel (Live Scoreboard, Ball Log) uses col-span-12 lg:col-span-8. Right panel (Predictions, Odds Engine, Models) uses col-span-12 lg:col-span-4."
-    },
-    "containers": "Use flat rectangular widgets with 1px border (border-white/10). Internal padding must be p-4 or p-6. Use h-full so widgets stretch to match neighbors.",
-    "alignment": "Left-align complex data and tables. Center-align empty states or high-level status indicators (e.g., 'MATCH LIVE')."
-  },
-  "surface_styles": {
-    "header": "Crystal Glassmorphism: bg-black/60 backdrop-blur-xl border-b border-white/10 shadow-sm z-50",
-    "cards": "Tactical Minimalism: Flat solid bg-[#141414], 1px solid border-white/10. No soft shadows. Sharp corners or max rounded-md (4px-6px).",
-    "hover_states": "Interactive elements must shift surface to bg-[#1E1E1E] and text to pure white. Odds buttons hover should trigger a subtle 1px inner glow border."
-  },
-  "components_strategy": {
-    "navigation": "Sticky top bar with Logo, Match Selector Dropdown, and primary CTAs. Include clear navigation between Pre-Match, Live Match, and Post-Match screens (using Shadcn Tabs styled as pill buttons).",
-    "odds_engine": "Must use 'tabular-nums' to prevent horizontal layout shifting when numbers change rapidly. Use conditional text colors (success/danger) when odds fluctuate. Incorporate Framer Motion for subtle background flashes on value changes.",
-    "live_scoreboard": "High contrast typography. Main score uses H1 size (Barlow Condensed). Run rate and targets use mono font.",
-    "charts": "Recharts library. \n- Win Probability: AreaChart with Volt Blue and Electric Blaze gradient fills.\n- Manhattan Chart: BarChart with solid Volt Blue columns.\n- Radar Chart: PolarAngleAxis for Player attribute predictions.\n- Tooltips must be styled with the 'cards' surface style.",
-    "playing_xi": "List format. Avatar/Icon + Name + Role. Use a dense list (py-2 gap-2) to fit 11 players without excessive scrolling.",
-    "ball_log": "Horizontal scrolling pill list or dense vertical feed. Highlight Wickets in Danger Red, Boundaries in Warning Yellow or Primary Blue.",
-    "algorithm_comparison": "Small dense cards or a consolidated table displaying: Pressure Index, DLS Resource, Bayesian, Monte Carlo, Ensemble percentages. Use mini progress-bars or dot indicators."
-  },
-  "motion_and_interactions": {
-    "page_transitions": "Subtle fade and slide up (framer-motion).",
-    "data_updates": "Numbers must count up or flash softly when WebSocket pushes new odds. Do NOT animate the entire container, only the text values.",
-    "tabs": "Smooth LayoutGroup animation for the active tab indicator."
-  },
-  "media_and_assets": {
-    "icons": "Use Phosphor Icons (@phosphor-icons/react) with 'duotone' or 'bold' weight for sports/analytics symbols (e.g., Target, ChartLine, Lightning, Baseball).",
-    "images": {
-      "match_selector_bg": {
-        "url": "https://images.pexels.com/photos/36230651/pexels-photo-36230651.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
-        "category": "background",
-        "description": "Night cricket match stadium. Use with a heavy bg-black/70 overlay so text remains readable."
-      },
-      "player_placeholder": {
-        "url": "https://images.pexels.com/photos/3602833/pexels-photo-3602833.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
-        "category": "placeholder",
-        "description": "Cricket player in action (sweep shot). Use for player prediction models or man-of-the-match highlights."
+  "colors": {
+    "strategy": "Deep Obsidian anchor with high-visibility tactical accents. Pure White for key data.",
+    "palette": {
+      "background": "#0A0A0A",
+      "surface": "#141414",
+      "surface_hover": "#1F1F1F",
+      "border": "#262626",
+      "text_primary": "#FFFFFF",
+      "text_secondary": "#A3A3A3",
+      "text_muted": "#737373",
+      "brand_accent": "#007AFF",
+      "kinetic_trigger": "#007AFF",
+      "signals": {
+        "value": "#34C759",
+        "strong_value": "#34C759",
+        "avoid": "#FF3B30",
+        "no_bet": "#FF3B30",
+        "wait": "#FFCC00"
       }
     }
   },
+  "layout_spacing": {
+    "strategy": "Mode B: The 'Control Room' Grid. Dense, data correlation, high scanability.",
+    "container": "w-full max-w-[1600px] mx-auto px-4 md:px-8",
+    "grid": {
+      "base": "grid grid-cols-1 md:grid-cols-4 lg:grid-cols-12 gap-4 md:gap-6",
+      "spans": {
+        "summary_widget": "col-span-1 md:col-span-2 lg:col-span-3",
+        "main_chart": "col-span-1 md:col-span-4 lg:col-span-6 row-span-2",
+        "chat_panel": "col-span-1 md:col-span-4 lg:col-span-3 row-span-2"
+      }
+    },
+    "surfaces": {
+      "cards": "bg-[#141414] border border-[#262626] rounded-none md:rounded-lg p-6 flex flex-col h-full",
+      "glass": "backdrop-blur-xl bg-black/60 border-b border-white/10"
+    }
+  },
+  "components": {
+    "buttons": {
+      "primary": "bg-[#007AFF] text-white font-bold uppercase tracking-wider py-3 px-6 rounded-md hover:bg-blue-600 transition-colors focus:ring-2 focus:ring-blue-400 focus:outline-none",
+      "secondary": "bg-transparent border border-[#262626] text-white hover:border-white/50 transition-colors py-3 px-6 rounded-md"
+    },
+    "badges": {
+      "value": "bg-[#34C759]/10 text-[#34C759] border border-[#34C759]/50 text-xs font-mono uppercase px-2 py-1",
+      "avoid": "bg-[#FF3B30]/10 text-[#FF3B30] border border-[#FF3B30]/50 text-xs font-mono uppercase px-2 py-1"
+    },
+    "chat_box": {
+      "container": "bg-[#141414] border border-[#262626] rounded-lg h-full flex flex-col",
+      "message_user": "bg-[#1F1F1F] text-white p-3 rounded-md self-end max-w-[85%] text-sm",
+      "message_ai": "bg-transparent border-l-2 border-[#007AFF] pl-4 py-2 my-2 text-[#A3A3A3] text-sm"
+    },
+    "gauges_and_charts": {
+      "win_probability": "Use Recharts PieChart (half arc) or custom SVG. High contrast stroke from #FF3B30 (0) to #34C759 (100).",
+      "risk_toggle": "Tactical segmented control with sharp indicator, background #0A0A0A, active text #FFFFFF."
+    }
+  },
+  "motion": {
+    "hover": "hover:-translate-y-1 hover:border-white/30 transition-all duration-200 ease-in-out",
+    "entrance": "Staggered fade-in-up for dashboard widgets using Framer Motion.",
+    "chart_drawing": "Smooth path drawing animation for the edge meter and win probability gauge."
+  },
+  "media": {
+    "image_urls": [
+      {
+        "url": "https://static.prod-images.emergentagent.com/jobs/55a46916-2d56-480c-bc41-0d2581d0a2de/images/d10e64cbdb94b72851b640947f12f9eb49fc3b671d0fc404e31e78a5d6826fa3.png",
+        "description": "Abstract tactical dark mode data visualization background. Use for the full app background overlay at 10% opacity with mix-blend-screen.",
+        "category": "background"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1750716413444-c8a957fcf35c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2OTV8MHwxfHNlYXJjaHwyfHxjcmlja2V0JTIwc3RhZGl1bSUyMG5pZ2h0JTIwbGlnaHRzJTIwZGFya3xlbnwwfHx8fDE3NzUyMzY5ODB8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Cricket stadium night lights dark. Use for Match Selector thumbnails or live match headers.",
+        "category": "hero_match"
+      },
+      {
+        "url": "https://images.pexels.com/photos/36230651/pexels-photo-36230651.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Night cricket match with a large crowd at Narendra Modi Stadium. Use for high-stakes playoff match thumbnails.",
+        "category": "match_thumbnail"
+      }
+    ],
+    "icons": {
+      "library": "@phosphor-icons/react",
+      "style": "Regular or Fill (for active states). Sharp, clear, data-driven. Install via `yarn add @phosphor-icons/react`."
+    }
+  },
+  "testing": {
+    "requirements": [
+      "All interactive elements MUST include a `data-testid` attribute.",
+      "Example: `data-testid=\"chat-submit-button\"`, `data-testid=\"risk-tolerance-toggle\"`, `data-testid=\"match-selector-card\"`."
+    ]
+  },
   "instructions_to_main_agent": [
-    "Install dependencies: `yarn add @phosphor-icons/react framer-motion recharts`.",
-    "Load Google Fonts in index.html: 'Barlow Condensed', 'DM Sans', 'JetBrains Mono'.",
-    "Setup Tailwind config to use these fonts and the specified dark mode color palette (e.g., background: #0A0A0A).",
-    "Build a 4-tab interface (Match Selector, Pre-Match, Live Match, Post-Match).",
-    "Implement the Live Match screen with a strict 12-column Grid (Left 8 cols for Scoreboard/Ball Log, Right 4 cols for Odds Engine/Algorithms).",
-    "CRITICAL: All numbers in the Live Scoreboard and Odds Engine MUST use the 'tabular-nums' Tailwind class to prevent layout jitter.",
-    "CRITICAL: Add 'data-testid' to all buttons, tabs, and odds elements.",
-    "Do NOT use HTML inputs for dropdowns; use Shadcn Select/Dropdown components.",
-    "Use pure HTML+Tailwind for high-level structure (div, section) and Shadcn for interactive UI elements (Tabs, Tables, Badges)."
+    "You MUST implement the app in pure Dark Mode ONLY. No light mode toggle.",
+    "Use Javascript (.js/.jsx) for all components, do NOT use Typescript (.tsx).",
+    "Install and use `@phosphor-icons/react`.",
+    "Use Shadcn components for complex interactions (Select, Dialog, Tabs) but override styles to have max 8px radii and hard #262626 borders.",
+    "For the Win Probability Gauge, build an SVG-based semi-circle or use Recharts.",
+    "Implement the 'Consultant Dashboard' grid precisely using the grid-cols-1 md:grid-cols-12 system. It must look like an elite trading terminal.",
+    "The Consultant Chat Box should be an anchored/sticky widget (e.g., right-hand sidebar taking col-span-3 or col-span-4).",
+    "Use pure white text for critical numbers, muted #A3A3A3 for labels.",
+    "Load Barlow Condensed and IBM Plex Sans via Google Fonts in index.html or global css.",
+    "Do NOT use real images for player profiles unless available via generic avatar; use typography and high-contrast impact cards instead.",
+    "Apply `data-testid` to all interactive elements strictly."
   ]
 }
