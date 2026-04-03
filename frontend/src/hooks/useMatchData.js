@@ -80,9 +80,23 @@ export function useMatchData() {
     } catch (e) { return null; }
   }, []);
 
+  const fetchBetaPrediction = useCallback(async (matchId, marketOdds = {}) => {
+    try {
+      const res = await axios.post(`${API}/matches/${matchId}/beta-predict`, {
+        market_team1_odds: marketOdds.team1 || null,
+        market_team2_odds: marketOdds.team2 || null,
+      });
+      return res.data;
+    } catch (e) {
+      console.error("Beta prediction error:", e);
+      return null;
+    }
+  }, []);
+
   return {
     schedule, squads, loading, apiStatus,
     fetchStatus, loadSchedule, loadSquads, getTeamSquad,
     fetchLiveData, getMatchState, fetchPlayerPredictions, fetchMatchPrediction,
+    fetchBetaPrediction,
   };
 }

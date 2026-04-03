@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="3" skipped="0" tests="15" time="487.844" timestamp="2026-04-03T16:24:00.504478+00:00" hostname="agent-env-c04530c5-e2d8-4df7-9745-07e632eb1b29"><testcase classname="backend.tests.test_beta_prediction.TestHealthEndpoint" name="test_health_returns_version_3" time="0.285" /><testcase classname="backend.tests.test_beta_prediction.TestScheduleEndpoint" name="test_schedule_returns_matches" time="0.155" /><testcase classname="backend.tests.test_beta_prediction.TestBetaPredictEndpoint" name="test_beta_predict_returns_200" time="60.140"><failure message="assert 502 == 200&#10; +  where 502 = &lt;Response [502]&gt;.status_code">backend/tests/test_beta_prediction.py:51: in test_beta_predict_returns_200
+    assert response.status_code == 200
+E   assert 502 == 200
+E    +  where 502 = &lt;Response [502]&gt;.status_code</failure></testcase><testcase classname="backend.tests.test_beta_prediction.TestBetaPredictEndpoint" name="test_beta_predict_has_monte_carlo" time="60.289"><failure message="requests.exceptions.JSONDecodeError: Expecting value: line 1 column 1 (char 0)">/root/.venv/lib/python3.11/site-packages/requests/models.py:976: in json
+    return complexjson.loads(self.text, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/json/__init__.py:346: in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/json/decoder.py:337: in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/json/decoder.py:355: in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+E   json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+
+During handling of the above exception, another exception occurred:
+backend/tests/test_beta_prediction.py:61: in test_beta_predict_has_monte_carlo
+    data = response.json()
+           ^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/models.py:980: in json
+    raise RequestsJSONDecodeError(e.msg, e.doc, e.pos)
+E   requests.exceptions.JSONDecodeError: Expecting value: line 1 column 1 (char 0)</failure></testcase><testcase classname="backend.tests.test_beta_prediction.TestBetaPredictEndpoint" name="test_beta_predict_has_player_predictions" time="50.355" /><testcase classname="backend.tests.test_beta_prediction.TestBetaPredictEndpoint" name="test_beta_predict_has_poisson_distribution" time="37.138" /><testcase classname="backend.tests.test_beta_prediction.TestBetaPredictEndpoint" name="test_beta_predict_has_odds" time="44.570" /><testcase classname="backend.tests.test_beta_prediction.TestBetaPredictEndpoint" name="test_beta_predict_has_match_context" time="46.102" /><testcase classname="backend.tests.test_beta_prediction.TestBetaPredictEndpoint" name="test_beta_predict_has_gpt_analysis" time="60.322"><failure message="requests.exceptions.JSONDecodeError: Expecting value: line 1 column 1 (char 0)">/root/.venv/lib/python3.11/site-packages/requests/models.py:976: in json
+    return complexjson.loads(self.text, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/json/__init__.py:346: in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/json/decoder.py:337: in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/json/decoder.py:355: in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+E   json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+
+During handling of the above exception, another exception occurred:
+backend/tests/test_beta_prediction.py:189: in test_beta_predict_has_gpt_analysis
+    data = response.json()
+           ^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/models.py:980: in json
+    raise RequestsJSONDecodeError(e.msg, e.doc, e.pos)
+E   requests.exceptions.JSONDecodeError: Expecting value: line 1 column 1 (char 0)</failure></testcase><testcase classname="backend.tests.test_beta_prediction.TestBetaPredictEndpoint" name="test_beta_predict_with_market_odds_returns_value_bets" time="54.531" /><testcase classname="backend.tests.test_beta_prediction.TestBetaPredictEndpoint" name="test_beta_predict_invalid_match" time="0.148" /><testcase classname="backend.tests.test_beta_prediction.TestBetaPredictEndpoint" name="test_beta_predict_has_team_info" time="57.638" /><testcase classname="backend.tests.test_beta_prediction.TestExistingEndpointsStillWork" name="test_fetch_live_still_works" time="15.694" /><testcase classname="backend.tests.test_beta_prediction.TestExistingEndpointsStillWork" name="test_match_state_still_works" time="0.141" /><testcase classname="backend.tests.test_beta_prediction.TestExistingEndpointsStillWork" name="test_squads_still_works" time="0.114" /></testsuite></testsuites>

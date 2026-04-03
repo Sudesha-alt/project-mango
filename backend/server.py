@@ -20,8 +20,10 @@ from services.probability_engine import (
 )
 from services.ai_service import (
     fetch_ipl_schedule, fetch_ipl_squads, fetch_live_match_update,
-    get_match_prediction, get_player_predictions
+    get_match_prediction, get_player_predictions,
+    fetch_player_stats_for_prediction, gpt_contextual_analysis
 )
+from services.beta_prediction_engine import run_beta_prediction
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -133,6 +135,10 @@ class FetchLiveRequest(BaseModel):
     betting_team1_odds: Optional[float] = None
     betting_team2_odds: Optional[float] = None
     betting_confidence: Optional[float] = None  # 0-100
+
+class BetaPredictRequest(BaseModel):
+    market_team1_odds: Optional[float] = None
+    market_team2_odds: Optional[float] = None
 
 # ─── LIVE MATCH (on-demand via button) ───────────────────────
 
@@ -330,6 +336,129 @@ async def api_predict(match_id: str):
 @api_router.get("/data-source")
 async def api_data_source():
     return {"source": "GPT-5.4 Web Search", "model": "gpt-5.4", "tool": "web_search_preview"}
+
+
+# ─── BETA PREDICTION ENGINE ──────────────────────────────────
+
+@api_router.post("/matches/{match_id}/beta-predict")
+async def api_beta_predict(match_id: str, body: BetaPredictRequest = None):
+    """Full beta prediction: Poisson, Player Engine, 10K Monte Carlo, Odds, Alerts."""
+    if body is None:
+        body = BetaPredictRequest()
+
+    match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
+    if not match_info:
+        return {"error": "Match not found"}
+
+    team1 = match_info.get("team1", "")
+    team2 = match_info.get("team2", "")
+    venue = match_info.get("venue", "")
+    t1_short = match_info.get("team1Short", get_short_name(team1))
+    t2_short = match_info.get("team2Short", get_short_name(team2))
+
+    # Get squads
+    sq1 = await db.ipl_squads.find_one({"teamShort": t1_short}, {"_id": 0})
+    sq2 = await db.ipl_squads.find_one({"teamShort": t2_short}, {"_id": 0})
+    t1_players = sq1.get("players", [])[:11] if sq1 else []
+    t2_players = sq2.get("players", [])[:11] if sq2 else []
+
+    # Get live state if available
+    live_state = live_match_state.get(match_id)
+    runs = 0
+    wickets = 0
+    overs = 0.0
+    target = None
+    innings = 1
+    ball_history = []
+
+    if live_state and live_state.get("liveData"):
+        score = live_state["liveData"].get("score", {})
+        if isinstance(score, dict):
+            runs = score.get("runs", 0)
+            wickets = score.get("wickets", 0)
+            overs = score.get("overs", 0)
+            target = score.get("target")
+        innings = live_state["liveData"].get("innings", 1)
+        ball_history = live_state.get("ballHistory", [])
+
+    # Fetch player stats via GPT-5.4 web search
+    logger.info(f"Beta predict: fetching player stats for {team1} vs {team2}")
+    player_stats = await fetch_player_stats_for_prediction(
+        team1, team2, t1_players, t2_players, venue
+    )
+
+    if not player_stats:
+        logger.warning("No player stats returned, using defaults")
+        player_stats = _generate_default_player_stats(t1_players, t2_players, team1, team2)
+
+    # Run beta prediction engine
+    result = run_beta_prediction(
+        player_predictions=player_stats,
+        team1_name=team1,
+        team2_name=team2,
+        runs=runs,
+        wickets=wickets,
+        overs=overs,
+        target=target,
+        innings=innings,
+        venue_avg=165,
+        ball_history=ball_history,
+        market_team1_odds=body.market_team1_odds,
+        market_team2_odds=body.market_team2_odds,
+    )
+
+    # GPT-5.4 mini contextual analysis
+    score_summary = f"{runs}/{wickets} in {overs} overs"
+    if target:
+        score_summary += f" (target: {target})"
+
+    gpt_context = await gpt_contextual_analysis(
+        result["match_context"], team1, team2,
+        score_summary, result["alerts"]
+    )
+
+    result["gpt_analysis"] = gpt_context
+    result["matchId"] = match_id
+    result["team1"] = team1
+    result["team2"] = team2
+    result["team1Short"] = t1_short
+    result["team2Short"] = t2_short
+    result["venue"] = venue
+    result["fetchedAt"] = datetime.now(timezone.utc).isoformat()
+
+    return result
+
+
+def _generate_default_player_stats(t1_players, t2_players, team1, team2):
+    """Generate sensible default player stats when web search fails."""
+    defaults = {
+        "Batsman": {"runs": 28, "wickets": 0.1, "sr": 135, "econ": 0, "consistency": 0.65},
+        "Bowler": {"runs": 8, "wickets": 1.5, "sr": 110, "econ": 7.5, "consistency": 0.6},
+        "All-rounder": {"runs": 18, "wickets": 1.0, "sr": 125, "econ": 8.0, "consistency": 0.6},
+        "Wicketkeeper": {"runs": 25, "wickets": 0, "sr": 128, "econ": 0, "consistency": 0.65},
+    }
+    result = []
+    for players, team in [(t1_players, team1), (t2_players, team2)]:
+        for p in (players or [])[:11]:
+            role = p.get("role", "All-rounder")
+            d = defaults.get(role, defaults["All-rounder"])
+            result.append({
+                "name": p.get("name", "Player"),
+                "team": team,
+                "role": role,
+                "last5_avg_runs": d["runs"],
+                "venue_avg_runs": d["runs"] * 0.9,
+                "opponent_adj_runs": d["runs"] * 0.85,
+                "form_momentum_runs": d["runs"] * 1.1,
+                "last5_avg_wickets": d["wickets"],
+                "venue_avg_wickets": d["wickets"] * 0.9,
+                "opponent_adj_wickets": d["wickets"] * 0.85,
+                "form_momentum_wickets": d["wickets"],
+                "predicted_sr": d["sr"],
+                "predicted_economy": d["econ"],
+                "consistency": d["consistency"],
+            })
+    return result
 
 
 # ─── WEBSOCKET ────────────────────────────────────────────────

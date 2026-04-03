@@ -9,11 +9,12 @@ import BettingOddsInput from "@/components/BettingOddsInput";
 import OddsPanel from "@/components/OddsPanel";
 import PlayerPredictions from "@/components/PlayerPredictions";
 import PlayingXI from "@/components/PlayingXI";
+import BetaPrediction from "@/components/BetaPrediction";
 import { WifiHigh, WifiSlash, Lightning, Spinner, UserCircle } from "@phosphor-icons/react";
 
 export default function LiveMatch() {
   const { matchId } = useParams();
-  const { fetchLiveData, getMatchState, getTeamSquad, fetchPlayerPredictions } = useMatchData();
+  const { fetchLiveData, getMatchState, getTeamSquad, fetchPlayerPredictions, fetchBetaPrediction } = useMatchData();
   const { data: wsData, connected } = useWebSocket(matchId);
 
   const [matchState, setMatchState] = useState(null);
@@ -22,7 +23,7 @@ export default function LiveMatch() {
   const [loading, setLoading] = useState(true);
   const [fetchingLive, setFetchingLive] = useState(false);
   const [fetchingPlayers, setFetchingPlayers] = useState(false);
-  const [activeTab, setActiveTab] = useState("models");
+  const [activeTab, setActiveTab] = useState("beta");
   const [probHistory, setProbHistory] = useState([]);
   const [bettingOdds, setBettingOdds] = useState(null);
 
@@ -96,6 +97,7 @@ export default function LiveMatch() {
   const bettingEdge = matchState?.bettingEdge || null;
 
   const rightTabs = [
+    { key: "beta", label: "Beta" },
     { key: "models", label: "Models" },
     { key: "odds", label: "Odds" },
     { key: "squad", label: "Squad" },
@@ -258,6 +260,9 @@ export default function LiveMatch() {
                   ))}
                 </div>
 
+                {activeTab === "beta" && (
+                  <BetaPrediction matchId={matchId} team1={t1Short} team2={t2Short} fetchBetaPrediction={fetchBetaPrediction} />
+                )}
                 {activeTab === "models" && (
                   <>
                     <AlgorithmComparisonChart probabilities={probs} team1={t1Short} team2={t2Short} />

@@ -329,3 +329,120 @@ For each player predict:
     except Exception as e:
         logger.error(f"GPT player predictions error: {e}")
         return []
+
+
+def _get_gpt_mini_chat(session_id, system_msg):
+    """GPT-5.4 mini for quick real-time decisions."""
+    key = OPENAI_KEY if OPENAI_KEY else EMERGENT_KEY
+    chat = LlmChat(api_key=key, session_id=session_id, system_message=system_msg)
+    chat.with_model("openai", "gpt-5.4-mini")
+    return chat
+
+
+async def fetch_player_stats_for_prediction(team1, team2, team1_players, team2_players, venue):
+    """
+    GPT-5.4 Web Search: Fetch real player stats (last 5 matches, venue averages)
+    for the beta prediction engine.
+    """
+    players_str = ""
+    for p in (team1_players or [])[:11]:
+        players_str += f"- {p.get('name', 'Unknown')} ({team1})\n"
+    for p in (team2_players or [])[:11]:
+        players_str += f"- {p.get('name', 'Unknown')} ({team2})\n"
+
+    raw_text = await _web_search(
+        f"Search for recent IPL 2026 cricket stats for these players. "
+        f"I need their last 5 match performances (runs scored, wickets taken), "
+        f"their average at {venue}, and current form. "
+        f"Match: {team1} vs {team2}\n"
+        f"Players:\n{players_str}\n"
+        f"Search ESPNcricinfo, Cricbuzz for actual stats."
+    )
+    logger.info(f"Player stats web search: {len(raw_text)} chars")
+
+    parse_instruction = f"""Parse the player statistics into this JSON format:
+{{"players": [
+  {{
+    "name": "Player Name",
+    "team": "Full Team Name (must be exactly '{team1}' or '{team2}')",
+    "role": "Batsman/Bowler/All-rounder/Wicketkeeper",
+    "last5_avg_runs": number (average runs in last 5 IPL matches),
+    "last5_avg_wickets": number (average wickets in last 5 IPL matches),
+    "venue_avg_runs": number (average runs at this venue),
+    "venue_avg_wickets": number (average wickets at this venue),
+    "opponent_adj_runs": number (average runs vs this opponent),
+    "opponent_adj_wickets": number (average wickets vs this opponent),
+    "form_momentum_runs": number (weighted recent form score for batting),
+    "form_momentum_wickets": number (weighted recent form score for bowling),
+    "predicted_sr": number (expected strike rate),
+    "predicted_economy": number (expected economy rate),
+    "consistency": number between 0.5 and 1.0 (how consistent the player is)
+  }}
+]}}
+
+RULES:
+- Use real stats from the source data where available
+- For missing data, use reasonable IPL T20 defaults based on player role:
+  * Top-order batsman: ~30 runs avg, 0.2 wickets, SR 135
+  * Middle-order: ~22 runs, 0.3 wickets, SR 130
+  * All-rounder: ~18 runs, 1.0 wickets, SR 125, econ 8.0
+  * Bowler: ~8 runs, 1.5 wickets, SR 110, econ 7.5
+  * Wicketkeeper: ~25 runs, 0 wickets, SR 128
+- Include all players from both teams (up to 11 per team)
+- team field MUST be exactly '{team1}' or '{team2}'"""
+
+    try:
+        data = await _parse_to_json(raw_text, parse_instruction)
+        players = data.get("players", [])
+        logger.info(f"Parsed {len(players)} player stats")
+        return players
+    except Exception as e:
+        logger.error(f"Player stats parse error: {e}")
+        return []
+
+
+async def gpt_contextual_analysis(match_context, team1, team2, score_summary, alerts):
+    """
+    GPT-5.4 mini: Quick contextual analysis and alert explanations.
+    Used for real-time pattern detection and pressure assessment.
+    """
+    chat = _get_gpt_mini_chat(
+        f"ctx-{uuid.uuid4().hex[:8]}",
+        "You are an expert cricket analyst. Provide brief, sharp tactical insights. Respond ONLY with valid JSON."
+    )
+
+    alerts_str = "; ".join([a.get("message", "") for a in (alerts or [])[:5]])
+
+    prompt = f"""Quick tactical analysis for {team1} vs {team2}.
+Match state: {score_summary}
+Phase: {match_context.get('phase', 'unknown')}
+Pressure: {match_context.get('pressure', 'medium')}
+Wickets pressure: {match_context.get('wickets_pressure', 'normal')}
+Active alerts: {alerts_str if alerts_str else 'None'}
+
+Return JSON:
+{{
+  "tactical_insight": "1-2 sentence sharp tactical observation",
+  "pattern_detected": "any pattern (scoring acceleration, collapse, etc.) or null",
+  "pressure_assessment": "brief assessment of current pressure dynamics",
+  "recommended_strategy": "what the batting/bowling side should do",
+  "key_phase": "powerplay/middle/death and why it matters now"
+}}"""
+
+    try:
+        response = await chat.send_message(UserMessage(text=prompt))
+        cleaned = response.strip()
+        if "```json" in cleaned:
+            cleaned = cleaned.split("```json")[1].split("```")[0].strip()
+        elif "```" in cleaned:
+            cleaned = cleaned.split("```")[1].split("```")[0].strip()
+        return json.loads(cleaned)
+    except Exception as e:
+        logger.error(f"GPT contextual analysis error: {e}")
+        return {
+            "tactical_insight": "Analysis unavailable",
+            "pattern_detected": None,
+            "pressure_assessment": "Unable to assess",
+            "recommended_strategy": "",
+            "key_phase": match_context.get("phase", "unknown"),
+        }
