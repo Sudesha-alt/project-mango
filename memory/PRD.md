@@ -6,7 +6,7 @@ Full-stack IPL 2026 live match prediction with exact algorithm implementations, 
 ## Architecture
 - **Frontend**: React + Tailwind + Recharts + Framer Motion + Shadcn (Dark Mode)
 - **Backend**: FastAPI + MongoDB + WebSocket
-- **Data Source**: GPT-5.1 with `web_search_preview` tool (OpenAI SDK Responses API) — two-step approach: web search → JSON parsing
+- **Data Source**: GPT-5.4 with `web_search_preview` tool (OpenAI SDK Responses API) — two-step approach: web search → JSON parsing
 - **Algorithms**: Sigmoid/RRR Pressure Index, DLS Resource Table, Bayesian Ball-by-Ball, Monte Carlo 500 sims, Weighted Ensemble
 
 ## Implemented

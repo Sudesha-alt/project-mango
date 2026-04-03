@@ -46,7 +46,7 @@ async def root():
     return {
         "message": "PPL Board API",
         "version": "3.0.0",
-        "dataSource": "GPT-5.1 Web Search",
+        "dataSource": "GPT-5.4 Web Search",
         "scheduleLoaded": schedule_count > 0,
         "squadsLoaded": squad_count > 0,
         "matchesInDB": schedule_count,
@@ -138,7 +138,7 @@ class FetchLiveRequest(BaseModel):
 
 @api_router.post("/matches/{match_id}/fetch-live")
 async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
-    """Button-triggered: Fetch live data via GPT-5.1 web search."""
+    """Button-triggered: Fetch live data via GPT-5.4 web search."""
     if body is None:
         body = FetchLiveRequest()
 
@@ -329,7 +329,7 @@ async def api_predict(match_id: str):
 
 @api_router.get("/data-source")
 async def api_data_source():
-    return {"source": "GPT-5.1 Web Search", "model": "gpt-5.1", "tool": "web_search_preview"}
+    return {"source": "GPT-5.4 Web Search", "model": "gpt-5.4", "tool": "web_search_preview"}
 
 
 # ─── WEBSOCKET ────────────────────────────────────────────────

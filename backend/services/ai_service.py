@@ -28,7 +28,7 @@ def _get_gpt_chat(session_id, system_msg):
     """For analytical tasks (predictions) that don't need web search."""
     key = OPENAI_KEY if OPENAI_KEY else EMERGENT_KEY
     chat = LlmChat(api_key=key, session_id=session_id, system_message=system_msg)
-    chat.with_model("openai", "gpt-5.1")
+    chat.with_model("openai", "gpt-5.4")
     return chat
 
 
@@ -69,7 +69,7 @@ async def _web_search(prompt):
     """Step 1: GPT-5.1 web search to get raw text data."""
     client = _get_openai_client()
     response = await client.responses.create(
-        model="gpt-5.1",
+        model="gpt-5.4",
         tools=[{"type": "web_search_preview"}],
         input=prompt,
     )
@@ -80,7 +80,7 @@ async def _parse_to_json(raw_text, parse_instruction):
     """Step 2: Parse raw web search text into structured JSON (no web search needed)."""
     client = _get_openai_client()
     response = await client.responses.create(
-        model="gpt-5.1",
+        model="gpt-5.4",
         instructions="You are a precise data parser. Output ONLY valid JSON with no markdown formatting, no code blocks, no explanation. Just raw JSON.",
         input=f"{parse_instruction}\n\nSource data:\n{raw_text}",
     )
