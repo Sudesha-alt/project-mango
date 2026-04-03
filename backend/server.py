@@ -13,11 +13,7 @@ from datetime import datetime, timezone
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-from services.cricket_service import (
-    get_live_matches, get_match_info, get_match_scorecard,
-    get_match_squad, get_short_name
-)
-import services.cricket_service as cricket_svc
+from services.cricket_service import get_short_name
 from services.probability_engine import (
     ensemble_probability, calculate_odds_from_probability,
     calculate_momentum, calculate_betting_edge
@@ -45,15 +41,12 @@ live_match_state: Dict[str, Any] = {}
 
 @api_router.get("/")
 async def root():
-    import time
-    blocked = time.time() < cricket_svc._blocked_until
     schedule_count = await db.ipl_schedule.count_documents({})
     squad_count = await db.ipl_squads.count_documents({})
     return {
         "message": "PPL Board API",
-        "version": "2.0.0",
-        "cricapiStatus": "blocked" if blocked else "available",
-        "blockRemaining": max(0, int(cricket_svc._blocked_until - time.time())) if blocked else 0,
+        "version": "3.0.0",
+        "dataSource": "GPT-5.1 Web Search",
         "scheduleLoaded": schedule_count > 0,
         "squadsLoaded": squad_count > 0,
         "matchesInDB": schedule_count,
@@ -145,7 +138,7 @@ class FetchLiveRequest(BaseModel):
 
 @api_router.post("/matches/{match_id}/fetch-live")
 async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
-    """Button-triggered: Fetch live data from CricAPI first, fallback to GPT."""
+    """Button-triggered: Fetch live data via GPT-5.1 web search."""
     if body is None:
         body = FetchLiveRequest()
 
@@ -157,39 +150,30 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
     team2 = match_info.get("team2", "")
     venue = match_info.get("venue", "")
 
-    # Try CricAPI first
-    cricapi_data = None
-    cricapi_matches = await get_live_matches()
-    if cricapi_matches:
-        for m in cricapi_matches:
-            if m.get("matchId") == match_id or (
-                team1.lower() in m.get("team1", "").lower() and
-                team2.lower() in m.get("team2", "").lower()
-            ):
-                cricapi_data = m
-                break
+    logger.info(f"Fetching live data via web search: {team1} vs {team2}")
+    gpt_data = await fetch_live_match_update(match_info)
 
-    live_data = None
-    source = "cricapi"
-    if cricapi_data and cricapi_data.get("score"):
-        live_data = {
-            "matchId": match_id, "team1": team1, "team2": team2, "venue": venue,
-            "score": {"runs": cricapi_data.get("runs", 0), "wickets": cricapi_data.get("wickets", 0),
-                      "overs": cricapi_data.get("overs", 0), "target": None},
-            "innings": cricapi_data.get("innings", 1),
-            "status": cricapi_data.get("status", "Live"),
-            "isLive": True, "source": "cricapi",
+    if not gpt_data:
+        return {"error": "Could not fetch live data from web search"}
+
+    # Handle "no live match" scenario
+    if gpt_data.get("noLiveMatch"):
+        return {
+            "matchId": match_id,
+            "team1": team1, "team1Short": get_short_name(team1),
+            "team2": team2, "team2Short": get_short_name(team2),
+            "venue": venue,
+            "noLiveMatch": True,
+            "isLive": False,
+            "status": gpt_data.get("status", "This match is not live right now"),
+            "liveData": gpt_data,
+            "source": "web_search",
+            "fetchedAt": datetime.now(timezone.utc).isoformat(),
         }
-    else:
-        logger.info(f"Using GPT for live data: {team1} vs {team2}")
-        gpt_data = await fetch_live_match_update(match_info)
-        if gpt_data:
-            live_data = gpt_data
-            live_data["source"] = "gpt"
-            source = "gpt"
 
-    if not live_data:
-        return {"error": "Could not fetch live data"}
+    live_data = gpt_data
+    live_data["source"] = "web_search"
+    source = "web_search"
 
     # Parse score
     score = live_data.get("score", {})
@@ -341,12 +325,11 @@ async def api_predict(match_id: str):
     return {"matchId": match_id, "prediction": pred}
 
 
-# ─── CRICAPI LIVE (for cross-check) ─────────────────────────
+# ─── DATA SOURCE INFO ────────────────────────────────────────
 
-@api_router.get("/matches/cricapi-live")
-async def api_cricapi_live():
-    matches = await get_live_matches()
-    return {"matches": matches, "count": len(matches)}
+@api_router.get("/data-source")
+async def api_data_source():
+    return {"source": "GPT-5.1 Web Search", "model": "gpt-5.1", "tool": "web_search_preview"}
 
 
 # ─── WEBSOCKET ────────────────────────────────────────────────

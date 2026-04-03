@@ -2,6 +2,8 @@ import os
 import logging
 import json
 import uuid
+import re
+from openai import AsyncOpenAI
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
 logger = logging.getLogger(__name__)
@@ -9,141 +11,229 @@ logger = logging.getLogger(__name__)
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
 EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 
+_openai_client = None
+
+
+def _get_openai_client():
+    global _openai_client
+    if _openai_client is None:
+        key = OPENAI_KEY
+        if not key:
+            raise ValueError("OPENAI_API_KEY not configured in .env")
+        _openai_client = AsyncOpenAI(api_key=key)
+    return _openai_client
+
+
 def _get_gpt_chat(session_id, system_msg):
+    """For analytical tasks (predictions) that don't need web search."""
     key = OPENAI_KEY if OPENAI_KEY else EMERGENT_KEY
     chat = LlmChat(api_key=key, session_id=session_id, system_message=system_msg)
-    chat.with_model("openai", "gpt-4.1")
+    chat.with_model("openai", "gpt-5.1")
     return chat
 
 
-async def fetch_ipl_schedule():
-    """Use GPT to generate the complete IPL 2026 schedule with all teams and venues."""
-    chat = _get_gpt_chat(
-        f"ipl-schedule-{uuid.uuid4().hex[:8]}",
-        "You are an expert cricket database. Provide accurate IPL 2026 data. Always respond ONLY with valid JSON, no markdown."
+def _extract_json(text):
+    """Robustly extract JSON from GPT response text."""
+    cleaned = text.strip()
+    cleaned = re.sub(r'\[\d+\]', '', cleaned)
+    if "```json" in cleaned:
+        cleaned = cleaned.split("```json")[1].split("```")[0].strip()
+    elif "```" in cleaned:
+        parts = cleaned.split("```")
+        for part in parts[1::2]:
+            part = part.strip()
+            if part.startswith('{') or part.startswith('['):
+                cleaned = part
+                break
+    if not (cleaned.startswith('{') or cleaned.startswith('[')):
+        for i, ch in enumerate(cleaned):
+            if ch in ('{', '['):
+                cleaned = cleaned[i:]
+                break
+    if cleaned.startswith('{'):
+        depth = 0
+        end = len(cleaned)
+        for i, ch in enumerate(cleaned):
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+        cleaned = cleaned[:end]
+    return json.loads(cleaned)
+
+
+async def _web_search(prompt):
+    """Step 1: GPT-5.1 web search to get raw text data."""
+    client = _get_openai_client()
+    response = await client.responses.create(
+        model="gpt-5.1",
+        tools=[{"type": "web_search_preview"}],
+        input=prompt,
     )
-    prompt = """Generate the complete IPL 2026 season schedule. The season opener is RCB vs SRH.
+    return response.output_text
 
-CRITICAL: Match 1 MUST be Royal Challengers Bengaluru (RCB) vs Sunrisers Hyderabad (SRH).
 
-Include ALL 74 league stage matches. Each team plays 14 matches (7 home, 7 away).
+async def _parse_to_json(raw_text, parse_instruction):
+    """Step 2: Parse raw web search text into structured JSON (no web search needed)."""
+    client = _get_openai_client()
+    response = await client.responses.create(
+        model="gpt-5.1",
+        instructions="You are a precise data parser. Output ONLY valid JSON with no markdown formatting, no code blocks, no explanation. Just raw JSON.",
+        input=f"{parse_instruction}\n\nSource data:\n{raw_text}",
+    )
+    return _extract_json(response.output_text)
 
-For each match provide:
-- matchId (unique string like "ipl2026_001")  
-- match_number (1-74)
-- team1 and team2 (full names from: Chennai Super Kings, Mumbai Indians, Royal Challengers Bengaluru, Kolkata Knight Riders, Delhi Capitals, Rajasthan Royals, Sunrisers Hyderabad, Punjab Kings, Gujarat Titans, Lucknow Super Giants)
-- team1Short and team2Short (CSK, MI, RCB, KKR, DC, RR, SRH, PBKS, GT, LSG)
-- venue (real IPL venues: M Chinnaswamy Stadium Bengaluru, Wankhede Stadium Mumbai, MA Chidambaram Stadium Chennai, Eden Gardens Kolkata, Arun Jaitley Stadium Delhi, Sawai Mansingh Stadium Jaipur, Rajiv Gandhi Intl Stadium Hyderabad, IS Bindra Stadium Mohali, Narendra Modi Stadium Ahmedabad, Ekana Sports City Lucknow)
-- dateTimeGMT (dates from March 22 to May 25, 2026, in ISO format, matches at 14:00 or 18:00 UTC)
-- status: "Completed" for first 25 matches, "Upcoming" for rest
-- For completed matches: include winner, score (e.g. "RCB 192/4 (20) | SRH 178/7 (20)"), manOfMatch (real player names)
-- matchType: "T20"
-- series: "IPL 2026"
 
-Respond ONLY with a JSON object: {"matches": [...]}"""
+async def fetch_ipl_schedule():
+    """Fetch real IPL 2026 schedule using GPT-5.1 web search (two-step)."""
+    # Step 1: Web search for raw schedule data
+    raw_text = await _web_search(
+        "Search for the complete IPL 2026 Indian Premier League 2026 schedule. "
+        "I need ALL completed match results with scores, winners, and dates, "
+        "ALL upcoming fixtures with dates and venues, "
+        "and any currently LIVE matches. "
+        "Include as many matches as possible from the full season."
+    )
+    logger.info(f"Web search schedule raw response: {len(raw_text)} chars")
+
+    # Step 2: Parse into structured JSON
+    parse_instruction = """Parse the IPL 2026 schedule data below into this exact JSON format.
+Return a JSON object: {"matches": [...]}
+
+Each match object must have:
+- "matchId": unique string like "ipl2026_001" (number based on match_number)
+- "match_number": sequential integer
+- "team1": full team name
+- "team2": full team name
+- "team1Short": abbreviation (CSK, MI, RCB, KKR, DC, RR, SRH, PBKS, GT, LSG)
+- "team2Short": abbreviation
+- "venue": stadium/city from source data (or "TBD" if not mentioned)
+- "dateTimeGMT": ISO date string (e.g. "2026-03-28T14:00:00Z")
+- "status": exactly one of "Completed", "Live", or "Upcoming"
+- "matchType": "T20"
+- "series": "IPL 2026"
+
+For Completed matches, also include:
+- "winner": full name of winning team
+- "score": score summary string like "RCB 203/4 (15.4) | SRH 201/9 (20)"
+- "manOfMatch": player name if available (or omit)
+
+For Live matches, also include:
+- "score": current score string
+
+For Upcoming matches, no score/winner fields.
+
+IMPORTANT: Only include matches that appear in the source data. Do not invent additional matches.
+Use these team name mappings:
+- CSK = Chennai Super Kings
+- MI = Mumbai Indians
+- RCB = Royal Challengers Bengaluru
+- KKR = Kolkata Knight Riders
+- DC = Delhi Capitals
+- RR = Rajasthan Royals
+- SRH = Sunrisers Hyderabad
+- PBKS = Punjab Kings
+- GT = Gujarat Titans
+- LSG = Lucknow Super Giants"""
 
     try:
-        response = await chat.send_message(UserMessage(text=prompt))
-        cleaned = response.strip()
-        if "```json" in cleaned:
-            cleaned = cleaned.split("```json")[1].split("```")[0].strip()
-        elif "```" in cleaned:
-            cleaned = cleaned.split("```")[1].split("```")[0].strip()
-        data = json.loads(cleaned)
-        return data.get("matches", [])
+        data = await _parse_to_json(raw_text, parse_instruction)
+        matches = data.get("matches", [])
+        logger.info(f"Parsed {len(matches)} real matches from web search")
+        return matches
     except Exception as e:
-        logger.error(f"GPT schedule fetch error: {e}")
+        logger.error(f"Schedule parse error: {e}")
         return []
 
 
 async def fetch_ipl_squads():
-    """Use GPT to generate IPL 2026 team squads."""
-    chat = _get_gpt_chat(
-        f"ipl-squads-{uuid.uuid4().hex[:8]}",
-        "You are an expert cricket database. Provide accurate IPL 2026 squad data. Always respond ONLY with valid JSON."
+    """Fetch real IPL 2026 squads using GPT-5.1 web search (two-step)."""
+    raw_text = await _web_search(
+        "Search for IPL 2026 team squads and player lists for all 10 IPL teams: "
+        "CSK, MI, RCB, KKR, DC, RR, SRH, PBKS, GT, LSG. "
+        "Include captain names and key players for each team."
     )
-    prompt = """Generate the full playing squads for all 10 IPL 2026 teams.
 
-For each team provide:
-- teamName (full name)
-- teamShort (abbreviation)
-- captain
-- players: array of {name, role (Batsman/Bowler/All-rounder/Wicketkeeper), isCaptain: bool, isKeeper: bool, isOverseas: bool}
-- Include 18-22 players per team with realistic player names from actual IPL rosters
-
-Teams: CSK, MI, RCB, KKR, DC, RR, SRH, PBKS, GT, LSG
-
-Respond ONLY with JSON: {"squads": [...]}"""
+    parse_instruction = """Parse the IPL 2026 squad data into this JSON format:
+{"squads": [
+  {
+    "teamName": "Full Team Name",
+    "teamShort": "ABR",
+    "captain": "Captain Name",
+    "players": [
+      {"name": "Player Name", "role": "Batsman/Bowler/All-rounder/Wicketkeeper", "isCaptain": false, "isKeeper": false, "isOverseas": false}
+    ]
+  }
+]}
+Include only players mentioned in the source data. Mark captains and overseas players based on available info."""
 
     try:
-        response = await chat.send_message(UserMessage(text=prompt))
-        cleaned = response.strip()
-        if "```json" in cleaned:
-            cleaned = cleaned.split("```json")[1].split("```")[0].strip()
-        elif "```" in cleaned:
-            cleaned = cleaned.split("```")[1].split("```")[0].strip()
-        data = json.loads(cleaned)
+        data = await _parse_to_json(raw_text, parse_instruction)
         return data.get("squads", [])
     except Exception as e:
-        logger.error(f"GPT squads fetch error: {e}")
+        logger.error(f"Squads parse error: {e}")
         return []
 
 
 async def fetch_live_match_update(match_info):
-    """Use GPT to fetch/simulate real-time match updates."""
+    """Fetch real live match data using GPT-5.1 web search (two-step)."""
     team1 = match_info.get("team1", "Team A")
     team2 = match_info.get("team2", "Team B")
     venue = match_info.get("venue", "")
     match_id = match_info.get("matchId", "")
 
-    chat = _get_gpt_chat(
-        f"live-{match_id}-{uuid.uuid4().hex[:6]}",
-        "You are a live cricket match simulator and analyst. Generate realistic live match data based on current IPL context. Respond ONLY with valid JSON."
+    # Step 1: Web search for live score
+    raw_text = await _web_search(
+        f"Search for the LIVE cricket score of {team1} vs {team2} IPL 2026 right now. "
+        f"If the match is currently being played, get the latest score, batting details, bowling figures. "
+        f"If not live, get the most recent result or upcoming status."
     )
-    prompt = f"""Generate a realistic live match update for this IPL 2026 match:
-{team1} vs {team2} at {venue}
+    logger.info(f"Web search live data for {team1} vs {team2}: {len(raw_text)} chars")
 
-Provide a complete live match state:
+    # Step 2: Parse into structured JSON
+    parse_instruction = f"""Parse the cricket match data below into this exact JSON format:
 {{
   "matchId": "{match_id}",
   "team1": "{team1}",
   "team2": "{team2}",
   "venue": "{venue}",
+  "isLive": boolean (true if match is currently in progress),
+  "noLiveMatch": boolean (true if the match is NOT currently being played),
   "innings": 1 or 2,
-  "battingTeam": "team batting now",
-  "bowlingTeam": "team bowling now",
+  "battingTeam": "team currently batting",
+  "bowlingTeam": "team currently bowling",
   "score": {{
     "runs": number,
     "wickets": number,
-    "overs": number (like 14.3),
-    "target": null or number (if 2nd innings)
+    "overs": number (like 15.2),
+    "target": null or number (set if 2nd innings)
   }},
   "currentRunRate": number,
-  "requiredRunRate": number or null,
-  "recentBalls": ["4", "1", "W", "0", "6", "2", "1", "0", "4", "1", "0", "W"],
+  "requiredRunRate": null or number,
+  "recentBalls": ["4", "1", "W", "0", "6", "2"],
   "batsmen": [
-    {{"name": "Player Name", "runs": 45, "balls": 30, "fours": 5, "sixes": 2, "strikeRate": 150.0}},
-    {{"name": "Player Name", "runs": 22, "balls": 18, "fours": 2, "sixes": 1, "strikeRate": 122.2}}
+    {{"name": "Player", "runs": number, "balls": number, "fours": number, "sixes": number, "strikeRate": number}}
   ],
-  "bowler": {{"name": "Player Name", "overs": 3.2, "runs": 28, "wickets": 1, "economy": 8.4}},
-  "fallOfWickets": [{{"player": "Name", "score": 45, "overs": 5.3}}],
-  "status": "Match in progress - {team1} batting",
-  "isLive": true,
-  "lastBallCommentary": "Short delivery, pulled away for FOUR!"
+  "bowler": {{"name": "Player", "overs": number, "runs": number, "wickets": number, "economy": number}},
+  "fallOfWickets": [],
+  "status": "descriptive match status text",
+  "lastBallCommentary": "latest event description"
 }}
 
-Make it realistic for a T20 match between these specific teams. Vary the match state randomly."""
+RULES:
+- If the match IS live, set isLive=true and noLiveMatch=false, fill score from real data
+- If the match is NOT live (completed, not started, or no data), set isLive=false and noLiveMatch=true
+- For completed matches, put final result in status
+- Only use data from the source text. Fill unavailable fields with reasonable defaults (empty arrays, null, 0)."""
 
     try:
-        response = await chat.send_message(UserMessage(text=prompt))
-        cleaned = response.strip()
-        if "```json" in cleaned:
-            cleaned = cleaned.split("```json")[1].split("```")[0].strip()
-        elif "```" in cleaned:
-            cleaned = cleaned.split("```")[1].split("```")[0].strip()
-        return json.loads(cleaned)
+        data = await _parse_to_json(raw_text, parse_instruction)
+        return data
     except Exception as e:
-        logger.error(f"GPT live update error: {e}")
+        logger.error(f"Live data parse error: {e}")
         return None
 
 
@@ -155,12 +245,12 @@ async def get_match_prediction(match_data):
     score = match_data.get("score", {})
 
     chat = _get_gpt_chat(
-        f"pred-{match_data.get('matchId','')}-{uuid.uuid4().hex[:6]}",
+        f"pred-{match_data.get('matchId', '')}-{uuid.uuid4().hex[:6]}",
         "You are an expert cricket analyst. Provide detailed match predictions. Respond ONLY with valid JSON."
     )
     score_context = ""
     if isinstance(score, dict) and score.get("runs"):
-        score_context = f"\nCurrent score: {score.get('runs',0)}/{score.get('wickets',0)} in {score.get('overs',0)} overs."
+        score_context = f"\nCurrent score: {score.get('runs', 0)}/{score.get('wickets', 0)} in {score.get('overs', 0)} overs."
         if score.get("target"):
             score_context += f" Target: {score['target']}"
     elif isinstance(score, str) and score:
@@ -173,7 +263,7 @@ Respond with:
 {{
   "team1WinProb": 0.55,
   "team2WinProb": 0.45,
-  "analysis": "Detailed 2-3 sentence analysis based on team strengths, venue, conditions",
+  "analysis": "Detailed 2-3 sentence analysis",
   "keyFactors": ["factor1", "factor2", "factor3", "factor4"],
   "projectedScore": {{
     "team1": {{"low": 155, "expected": 175, "high": 195}},
@@ -181,7 +271,7 @@ Respond with:
   }},
   "manOfTheMatch": "Player Name",
   "tossAdvantage": "bat" or "bowl",
-  "venueStats": "Brief venue history for T20s"
+  "venueStats": "Brief venue history"
 }}"""
 
     try:
@@ -194,7 +284,7 @@ Respond with:
         return json.loads(cleaned)
     except Exception as e:
         logger.error(f"GPT prediction error: {e}")
-        return {"team1WinProb": 0.5, "team2WinProb": 0.5, "analysis": f"Prediction error: {str(e)}", "keyFactors": []}
+        return {"team1WinProb": 0.5, "team2WinProb": 0.5, "analysis": "Prediction unavailable", "keyFactors": []}
 
 
 async def get_player_predictions(team1, team2, venue, squad1=None, squad2=None):
@@ -213,34 +303,19 @@ async def get_player_predictions(team1, team2, venue, squad1=None, squad2=None):
 {team1} squad: {squad1_str}
 {team2} squad: {squad2_str}
 
-For each player in both playing XIs (top 11 per team), predict:
+For each player predict:
 {{
   "players": [
     {{
       "name": "Player Name",
       "team": "Team Name",
       "role": "Batsman/Bowler/All-rounder/Wicketkeeper",
-      "batting": {{
-        "predictedRuns": 35,
-        "strikeRate": 140,
-        "boundaryProb": 0.7,
-        "fiftyProb": 0.3,
-        "duckProb": 0.05,
-        "confidence": 0.6
-      }},
-      "bowling": {{
-        "predictedWickets": 1,
-        "economy": 8.5,
-        "dotBallPerc": 35,
-        "maidenProb": 0.05,
-        "confidence": 0.5
-      }},
+      "batting": {{"predictedRuns": 35, "strikeRate": 140, "boundaryProb": 0.7, "fiftyProb": 0.3, "duckProb": 0.05, "confidence": 0.6}},
+      "bowling": {{"predictedWickets": 1, "economy": 8.5, "dotBallPerc": 35, "maidenProb": 0.05, "confidence": 0.5}},
       "impactScore": 7.5
     }}
   ]
-}}
-
-Include realistic predictions based on actual player abilities and venue conditions. Set bowling confidence to 0 for pure batsmen."""
+}}"""
 
     try:
         response = await chat.send_message(UserMessage(text=prompt))

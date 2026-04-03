@@ -57,8 +57,16 @@ export default function LiveMatch() {
     setFetchingLive(true);
     const data = await fetchLiveData(matchId, bettingOdds);
     if (data && !data.error) {
-      setMatchState(data);
-      if (data.probabilities) setProbHistory(prev => [...prev, data.probabilities].slice(-50));
+      if (data.noLiveMatch) {
+        setMatchState(prev => ({
+          ...prev, ...data,
+          noLiveData: false,
+          noLiveMatch: true,
+        }));
+      } else {
+        setMatchState(data);
+        if (data.probabilities) setProbHistory(prev => [...prev, data.probabilities].slice(-50));
+      }
     }
     setFetchingLive(false);
   }, [matchId, fetchLiveData, bettingOdds]);
@@ -83,7 +91,8 @@ export default function LiveMatch() {
   const team2 = matchState?.team2 || liveData.team2 || "Team B";
   const t1Short = matchState?.team1Short || team1.slice(0, 3).toUpperCase();
   const t2Short = matchState?.team2Short || team2.slice(0, 3).toUpperCase();
-  const hasLiveData = !matchState?.noLiveData && matchState?.liveData;
+  const hasLiveData = !matchState?.noLiveData && matchState?.liveData && !matchState?.noLiveMatch;
+  const noLiveMatch = matchState?.noLiveMatch;
   const bettingEdge = matchState?.bettingEdge || null;
 
   const rightTabs = [
@@ -124,16 +133,29 @@ export default function LiveMatch() {
             </button>
           </div>
 
-          {!hasLiveData && (
+          {!hasLiveData && !noLiveMatch && (
             <div className="bg-[#141414] border border-[#007AFF]/30 rounded-md p-8 text-center mb-4" data-testid="no-live-data">
               <Lightning weight="duotone" className="w-10 h-10 text-[#007AFF] mx-auto mb-3" />
               <p className="text-sm text-[#A1A1AA] mb-2">No live data loaded yet.</p>
-              <p className="text-xs text-[#71717A] mb-4">Click "Fetch Live Scores" to get real-time data. Set betting odds first for Bayesian model input.</p>
+              <p className="text-xs text-[#71717A] mb-4">Click "Fetch Live Scores" to get real-time data via web search. Set betting odds first for Bayesian model input.</p>
               <p className="text-lg font-bold uppercase" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>{t1Short} vs {t2Short}</p>
-              {/* Pre-match betting input */}
               <div className="max-w-sm mx-auto mt-4">
                 <BettingOddsInput team1={t1Short} team2={t2Short} onOddsChange={handleOddsChange} currentEdge={bettingEdge} />
               </div>
+            </div>
+          )}
+
+          {noLiveMatch && (
+            <div className="bg-[#141414] border border-amber-500/30 rounded-md p-8 text-center mb-4" data-testid="no-live-match">
+              <WifiSlash weight="duotone" className="w-10 h-10 text-amber-500 mx-auto mb-3" />
+              <p className="text-lg font-bold uppercase mb-2" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>{t1Short} vs {t2Short}</p>
+              <p className="text-sm text-amber-400 mb-2">This match is not live right now</p>
+              <p className="text-xs text-[#71717A] mb-4">{matchState?.status || "The match hasn't started yet or has already been completed."}</p>
+              {matchState?.source && (
+                <span className="text-[10px] px-2 py-0.5 rounded bg-[#1E1E1E] text-[#A1A1AA] font-mono">
+                  Verified via {matchState.source === "web_search" ? "GPT-5.1 Web Search" : matchState.source}
+                </span>
+              )}
             </div>
           )}
 

@@ -97,7 +97,7 @@ export default function MatchSelector() {
           <div className="flex items-center justify-center py-20" data-testid="loading-state">
             <div className="text-center">
               <div className="w-8 h-8 border-2 border-[#007AFF] border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-              <p className="text-sm text-[#A1A1AA]">Loading IPL 2026 schedule via GPT...</p>
+              <p className="text-sm text-[#A1A1AA]">Loading IPL 2026 schedule via Web Search...</p>
             </div>
           </div>
         )}
