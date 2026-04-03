@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 
 export default function MatchSelector() {
   const navigate = useNavigate();
-  const { liveMatches, fixtures, loading, fetchLiveMatches } = useMatchData();
+  const { liveMatches, fixtures, loading, fetchLiveMatches, apiStatus } = useMatchData();
   const [tab, setTab] = useState("live");
 
   useEffect(() => {
@@ -164,11 +164,21 @@ export default function MatchSelector() {
               <div className="col-span-full text-center py-16" data-testid="empty-state">
                 <Lightning weight="duotone" className="w-12 h-12 text-[#333] mx-auto mb-4" />
                 <p className="text-sm text-[#71717A] mb-2">
-                  No matches available. API may be rate-limited.
+                  {apiStatus?.apiStatus === "blocked"
+                    ? `CricAPI is rate-limited. Auto-retry in ${Math.ceil((apiStatus.blockRemaining || 0) / 60)} min.`
+                    : "No matches available. API may be rate-limited."}
                 </p>
                 <p className="text-xs text-[#71717A]">
-                  CricAPI free tier allows limited calls. Data will refresh automatically.
+                  CricAPI free tier allows limited calls. Data will refresh automatically when available.
                 </p>
+                {apiStatus?.apiStatus === "blocked" && (
+                  <div className="mt-3 flex items-center justify-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-[#EAB308] animate-live-pulse" />
+                    <span className="text-xs text-[#EAB308] font-mono tabular-nums">
+                      Cooldown: {apiStatus.blockRemaining || 0}s
+                    </span>
+                  </div>
+                )}
                 <button
                   onClick={() => fetchLiveMatches()}
                   data-testid="retry-btn"

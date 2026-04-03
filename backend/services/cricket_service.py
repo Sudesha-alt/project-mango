@@ -12,9 +12,10 @@ CRICBUZZ_BASE = "https://cricbuzz-live.vercel.app/v1"
 
 # Rate limit tracking
 _last_api_call = 0
-_api_cooldown = 16  # seconds between calls
+_api_cooldown = 120  # 2 min between calls to avoid CricAPI 15-min blocks
+_blocked_until = 0  # Timestamp when block expires
 _api_cache = {}
-_cache_ttl = 60  # cache for 60 seconds
+_cache_ttl = 300  # cache for 5 minutes
 
 IPL_TEAMS = [
     "Chennai Super Kings", "Mumbai Indians", "Royal Challengers Bengaluru",
@@ -38,13 +39,19 @@ def get_short_name(team_name):
     return team_name[:3].upper()
 
 async def fetch_cricapi(endpoint, params=None):
-    global _last_api_call
+    global _last_api_call, _blocked_until
     cache_key = f"{endpoint}:{str(params)}"
     now = time.time()
     if cache_key in _api_cache:
         cached_time, cached_data = _api_cache[cache_key]
         if now - cached_time < _cache_ttl:
             return cached_data
+    # If we're in a block period, don't even try
+    if now < _blocked_until:
+        logger.debug(f"CricAPI blocked, {int(_blocked_until - now)}s remaining")
+        if cache_key in _api_cache:
+            return _api_cache[cache_key][1]
+        return None
     if now - _last_api_call < _api_cooldown:
         logger.info(f"Rate limiting CricAPI call to {endpoint}")
         if cache_key in _api_cache:
@@ -62,8 +69,14 @@ async def fetch_cricapi(endpoint, params=None):
                 if data.get("status") == "success":
                     result = data.get("data", data)
                     _api_cache[cache_key] = (now, result)
+                    _blocked_until = 0  # Clear block on success
                     return result
-                logger.warning(f"CricAPI {endpoint} failed: {data.get('reason','unknown')}")
+                reason = data.get("reason", "")
+                if "blocked" in reason.lower() or "Blocked" in reason:
+                    _blocked_until = now + 960  # Back off 16 minutes
+                    logger.warning(f"CricAPI blocked, backing off 16 minutes")
+                else:
+                    logger.warning(f"CricAPI {endpoint} failed: {reason}")
     except Exception as e:
         logger.error(f"CricAPI error {endpoint}: {e}")
     return _api_cache.get(cache_key, (0, None))[1]

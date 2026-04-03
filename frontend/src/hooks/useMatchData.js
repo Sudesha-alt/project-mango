@@ -8,11 +8,16 @@ export function useMatchData() {
   const [fixtures, setFixtures] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [apiStatus, setApiStatus] = useState(null);
 
   const fetchLiveMatches = useCallback(async () => {
     try {
-      const res = await axios.get(`${API}/matches/live`);
-      setLiveMatches(res.data.matches || []);
+      const [matchRes, statusRes] = await Promise.all([
+        axios.get(`${API}/matches/live`),
+        axios.get(`${API}/`).catch(() => null),
+      ]);
+      setLiveMatches(matchRes.data.matches || []);
+      if (statusRes?.data) setApiStatus(statusRes.data);
       setError(null);
     } catch (e) {
       setError("Failed to fetch live matches");
@@ -111,7 +116,7 @@ export function useMatchData() {
   }, [fetchLiveMatches, fetchFixtures]);
 
   return {
-    liveMatches, fixtures, loading, error,
+    liveMatches, fixtures, loading, error, apiStatus,
     fetchLiveMatches, fetchFixtures, fetchMatchDetail,
     fetchScorecard, fetchSquad, fetchPredictions,
     fetchOdds, triggerCalculation, fetchPlayerPredictions

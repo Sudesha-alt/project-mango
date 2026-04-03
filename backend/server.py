@@ -19,6 +19,7 @@ from services.cricket_service import (
     get_live_matches, get_match_info, get_match_scorecard,
     get_match_squad, get_ipl_fixtures, get_player_info, IPL_SHORT, get_short_name
 )
+import services.cricket_service as cricket_svc
 from services.probability_engine import (
     ensemble_probability, calculate_odds_from_probability,
     calculate_momentum
@@ -47,17 +48,39 @@ probability_history_cache: Dict[str, List[Dict]] = {}
 
 @api_router.get("/")
 async def root():
-    return {"message": "PPL Board API", "version": "1.0.0"}
+    import time as _time
+    blocked = _time.time() < cricket_svc._blocked_until
+    return {
+        "message": "PPL Board API",
+        "version": "1.0.0",
+        "apiStatus": "blocked" if blocked else "available",
+        "blockRemaining": max(0, int(cricket_svc._blocked_until - _time.time())) if blocked else 0,
+        "cachedEndpoints": len(cricket_svc._api_cache)
+    }
 
 @api_router.get("/matches/live")
 async def api_live_matches():
     matches = await get_live_matches()
-    for m in matches:
-        mid = m["matchId"]
-        if mid and mid in match_cache:
-            cached = match_cache[mid]
-            m["probabilities"] = cached.get("probabilities", {})
-            m["odds"] = cached.get("odds", {})
+    # If API returned matches, cache them in MongoDB
+    if matches:
+        for m in matches:
+            mid = m.get("matchId")
+            if mid:
+                await db.matches_cache.update_one(
+                    {"matchId": mid},
+                    {"$set": {**m, "cachedAt": datetime.now(timezone.utc).isoformat()}},
+                    upsert=True
+                )
+            if mid and mid in match_cache:
+                cached = match_cache[mid]
+                m["probabilities"] = cached.get("probabilities", {})
+                m["odds"] = cached.get("odds", {})
+    else:
+        # Fallback to MongoDB cached matches
+        cached_matches = await db.matches_cache.find({}, {"_id": 0}).to_list(50)
+        if cached_matches:
+            matches = cached_matches
+            logger.info(f"Serving {len(matches)} cached matches from MongoDB")
     return {"matches": matches}
 
 @api_router.get("/matches/fixtures")
@@ -294,11 +317,12 @@ async def broadcast_update(match_id, data):
 # ─── BACKGROUND WORKER ───────────────────────────────────────
 
 async def background_updater():
+    await asyncio.sleep(10)  # Initial delay
     while True:
         try:
             matches = await get_live_matches()
             live_matches = [m for m in matches if m.get("isLive")]
-            for m in live_matches:
+            for m in live_matches[:3]:  # Only process first 3 live matches
                 mid = m["matchId"]
                 if mid:
                     await compute_match_probabilities(mid)
@@ -307,7 +331,7 @@ async def background_updater():
                         await broadcast_update(mid, cached)
         except Exception as e:
             logger.error(f"Background updater error: {e}")
-        await asyncio.sleep(15)
+        await asyncio.sleep(120)  # 2 minutes to respect CricAPI rate limits
 
 
 # ─── STARTUP / SHUTDOWN ──────────────────────────────────────
