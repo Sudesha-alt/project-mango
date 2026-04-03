@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useMatchData } from "@/hooks/useMatchData";
 import { Lightning, MapPin, Clock, CaretRight, Broadcast, Trophy, CalendarBlank, ArrowsClockwise, Spinner } from "@phosphor-icons/react";
 import { Badge } from "@/components/ui/badge";
+import CricApiLivePanel from "@/components/CricApiLivePanel";
 
 export default function MatchSelector() {
   const navigate = useNavigate();
@@ -76,6 +77,11 @@ export default function MatchSelector() {
       </div>
 
       <div className="max-w-[1440px] mx-auto px-4 lg:px-6">
+        {/* CricketData.org Live Panel */}
+        <div className="mb-6">
+          <CricApiLivePanel />
+        </div>
+
         <div className="flex gap-1 mb-6" data-testid="match-tabs">
           {[
             { key: "live", label: "Live", icon: Broadcast, count: schedule.live?.length || 0 },

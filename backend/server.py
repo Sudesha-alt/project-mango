@@ -26,6 +26,7 @@ from services.ai_service import (
 )
 from services.beta_prediction_engine import run_beta_prediction
 from services.consultant_engine import run_consultation, build_features
+from services.cricdata_service import fetch_live_ipl_details
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -349,6 +350,73 @@ async def api_predict(match_id: str):
 @api_router.get("/data-source")
 async def api_data_source():
     return {"source": "GPT-5.4 Web Search", "model": "gpt-5.4", "tool": "web_search_preview"}
+
+
+# ─── CRICKETDATA.ORG LIVE API ────────────────────────────────
+
+@api_router.post("/cricket-api/fetch-live")
+async def api_cricdata_fetch_live():
+    """
+    Fetch live IPL 2026 match details from CricketData.org API.
+    Manual trigger only — costs 1 API hit (100/day limit).
+    """
+    # Track usage in MongoDB
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    usage = await db.api_usage.find_one({"date": today, "service": "cricketdata"}, {"_id": 0})
+
+    if usage and usage.get("hits", 0) >= 100:
+        return {
+            "error": "Daily API limit reached (100/day). Try again tomorrow.",
+            "api_usage": usage,
+        }
+
+    # Make the API call
+    result = await fetch_live_ipl_details()
+
+    if result.get("error"):
+        return result
+
+    # Update usage counter in MongoDB
+    api_info = result.get("api_info", {})
+    await db.api_usage.update_one(
+        {"date": today, "service": "cricketdata"},
+        {"$set": {
+            "hits": api_info.get("hits_today", 0),
+            "limit": api_info.get("hits_limit", 100),
+            "remaining": api_info.get("hits_remaining", 100),
+            "last_fetched": api_info.get("fetched_at"),
+        }},
+        upsert=True,
+    )
+
+    # Store live match data for quick access
+    for match in result.get("matches", []):
+        await db.cricdata_live.update_one(
+            {"cricapi_id": match["cricapi_id"]},
+            {"$set": {**match, "updated_at": datetime.now(timezone.utc).isoformat()}},
+            upsert=True,
+        )
+
+    return result
+
+
+@api_router.get("/cricket-api/usage")
+async def api_cricdata_usage():
+    """Get current API usage stats for CricketData.org."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    usage = await db.api_usage.find_one({"date": today, "service": "cricketdata"}, {"_id": 0})
+    if not usage:
+        return {"date": today, "hits": 0, "limit": 100, "remaining": 100, "last_fetched": None}
+    return usage
+
+
+@api_router.get("/cricket-api/cached")
+async def api_cricdata_cached():
+    """Get cached live match data from last CricAPI fetch (no API hit)."""
+    matches = []
+    async for doc in db.cricdata_live.find({}, {"_id": 0}):
+        matches.append(doc)
+    return {"matches": matches, "count": len(matches), "source": "cache"}
 
 
 # ─── CONSULTANT ENGINE ──────────────────────────────────────

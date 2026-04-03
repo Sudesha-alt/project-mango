@@ -11,6 +11,7 @@ import PlayerPredictions from "@/components/PlayerPredictions";
 import PlayingXI from "@/components/PlayingXI";
 import BetaPrediction from "@/components/BetaPrediction";
 import ConsultantDashboard from "@/components/ConsultantDashboard";
+import CricApiLivePanel from "@/components/CricApiLivePanel";
 import { WifiHigh, WifiSlash, Lightning, Spinner, UserCircle } from "@phosphor-icons/react";
 
 export default function LiveMatch() {
@@ -99,6 +100,7 @@ export default function LiveMatch() {
 
   const rightTabs = [
     { key: "consult", label: "Consult" },
+    { key: "liveapi", label: "Live API" },
     { key: "beta", label: "Beta" },
     { key: "models", label: "Models" },
     { key: "odds", label: "Odds" },
@@ -264,6 +266,9 @@ export default function LiveMatch() {
 
                 {activeTab === "consult" && (
                   <ConsultantDashboard matchId={matchId} team1={t1Short} team2={t2Short} fetchConsultation={fetchConsultation} sendChat={sendChat} />
+                )}
+                {activeTab === "liveapi" && (
+                  <CricApiLivePanel />
                 )}
                 {activeTab === "beta" && (
                   <BetaPrediction matchId={matchId} team1={t1Short} team2={t2Short} fetchBetaPrediction={fetchBetaPrediction} />
