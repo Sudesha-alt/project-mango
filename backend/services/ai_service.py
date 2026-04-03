@@ -506,3 +506,96 @@ Answer their question directly. Be honest. Factor in their {risk_tolerance} risk
     except Exception as e:
         logger.error(f"GPT consultation error: {e}")
         return f"I couldn't analyze this right now. Based on the numbers: win probability is {prob}%, signal is {signal}. {recommendation}"
+
+
+async def fetch_pre_match_stats(team1: str, team2: str, venue: str) -> Dict:
+    """
+    GPT-5.4 Web Search: Fetch real head-to-head (last 5 years),
+    venue stats, recent form, and squad strength for two IPL teams.
+    """
+    raw_text = await _web_search(
+        f"Search for IPL cricket stats for {team1} vs {team2}. "
+        f"I need: 1) Head-to-head record between {team1} and {team2} in the last 5 years (2021-2026) in IPL. "
+        f"How many matches has each team won against the other? "
+        f"2) Performance at {venue} - average scores, win percentages at this ground for both teams. "
+        f"3) Recent form - how have both teams performed in their last 5 IPL matches? "
+        f"4) Key players and squad strength assessment for both teams in IPL 2026. "
+        f"Search ESPNcricinfo, Cricbuzz for real statistics."
+    )
+    logger.info(f"Pre-match stats web search for {team1} vs {team2}: {len(raw_text)} chars")
+
+    parse_instruction = f"""Parse the cricket statistics into this exact JSON format:
+{{
+  "h2h": {{
+    "team1_wins": number (wins for {team1} vs {team2} in IPL in last 5 years),
+    "team2_wins": number (wins for {team2} vs {team1} in IPL in last 5 years),
+    "no_result": number (ties or no results),
+    "total_matches": number,
+    "last_5_results": ["W", "L", "W", "W", "L"] (from {team1}'s perspective, most recent first)
+  }},
+  "venue_stats": {{
+    "venue_name": "{venue}",
+    "team1_avg_score": number (average score for {team1} at this venue),
+    "team2_avg_score": number (average score for {team2} at this venue),
+    "team1_win_pct": number (win % for {team1} at this venue, 0-100),
+    "team2_win_pct": number (win % for {team2} at this venue, 0-100),
+    "team1_matches_at_venue": number,
+    "team2_matches_at_venue": number,
+    "is_team1_home": boolean (is this {team1}'s home ground?),
+    "is_team2_home": boolean (is this {team2}'s home ground?)
+  }},
+  "form": {{
+    "team1_last5_wins": number,
+    "team1_last5_losses": number,
+    "team1_last5_win_pct": number (0-100),
+    "team2_last5_wins": number,
+    "team2_last5_losses": number,
+    "team2_last5_win_pct": number (0-100)
+  }},
+  "squad_strength": {{
+    "team1_batting_rating": number (0-100, based on batting lineup quality),
+    "team1_bowling_rating": number (0-100, based on bowling attack quality),
+    "team1_key_players": ["Player1", "Player2", "Player3"],
+    "team2_batting_rating": number (0-100),
+    "team2_bowling_rating": number (0-100),
+    "team2_key_players": ["Player1", "Player2", "Player3"]
+  }}
+}}
+
+RULES:
+- Use ONLY real data from the source text. 
+- For stats not found in source, use reasonable IPL defaults:
+  * H2H: if unknown, use 5-5 split
+  * Venue avg: if unknown, use 165
+  * Form: if unknown, use 50% win rate
+  * Squad rating: estimate from known player quality (60-80 range)
+- team1 is always {team1}, team2 is always {team2}"""
+
+    try:
+        data = await _parse_to_json(raw_text, parse_instruction)
+        return data
+    except Exception as e:
+        logger.error(f"Pre-match stats parse error: {e}")
+        return _default_pre_match_stats()
+
+
+def _default_pre_match_stats():
+    """Fallback stats when web search fails."""
+    return {
+        "h2h": {"team1_wins": 5, "team2_wins": 5, "no_result": 0, "total_matches": 10},
+        "venue_stats": {
+            "team1_avg_score": 165, "team2_avg_score": 165,
+            "team1_win_pct": 50, "team2_win_pct": 50,
+            "team1_matches_at_venue": 5, "team2_matches_at_venue": 5,
+            "is_team1_home": False, "is_team2_home": False,
+        },
+        "form": {
+            "team1_last5_wins": 3, "team1_last5_losses": 2, "team1_last5_win_pct": 60,
+            "team2_last5_wins": 3, "team2_last5_losses": 2, "team2_last5_win_pct": 60,
+        },
+        "squad_strength": {
+            "team1_batting_rating": 70, "team1_bowling_rating": 65,
+            "team2_batting_rating": 68, "team2_bowling_rating": 67,
+            "team1_key_players": [], "team2_key_players": [],
+        },
+    }

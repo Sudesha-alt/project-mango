@@ -1,25 +1,67 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
+import axios from "axios";
 import { useMatchData } from "@/hooks/useMatchData";
-import { Lightning, MapPin, Clock, CaretRight, Broadcast, Trophy, CalendarBlank, ArrowsClockwise, Spinner } from "@phosphor-icons/react";
+import { Lightning, MapPin, Clock, CaretRight, Broadcast, Trophy, CalendarBlank, ArrowsClockwise, Spinner, Target } from "@phosphor-icons/react";
 import { Badge } from "@/components/ui/badge";
 import CricApiLivePanel from "@/components/CricApiLivePanel";
+
+const API = process.env.REACT_APP_BACKEND_URL + "/api";
 
 export default function MatchSelector() {
   const navigate = useNavigate();
   const { schedule, loading, apiStatus, fetchStatus, loadSchedule } = useMatchData();
   const [tab, setTab] = useState("upcoming");
   const [scheduleLoading, setScheduleLoading] = useState(false);
+  const [predictions, setPredictions] = useState({});
+  const [predictingAll, setPredictingAll] = useState(false);
+  const [predictProgress, setPredictProgress] = useState({ done: 0, total: 0 });
 
   useEffect(() => {
     fetchStatus();
     loadSchedule();
   }, [fetchStatus, loadSchedule]);
 
+  // Load cached predictions on mount
+  useEffect(() => {
+    const loadPredictions = async () => {
+      try {
+        const res = await axios.get(`${API}/predictions/upcoming`);
+        const map = {};
+        for (const p of res.data.predictions || []) {
+          map[p.matchId] = p;
+        }
+        setPredictions(map);
+      } catch (e) { /* ignore */ }
+    };
+    loadPredictions();
+  }, []);
+
   const handleLoadSchedule = async (force = false) => {
     setScheduleLoading(true);
     await loadSchedule(force);
     setScheduleLoading(false);
+  };
+
+  const handlePredictAll = async () => {
+    const upcoming = schedule.upcoming || [];
+    const unpredicted = upcoming.filter(m => !predictions[m.matchId]);
+    if (unpredicted.length === 0) return;
+
+    setPredictingAll(true);
+    setPredictProgress({ done: 0, total: unpredicted.length });
+
+    for (let i = 0; i < unpredicted.length; i++) {
+      try {
+        const res = await axios.post(`${API}/matches/${unpredicted[i].matchId}/pre-match-predict`);
+        if (res.data && !res.data.error) {
+          setPredictions(prev => ({ ...prev, [unpredicted[i].matchId]: res.data }));
+        }
+      } catch (e) { /* skip failed */ }
+      setPredictProgress({ done: i + 1, total: unpredicted.length });
+    }
+
+    setPredictingAll(false);
   };
 
   const selectMatch = (match) => {
@@ -42,61 +84,66 @@ export default function MatchSelector() {
   };
 
   const matches = getMatchesForTab();
+  const upcomingCount = schedule.upcoming?.length || 0;
+  const predictedCount = Object.keys(predictions).length;
+  const unpredictedCount = Math.max(0, upcomingCount - predictedCount);
 
   return (
-    <div data-testid="match-selector-page" className="min-h-screen">
-      <div className="relative overflow-hidden">
-        <div className="absolute inset-0 bg-gradient-to-b from-[#007AFF]/10 to-transparent" />
-        <div className="max-w-[1440px] mx-auto px-4 lg:px-6 pt-12 pb-8 relative">
-          <p className="text-xs uppercase tracking-[0.2em] font-bold text-[#007AFF] mb-2">IPL 2026</p>
-          <h1 className="text-4xl sm:text-5xl lg:text-6xl font-black uppercase tracking-tight" style={{ fontFamily: "'Barlow Condensed', sans-serif" }} data-testid="page-title">
+    <div className="min-h-screen bg-[#0A0A0A] text-white py-6">
+      <div className="max-w-[1440px] mx-auto px-4 lg:px-6">
+        {/* Header */}
+        <div className="mb-8 text-center">
+          <h1 className="text-4xl sm:text-5xl lg:text-6xl font-black uppercase tracking-tight"
+            style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
             Gamble Consultant
           </h1>
-          <p className="text-base text-[#A1A1AA] mt-2 max-w-xl" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-            Real-time match predictions powered by ensemble probability models, GPT analysis, and live odds tracking.
+          <p className="text-sm text-[#A1A1AA] mt-2" style={{ fontFamily: "'IBM Plex Sans'" }}>
+            IPL 2026 &middot; {schedule.total || 0} matches &middot; Powered by GPT-5.4 Web Search
           </p>
           {!schedule.loaded && (
-            <button
-              onClick={() => handleLoadSchedule(false)}
-              disabled={scheduleLoading}
-              data-testid="load-schedule-btn"
-              className="mt-4 flex items-center gap-2 bg-[#007AFF] text-white px-5 py-2.5 rounded-md text-xs font-bold uppercase tracking-wider hover:bg-[#0066DD] transition-colors disabled:opacity-50"
-            >
-              {scheduleLoading ? <><Spinner className="w-4 h-4 animate-spin" /> Loading IPL 2026 Schedule...</> : <><CalendarBlank weight="bold" className="w-4 h-4" /> Load IPL 2026 Schedule</>}
+            <button onClick={() => handleLoadSchedule(true)} disabled={scheduleLoading} data-testid="load-schedule-btn"
+              className="mt-4 inline-flex items-center gap-2 bg-[#007AFF] text-white px-6 py-2 rounded-md text-xs font-bold uppercase tracking-wider hover:bg-blue-600 disabled:opacity-50">
+              {scheduleLoading ? <><Spinner className="w-4 h-4 animate-spin" /> Loading...</> : <><ArrowsClockwise weight="bold" className="w-4 h-4" /> Load IPL 2026 Schedule</>}
             </button>
           )}
-          {schedule.loaded && (
-            <div className="mt-4 flex items-center gap-3">
-              <span className="text-xs text-[#22C55E] font-mono">{schedule.total || 0} matches loaded</span>
-              <button onClick={() => handleLoadSchedule(true)} data-testid="refresh-schedule-btn" className="text-[10px] text-[#A1A1AA] hover:text-white flex items-center gap-1 transition-colors">
-                <ArrowsClockwise weight="bold" className="w-3 h-3" /> Refresh
-              </button>
-            </div>
-          )}
         </div>
-      </div>
 
-      <div className="max-w-[1440px] mx-auto px-4 lg:px-6">
         {/* CricketData.org Live Panel */}
         <div className="mb-6">
           <CricApiLivePanel />
         </div>
 
-        <div className="flex gap-1 mb-6" data-testid="match-tabs">
-          {[
-            { key: "live", label: "Live", icon: Broadcast, count: schedule.live?.length || 0 },
-            { key: "upcoming", label: "Upcoming", icon: CalendarBlank, count: schedule.upcoming?.length || 0 },
-            { key: "completed", label: "Completed", icon: Trophy, count: schedule.completed?.length || 0 },
-          ].map((t) => (
-            <button key={t.key} onClick={() => setTab(t.key)} data-testid={`tab-${t.key}`}
-              className={`px-4 py-2 text-xs font-bold uppercase tracking-wider rounded-md transition-colors flex items-center gap-1.5 ${
-                tab === t.key ? "bg-[#007AFF] text-white" : "bg-[#141414] text-[#A1A1AA] hover:bg-[#1E1E1E] hover:text-white"
-              }`}>
-              <t.icon weight={tab === t.key ? "fill" : "bold"} className="w-3.5 h-3.5" />
-              {t.label}
-              {t.count > 0 && <span className={`ml-1 text-[10px] px-1.5 py-0.5 rounded-full ${tab === t.key ? "bg-white/20" : "bg-white/10"}`}>{t.count}</span>}
+        {/* Tabs + Predict All */}
+        <div className="flex items-center justify-between mb-6 gap-4">
+          <div className="flex gap-1" data-testid="match-tabs">
+            {[
+              { key: "live", label: "Live", icon: Broadcast, count: schedule.live?.length || 0 },
+              { key: "upcoming", label: "Upcoming", icon: CalendarBlank, count: upcomingCount },
+              { key: "completed", label: "Completed", icon: Trophy, count: schedule.completed?.length || 0 },
+            ].map((t) => (
+              <button key={t.key} onClick={() => setTab(t.key)} data-testid={`tab-${t.key}`}
+                className={`px-4 py-2 text-xs font-bold uppercase tracking-wider rounded-md transition-colors flex items-center gap-1.5 ${
+                  tab === t.key ? "bg-[#007AFF] text-white" : "bg-[#141414] text-[#A1A1AA] hover:bg-[#1E1E1E] hover:text-white"
+                }`}>
+                <t.icon weight={tab === t.key ? "fill" : "bold"} className="w-3.5 h-3.5" />
+                {t.label}
+                {t.count > 0 && <span className={`ml-1 text-[10px] px-1.5 py-0.5 rounded-full ${tab === t.key ? "bg-white/20" : "bg-white/10"}`}>{t.count}</span>}
+              </button>
+            ))}
+          </div>
+
+          {tab === "upcoming" && upcomingCount > 0 && (
+            <button onClick={handlePredictAll} disabled={predictingAll || unpredictedCount === 0} data-testid="predict-all-btn"
+              className="flex items-center gap-2 bg-[#141414] border border-[#262626] text-white px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider hover:border-[#007AFF] transition-colors disabled:opacity-40">
+              {predictingAll ? (
+                <><Spinner className="w-3.5 h-3.5 animate-spin" /> Predicting {predictProgress.done}/{predictProgress.total}...</>
+              ) : unpredictedCount === 0 ? (
+                <><Target weight="fill" className="w-3.5 h-3.5 text-[#34C759]" /> All Predicted</>
+              ) : (
+                <><Target weight="fill" className="w-3.5 h-3.5 text-[#007AFF]" /> Predict All ({unpredictedCount} left)</>
+              )}
             </button>
-          ))}
+          )}
         </div>
 
         {(loading || scheduleLoading) && (
@@ -114,6 +161,9 @@ export default function MatchSelector() {
               const status = (match.status || "").toLowerCase();
               const isLive = status === "live" || status === "in progress";
               const isCompleted = status === "completed" || status === "result";
+              const pred = predictions[match.matchId];
+              const isUpcoming = !isLive && !isCompleted;
+
               return (
                 <button key={match.matchId || i} onClick={() => selectMatch(match)} data-testid={`match-card-${i}`}
                   className="bg-[#141414] border border-white/10 rounded-md p-4 text-left hover:border-[#007AFF]/40 hover:bg-[#1A1A1A] transition-all group">
@@ -125,7 +175,9 @@ export default function MatchSelector() {
                     </div>
                     <CaretRight weight="bold" className="w-4 h-4 text-[#71717A] group-hover:text-[#007AFF] transition-colors" />
                   </div>
-                  <div className="flex items-center justify-between mb-3">
+
+                  {/* Team names row */}
+                  <div className="flex items-center justify-between mb-2">
                     <div>
                       <p className="text-lg font-bold uppercase" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>{match.team1Short || "?"}</p>
                       <p className="text-[10px] text-[#A1A1AA] truncate max-w-[120px]">{match.team1}</p>
@@ -136,8 +188,21 @@ export default function MatchSelector() {
                       <p className="text-[10px] text-[#A1A1AA] truncate max-w-[120px]">{match.team2}</p>
                     </div>
                   </div>
+
+                  {/* Confidence bar for upcoming matches with predictions */}
+                  {isUpcoming && pred && (
+                    <ConfidenceBar
+                      team1={match.team1Short}
+                      team2={match.team2Short}
+                      team1Prob={pred.prediction?.team1_win_prob}
+                      team2Prob={pred.prediction?.team2_win_prob}
+                      confidence={pred.prediction?.confidence}
+                    />
+                  )}
+
                   {match.score && <p className="text-xs font-mono text-[#A1A1AA] bg-[#1E1E1E] rounded px-2 py-1 mb-2 truncate tabular-nums" data-testid={`match-score-${i}`}>{match.score}</p>}
                   {match.winner && <p className="text-xs text-[#22C55E] mb-2 font-medium">{match.winner} won</p>}
+
                   <div className="flex items-center justify-between text-[10px] text-[#71717A]">
                     {match.venue && <span className="flex items-center gap-1 truncate"><MapPin weight="bold" className="w-3 h-3 flex-shrink-0" />{match.venue.length > 35 ? match.venue.slice(0, 35) + "..." : match.venue}</span>}
                     {match.dateTimeGMT && <span className="flex items-center gap-1 flex-shrink-0"><Clock weight="bold" className="w-3 h-3" />{new Date(match.dateTimeGMT).toLocaleDateString()}</span>}
@@ -157,6 +222,31 @@ export default function MatchSelector() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function ConfidenceBar({ team1, team2, team1Prob, team2Prob, confidence }) {
+  if (!team1Prob && team1Prob !== 0) return null;
+  const t1 = Math.round(team1Prob);
+  const t2 = Math.round(team2Prob);
+  const t1Color = t1 > t2 ? "#34C759" : t1 === t2 ? "#FFCC00" : "#FF3B30";
+  const t2Color = t2 > t1 ? "#34C759" : t2 === t1 ? "#FFCC00" : "#FF3B30";
+
+  return (
+    <div data-testid="confidence-bar" className="my-2 space-y-1">
+      <div className="flex items-center justify-between text-[10px] font-mono font-bold">
+        <span style={{ color: t1Color }}>{team1} {t1}%</span>
+        <span className="text-[9px] text-[#737373]">PREDICTION</span>
+        <span style={{ color: t2Color }}>{t2}% {team2}</span>
+      </div>
+      <div className="flex h-2 rounded-full overflow-hidden bg-[#262626]">
+        <div className="h-full transition-all duration-700 rounded-l-full" style={{ width: `${t1}%`, backgroundColor: t1Color }} />
+        <div className="h-full transition-all duration-700 rounded-r-full" style={{ width: `${t2}%`, backgroundColor: t2Color }} />
+      </div>
+      <p className="text-[9px] text-[#737373] text-center font-mono">
+        Model confidence: {confidence}% | H2H + Venue + Form + Squad
+      </p>
     </div>
   );
 }

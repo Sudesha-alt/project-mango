@@ -4,6 +4,7 @@ import { useMatchData } from "@/hooks/useMatchData";
 import PlayingXI from "@/components/PlayingXI";
 import BetaPrediction from "@/components/BetaPrediction";
 import ConsultantDashboard from "@/components/ConsultantDashboard";
+import PreMatchPredictionBreakdown from "@/components/PreMatchPredictionBreakdown";
 import { WinProbabilityChart, AlgorithmRadarChart, PreMatchRadarChart } from "@/components/Charts";
 import { ArrowRight, Spinner, MapPin, CalendarBlank } from "@phosphor-icons/react";
 
@@ -82,6 +83,9 @@ export default function PreMatch() {
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
             <div className="lg:col-span-8 space-y-4">
+              {/* Algorithm Prediction Breakdown */}
+              <PreMatchPredictionBreakdown matchId={matchId} team1={t1Short} team2={t2Short} />
+
               {/* Playing XI */}
               <PlayingXI
                 squad={[

@@ -1,0 +1,85 @@
+{
+  "summary": "Completed testing of Pre-Match Win Confidence Prediction feature for IPL 2026. All 16 backend tests passed. Frontend MatchSelector shows confidence bars on predicted matches with 'PREDICT ALL (N LEFT)' button. PreMatch page displays full PreMatchPredictionBreakdown component with 5 weighted factors (H2H 25%, Venue 20%, Form 25%, Squad 20%, Home 10%), direction bars, and key players.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "passed_tests": [
+    "GET /api/ returns version 4.0.0 with 'Gamble Consultant API'",
+    "GET /api/schedule returns loaded schedule with 70 matches",
+    "POST /api/matches/ipl2026_008/pre-match-predict returns cached result in <0.2s",
+    "Prediction includes all 5 factors: h2h, venue, form, squad, home_advantage",
+    "Factor weights sum to 1.0 (25% + 20% + 25% + 20% + 10%)",
+    "H2H factor includes team1_wins, team2_wins, total_matches",
+    "Venue factor includes avg_score, win_pct for both teams",
+    "Form factor includes last5_wins, last5_win_pct for both teams",
+    "Squad factor includes batting_rating, bowling_rating for both teams",
+    "GET /api/predictions/upcoming returns 3+ stored predictions",
+    "Predictions include raw stats data (h2h, venue_stats, form, squad_strength)",
+    "GET /api/schedule still works",
+    "GET /api/squads still works",
+    "GET /api/matches/{id}/state still works",
+    "GET /api/cricket-api/usage still works",
+    "POST /api/matches/{id}/consult still works",
+    "POST /api/matches/{id}/predict still works",
+    "Frontend MatchSelector shows confidence bars on predicted matches",
+    "Frontend shows 'PREDICT ALL (58 LEFT)' button on Upcoming tab",
+    "Clicking match card navigates to PreMatch page",
+    "PreMatch page shows PreMatchPredictionBreakdown component",
+    "Factor breakdown shows all 5 factors with correct weights",
+    "Direction bars show which team has advantage per factor",
+    "Key Players section displays player names for both teams"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_pre_match_prediction.py",
+    "/app/test_reports/pytest/pre_match_prediction_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/backend/tests/test_pre_match_prediction.py"
+  ],
+  "success_rate": {
+    "backend": "100% (16/16 tests passed)",
+    "frontend": "100% (all pre-match prediction features working)"
+  },
+  "test_credentials": "No authentication required - open access app",
+  "seed_data_creation": "3 pre-match predictions cached: ipl2026_008 (MI vs DC), ipl2026_009 (RR vs GT), ipl2026_010 (LSG vs SRH)",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Pre-match prediction feature fully working. 3 predictions cached in MongoDB. Cached predictions return instantly (<0.2s). New predictions take 15-30s due to GPT-5.4 web search. DO NOT call /api/schedule/predict-upcoming as it processes ALL matches sequentially. Use individual /api/matches/{id}/pre-match-predict for testing. The PreMatchPredictionBreakdown component shows 5 weighted factors with direction bars.",
+  "feature_verification": {
+    "endpoints_tested": {
+      "POST /api/matches/{id}/pre-match-predict": "PASS - Returns prediction with factors breakdown",
+      "GET /api/predictions/upcoming": "PASS - Returns all stored predictions",
+      "POST /api/schedule/predict-upcoming": "NOT TESTED - Would be very slow (processes all matches)"
+    },
+    "prediction_structure": {
+      "team1_win_prob": "78.6 (MI)",
+      "team2_win_prob": "21.4 (DC)",
+      "confidence": "78.6%",
+      "factors": {
+        "h2h": {"weight": "25%", "data": "team1_wins, team2_wins, total_matches"},
+        "venue": {"weight": "20%", "data": "avg_score, win_pct, is_home"},
+        "form": {"weight": "25%", "data": "last5_wins, last5_win_pct"},
+        "squad": {"weight": "20%", "data": "batting_rating, bowling_rating"},
+        "home_advantage": {"weight": "10%", "data": "logit_contribution"}
+      }
+    },
+    "frontend_components": {
+      "ConfidenceBar": "PASS - Shows on match cards with team percentages",
+      "PredictAllButton": "PASS - Shows 'PREDICT ALL (N LEFT)' on Upcoming tab",
+      "PreMatchPredictionBreakdown": "PASS - Full factor breakdown with direction bars",
+      "KeyPlayers": "PASS - Shows key players for both teams"
+    },
+    "cache_behavior": {
+      "cached_prediction_time": "<0.2s",
+      "new_prediction_time": "15-30s (GPT web search)"
+    }
+  }
+}

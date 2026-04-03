@@ -22,11 +22,12 @@ from services.ai_service import (
     fetch_ipl_schedule, fetch_ipl_squads, fetch_live_match_update,
     get_match_prediction, get_player_predictions,
     fetch_player_stats_for_prediction, gpt_contextual_analysis,
-    gpt_consultation
+    gpt_consultation, fetch_pre_match_stats
 )
 from services.beta_prediction_engine import run_beta_prediction
 from services.consultant_engine import run_consultation, build_features
 from services.cricdata_service import fetch_live_ipl_details
+from services.pre_match_predictor import compute_prediction
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -343,6 +344,132 @@ async def api_predict(match_id: str):
         match_info["score"] = live_state.get("liveData", {}).get("score", {})
     pred = await get_match_prediction(match_info)
     return {"matchId": match_id, "prediction": pred}
+
+
+# ─── PRE-MATCH PREDICTION ───────────────────────────────────
+
+@api_router.post("/matches/{match_id}/pre-match-predict")
+async def api_pre_match_predict(match_id: str):
+    """
+    Predict upcoming match winner using H2H, venue, form, squad algorithms.
+    Fetches real stats via GPT-5.4 web search, stores result in DB.
+    """
+    # Check if we already have a prediction stored
+    cached = await db.pre_match_predictions.find_one({"matchId": match_id}, {"_id": 0})
+    if cached:
+        return cached
+
+    match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
+    if not match_info:
+        return {"error": "Match not found"}
+
+    team1 = match_info.get("team1", "")
+    team2 = match_info.get("team2", "")
+    venue = match_info.get("venue", "")
+    t1_short = match_info.get("team1Short", get_short_name(team1))
+    t2_short = match_info.get("team2Short", get_short_name(team2))
+
+    # Fetch real stats via GPT web search
+    logger.info(f"Pre-match predict: {team1} vs {team2} at {venue}")
+    stats = await fetch_pre_match_stats(team1, team2, venue)
+
+    # Run algorithm stack
+    prediction = compute_prediction(stats)
+
+    # Build result
+    result = {
+        "matchId": match_id,
+        "team1": team1,
+        "team2": team2,
+        "team1Short": t1_short,
+        "team2Short": t2_short,
+        "venue": venue,
+        "dateTimeGMT": match_info.get("dateTimeGMT", ""),
+        "match_number": match_info.get("match_number"),
+        "prediction": prediction,
+        "stats": stats,
+        "computed_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # Store in DB
+    await db.pre_match_predictions.update_one(
+        {"matchId": match_id},
+        {"$set": result},
+        upsert=True,
+    )
+    logger.info(f"Stored prediction for {match_id}: {t1_short} {prediction['team1_win_prob']}% vs {t2_short} {prediction['team2_win_prob']}%")
+
+    return result
+
+
+@api_router.post("/schedule/predict-upcoming")
+async def api_predict_upcoming():
+    """
+    Batch predict all upcoming matches that don't have predictions yet.
+    Runs sequentially (each takes ~15-30s due to web search).
+    Returns list of predictions already available + count of new ones queued.
+    """
+    upcoming = []
+    async for doc in db.ipl_schedule.find({"status": "Upcoming"}, {"_id": 0}).sort("match_number", 1):
+        upcoming.append(doc)
+
+    predictions = []
+    new_count = 0
+    already_count = 0
+
+    for match in upcoming:
+        mid = match.get("matchId", "")
+        cached = await db.pre_match_predictions.find_one({"matchId": mid}, {"_id": 0})
+        if cached:
+            predictions.append(cached)
+            already_count += 1
+        else:
+            # Run prediction for this match
+            try:
+                team1 = match.get("team1", "")
+                team2 = match.get("team2", "")
+                venue = match.get("venue", "")
+                t1_short = match.get("team1Short", get_short_name(team1))
+                t2_short = match.get("team2Short", get_short_name(team2))
+
+                stats = await fetch_pre_match_stats(team1, team2, venue)
+                prediction = compute_prediction(stats)
+
+                result = {
+                    "matchId": mid,
+                    "team1": team1, "team2": team2,
+                    "team1Short": t1_short, "team2Short": t2_short,
+                    "venue": venue,
+                    "dateTimeGMT": match.get("dateTimeGMT", ""),
+                    "match_number": match.get("match_number"),
+                    "prediction": prediction,
+                    "stats": stats,
+                    "computed_at": datetime.now(timezone.utc).isoformat(),
+                }
+                await db.pre_match_predictions.update_one(
+                    {"matchId": mid}, {"$set": result}, upsert=True
+                )
+                predictions.append(result)
+                new_count += 1
+                logger.info(f"Predicted {mid}: {t1_short} {prediction['team1_win_prob']}% vs {t2_short}")
+            except Exception as e:
+                logger.error(f"Failed to predict {mid}: {e}")
+
+    return {
+        "total_upcoming": len(upcoming),
+        "already_predicted": already_count,
+        "newly_predicted": new_count,
+        "predictions": predictions,
+    }
+
+
+@api_router.get("/predictions/upcoming")
+async def api_get_upcoming_predictions():
+    """Get all stored pre-match predictions for upcoming matches."""
+    predictions = []
+    async for doc in db.pre_match_predictions.find({}, {"_id": 0}).sort("match_number", 1):
+        predictions.append(doc)
+    return {"predictions": predictions, "count": len(predictions)}
 
 
 # ─── DATA SOURCE INFO ────────────────────────────────────────
