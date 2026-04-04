@@ -28,7 +28,8 @@ from services.ai_service import (
     fetch_player_stats_for_prediction, gpt_contextual_analysis,
     gpt_consultation, fetch_pre_match_stats,
     fetch_playing_xi, resolve_tbd_venues,
-    claude_deep_match_analysis, claude_live_analysis
+    claude_deep_match_analysis, claude_live_analysis,
+    claude_sportmonks_prediction
 )
 from services.sportmonks_service import fetch_live_match, parse_fixture, fetch_fixture_details
 from services.beta_prediction_engine import run_beta_prediction
@@ -394,7 +395,7 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
     # ── Claude Win Prediction (pass full SportMonks data) ──
     claude_prediction = None
     if sm_data:
-        claude_prediction = await _claude_live_win_prediction(sm_data, probs, match_info)
+        claude_prediction = await claude_sportmonks_prediction(sm_data, probs, match_info)
 
     result = {
         "matchId": match_id,
@@ -414,8 +415,14 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
         "claudePrediction": claude_prediction,
         "momentum": calculate_momentum(ball_objects),
         "ballHistory": ball_objects,
-        "batsmen": sm_data.get("active_batsmen", []) if sm_data else live_data.get("batsmen", []),
+        "batsmen": [
+            {**b, "strikeRate": b.get("strike_rate", 0)} for b in sm_data.get("active_batsmen", [])
+        ] if sm_data else live_data.get("batsmen", []),
         "bowler": sm_data.get("active_bowler", {}) if sm_data else live_data.get("bowler", {}),
+        "yetToBat": sm_data.get("yet_to_bat", []) if sm_data else [],
+        "yetToBowl": sm_data.get("yet_to_bowl", []) if sm_data else [],
+        "fullBattingCard": sm_data.get(f"batsmen_inn{sm_data.get('current_innings', 1)}", []) if sm_data else [],
+        "fullBowlingCard": sm_data.get(f"bowlers_inn{sm_data.get('current_innings', 1)}", []) if sm_data else [],
         "fallOfWickets": live_data.get("fallOfWickets", []),
         "lastBallCommentary": live_data.get("note", "") or live_data.get("status", ""),
         "source": source,
@@ -423,9 +430,11 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
     }
 
     live_match_state[match_id] = result
+    # Exclude raw sportmonks data from DB (too large, has nested structures)
+    db_result = {k: v for k, v in result.items() if k != "sportmonks"}
     await db.live_snapshots.update_one(
         {"matchId": match_id},
-        {"$set": {**{k: v for k, v in result.items()}, "updatedAt": datetime.now(timezone.utc).isoformat()}},
+        {"$set": {**db_result, "updatedAt": datetime.now(timezone.utc).isoformat()}},
         upsert=True
     )
 
@@ -1452,16 +1461,41 @@ def _build_live_chat_context(live_state: Dict) -> str:
             name = b.get("name", "Unknown")
             runs = b.get("runs", 0)
             balls = b.get("balls", 0)
-            sr = b.get("strikeRate", 0)
+            sr = b.get("strikeRate") or b.get("strike_rate", 0)
             fours = b.get("fours", 0)
             sixes = b.get("sixes", 0)
             bat_lines.append(f"  {name}: {runs}({balls}) SR:{sr} 4s:{fours} 6s:{sixes}")
         parts.append("BATSMEN AT CREASE:\n" + "\n".join(bat_lines))
 
+    # Yet to bat
+    ytb = live_state.get("yetToBat", [])
+    if ytb:
+        names = [p.get("name", "?") for p in ytb]
+        parts.append(f"YET TO BAT: {', '.join(names)}")
+
     # Bowler
     bowler = live_state.get("bowler", {})
     if bowler and bowler.get("name"):
         parts.append(f"CURRENT BOWLER: {bowler['name']} — {bowler.get('wickets', 0)}/{bowler.get('runs', 0)} ({bowler.get('overs', 0)} ov) Econ: {bowler.get('economy', 0)}")
+
+    # Yet to bowl
+    ytbowl = live_state.get("yetToBowl", [])
+    if ytbowl:
+        names = [p.get("name", "?") for p in ytbowl]
+        parts.append(f"YET TO BOWL: {', '.join(names)}")
+
+    # Full bowling card
+    fbc = live_state.get("fullBowlingCard", [])
+    if fbc:
+        bowl_lines = [f"  {bw.get('name','?')}: {bw.get('overs',0)}-{bw.get('maidens',0)}-{bw.get('runs',0)}-{bw.get('wickets',0)} Econ:{bw.get('economy',0)}" for bw in fbc]
+        parts.append("ALL BOWLERS:\n" + "\n".join(bowl_lines))
+
+    # Claude prediction
+    cp = live_state.get("claudePrediction", {})
+    if cp and not cp.get("error"):
+        parts.append(f"CLAUDE PREDICTION: {cp.get('headline', '')} Winner: {cp.get('predicted_winner', '')} ({cp.get('win_pct', 50)}%) Confidence: {cp.get('confidence', 'N/A')}")
+        if cp.get("reasoning"):
+            parts.append(f"CLAUDE REASONING: {cp['reasoning']}")
 
     # Algorithm probabilities
     probs = live_state.get("probabilities", {})

@@ -220,7 +220,7 @@ export default function LiveMatch() {
                             <span><span className="text-white font-mono font-bold">{b.runs}</span> ({b.balls})</span>
                             <span>4s: <span className="text-[#007AFF] font-mono">{b.fours}</span></span>
                             <span>6s: <span className="text-[#22C55E] font-mono">{b.sixes}</span></span>
-                            <span>SR: <span className="font-mono">{b.strikeRate}</span></span>
+                            <span>SR: <span className="font-mono">{b.strikeRate || b.strike_rate || 0}</span></span>
                           </div>
                         </div>
                       ))}
@@ -237,6 +237,80 @@ export default function LiveMatch() {
                     </div>
                     {matchState.lastBallCommentary && (
                       <p className="text-xs text-[#A1A1AA] mt-2 italic">{matchState.lastBallCommentary}</p>
+                    )}
+                    {/* Yet to bat / Yet to bowl */}
+                    {(matchState?.yetToBat?.length > 0 || matchState?.yetToBowl?.length > 0) && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3 pt-3 border-t border-white/5">
+                        {matchState.yetToBat?.length > 0 && (
+                          <div data-testid="yet-to-bat">
+                            <p className="text-[9px] uppercase tracking-wider text-[#737373] mb-1.5">Yet to Bat</p>
+                            <div className="flex flex-wrap gap-1">
+                              {matchState.yetToBat.map((p, i) => (
+                                <span key={i} className="text-[10px] px-1.5 py-0.5 bg-[#0A0A0A] border border-white/5 rounded text-[#A1A1AA] font-mono">{p.name}</span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {matchState.yetToBowl?.length > 0 && (
+                          <div data-testid="yet-to-bowl">
+                            <p className="text-[9px] uppercase tracking-wider text-[#737373] mb-1.5">Yet to Bowl</p>
+                            <div className="flex flex-wrap gap-1">
+                              {matchState.yetToBowl.map((p, i) => (
+                                <span key={i} className="text-[10px] px-1.5 py-0.5 bg-[#0A0A0A] border border-white/5 rounded text-[#A1A1AA] font-mono">{p.name}</span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Claude Opus Live Win Prediction */}
+                {matchState?.claudePrediction && !matchState.claudePrediction.error && (
+                  <div className="bg-[#141414] border border-purple-500/30 rounded-md p-4 space-y-3" data-testid="claude-live-prediction">
+                    <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-purple-400 flex items-center gap-1.5" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
+                      Claude Opus Live Prediction
+                    </h4>
+                    <p className="text-base font-bold text-white leading-snug">{matchState.claudePrediction.headline}</p>
+                    <div className="flex items-center gap-3">
+                      <div className="bg-purple-500/10 border border-purple-500/20 rounded px-3 py-2 text-center">
+                        <p className="text-[9px] text-purple-300 uppercase">Winner</p>
+                        <p className="text-xl font-black font-mono text-purple-400" style={{ fontFamily: "'Barlow Condensed'" }}>{matchState.claudePrediction.predicted_winner}</p>
+                      </div>
+                      <div className="bg-purple-500/10 border border-purple-500/20 rounded px-3 py-2 text-center">
+                        <p className="text-[9px] text-purple-300 uppercase">Win %</p>
+                        <p className="text-xl font-black font-mono text-purple-400" style={{ fontFamily: "'Barlow Condensed'" }}>{matchState.claudePrediction.win_pct}%</p>
+                      </div>
+                      <div className="bg-purple-500/10 border border-purple-500/20 rounded px-3 py-2 text-center">
+                        <p className="text-[9px] text-purple-300 uppercase">Momentum</p>
+                        <p className="text-sm font-bold text-purple-400 uppercase">{matchState.claudePrediction.momentum}</p>
+                      </div>
+                      <div className="bg-purple-500/10 border border-purple-500/20 rounded px-3 py-2 text-center">
+                        <p className="text-[9px] text-purple-300 uppercase">Confidence</p>
+                        <p className="text-sm font-bold text-purple-400">{matchState.claudePrediction.confidence}</p>
+                      </div>
+                    </div>
+                    <p className="text-sm text-[#D4D4D4] leading-relaxed">{matchState.claudePrediction.reasoning}</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {matchState.claudePrediction.batting_depth_assessment && (
+                        <div className="bg-[#0A0A0A] border border-white/5 rounded p-2.5">
+                          <p className="text-[9px] text-[#737373] uppercase mb-1">Batting Depth</p>
+                          <p className="text-[11px] text-[#A3A3A3] leading-relaxed">{matchState.claudePrediction.batting_depth_assessment}</p>
+                        </div>
+                      )}
+                      {matchState.claudePrediction.bowling_assessment && (
+                        <div className="bg-[#0A0A0A] border border-white/5 rounded p-2.5">
+                          <p className="text-[9px] text-[#737373] uppercase mb-1">Bowling Options</p>
+                          <p className="text-[11px] text-[#A3A3A3] leading-relaxed">{matchState.claudePrediction.bowling_assessment}</p>
+                        </div>
+                      )}
+                    </div>
+                    {matchState.claudePrediction.key_matchup && (
+                      <div className="bg-[#0A0A0A] border border-purple-500/10 rounded p-2.5">
+                        <p className="text-[9px] text-purple-300 uppercase mb-1">Key Matchup</p>
+                        <p className="text-[11px] text-[#D4D4D4]">{matchState.claudePrediction.key_matchup}</p>
+                      </div>
                     )}
                   </div>
                 )}

@@ -68,7 +68,7 @@ def parse_fixture(raw: dict) -> dict:
 
     innings_scores = {}
     for r in runs_data:
-        inn = r.get("inning", 1)
+        inn = str(r.get("inning", 1))
         innings_scores[inn] = {
             "team_id": r.get("team_id"),
             "runs": r.get("score", 0),
@@ -77,8 +77,8 @@ def parse_fixture(raw: dict) -> dict:
         }
 
     # Determine current innings
-    current_inn = max(innings_scores.keys()) if innings_scores else 1
-    current_score = innings_scores.get(current_inn, {})
+    current_inn = max(int(k) for k in innings_scores.keys()) if innings_scores else 1
+    current_score = innings_scores.get(str(current_inn), {})
     
     batting_team_id = current_score.get("team_id")
     batting_team = team1 if batting_team_id == team1_id else team2

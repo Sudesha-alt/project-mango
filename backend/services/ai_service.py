@@ -780,3 +780,151 @@ Return JSON:
     except Exception as e:
         logger.error(f"Claude live analysis error: {e}")
         return {"error": str(e), "current_state_summary": "Live analysis unavailable"}
+
+
+
+# ─── Claude SportMonks Live Win Prediction ────────────────────
+
+async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_info: dict) -> dict:
+    """
+    Claude Opus: Generate a live win prediction using rich SportMonks data.
+    Passes full batting card, bowling card, yet-to-bat, yet-to-bowl lineups
+    so Claude can assess remaining depth and predict the outcome.
+    """
+    team1 = match_info.get("team1", "Team A")
+    team2 = match_info.get("team2", "Team B")
+    t1_short = match_info.get("team1Short", team1[:3].upper())
+    t2_short = match_info.get("team2Short", team2[:3].upper())
+    venue = match_info.get("venue", "")
+
+    batting_team = sm_data.get("batting_team", team1)
+    current_inn = sm_data.get("current_innings", 1)
+    current_score = sm_data.get("current_score", {})
+    target = sm_data.get("target")
+
+    # Active batsmen at crease
+    active_bat = sm_data.get("active_batsmen", [])
+    active_bat_text = "\n".join(
+        f"  {b.get('name','?')} — {b.get('runs',0)}({b.get('balls',0)}) "
+        f"SR:{b.get('strike_rate',0)} 4s:{b.get('fours',0)} 6s:{b.get('sixes',0)}"
+        for b in active_bat
+    ) or "  No active batsmen data"
+
+    # Full batting card for current innings
+    bat_key = f"batsmen_inn{current_inn}"
+    all_batsmen = sm_data.get(bat_key, [])
+    full_bat_text = "\n".join(
+        f"  {b.get('name','?')} — {b.get('runs',0)}({b.get('balls',0)}) "
+        f"SR:{b.get('strike_rate',0)} 4s:{b.get('fours',0)} 6s:{b.get('sixes',0)}"
+        + (" *BATTING*" if b.get('active') else "")
+        for b in all_batsmen
+    ) or "  No batting data"
+
+    # Yet to bat
+    yet_to_bat = sm_data.get("yet_to_bat", [])
+    ytb_text = ", ".join(p.get("name", "?") for p in yet_to_bat) or "None / tail-enders"
+
+    # Active bowler
+    active_bwl = sm_data.get("active_bowler") or {}
+    active_bwl_text = (
+        f"  {active_bwl.get('name','?')} — {active_bwl.get('overs',0)}-{active_bwl.get('maidens',0)}-"
+        f"{active_bwl.get('runs',0)}-{active_bwl.get('wickets',0)} Econ:{active_bwl.get('economy',0)}"
+        if active_bwl else "  No active bowler data"
+    )
+
+    # Full bowling card for current innings
+    bowl_key = f"bowlers_inn{current_inn}"
+    all_bowlers = sm_data.get(bowl_key, [])
+    full_bowl_text = "\n".join(
+        f"  {bw.get('name','?')} — {bw.get('overs',0)}-{bw.get('maidens',0)}-"
+        f"{bw.get('runs',0)}-{bw.get('wickets',0)} Econ:{bw.get('economy',0)}"
+        + (" *BOWLING*" if bw.get('active') else "")
+        for bw in all_bowlers
+    ) or "  No bowling data"
+
+    # Yet to bowl
+    yet_to_bowl = sm_data.get("yet_to_bowl", [])
+    ytbowl_text = ", ".join(p.get("name", "?") for p in yet_to_bowl) or "None / all bowled"
+
+    # Previous innings summary (if 2nd innings)
+    prev_inn_text = ""
+    if current_inn == 2:
+        inn1_score = sm_data.get("innings", {}).get("1", {})
+        prev_inn_text = f"1st Innings: {inn1_score.get('runs',0)}/{inn1_score.get('wickets',0)} in {inn1_score.get('overs',0)} overs"
+        if target:
+            prev_inn_text += f" | Target: {target}"
+
+    # Recent balls for momentum
+    recent = sm_data.get("recent_balls", [])
+    recent_text = " ".join(str(b) for b in recent[-12:]) if recent else "No ball-by-ball data"
+
+    chat = _get_claude_chat(
+        f"sm-live-pred-{uuid.uuid4().hex[:8]}",
+        """You are an elite cricket match analyst. Given REAL-TIME live match data including full scorecards, 
+batting/bowling lineups, and remaining players, provide a sharp win prediction.
+Factor in: batting depth remaining, bowling options left, match phase, pitch conditions, and momentum.
+Be decisive — give a clear prediction, not a hedge."""
+    )
+
+    prompt = f"""LIVE MATCH: {team1} vs {team2} at {venue}
+Innings: {current_inn} | Status: {sm_data.get('status', 'Live')}
+{sm_data.get('note', '')}
+{prev_inn_text}
+
+=== CURRENT SCORE ===
+{batting_team} batting: {current_score.get('runs',0)}/{current_score.get('wickets',0)} in {current_score.get('overs',0)} overs
+CRR: {sm_data.get('crr', 0)} | RRR: {sm_data.get('rrr', 'N/A')}
+
+=== BATSMEN AT CREASE ===
+{active_bat_text}
+
+=== FULL BATTING CARD (this innings) ===
+{full_bat_text}
+
+=== YET TO BAT ===
+{ytb_text}
+
+=== CURRENT BOWLER ===
+{active_bwl_text}
+
+=== FULL BOWLING CARD (this innings) ===
+{full_bowl_text}
+
+=== YET TO BOWL ===
+{ytbowl_text}
+
+=== RECENT BALLS ===
+{recent_text}
+
+=== ALGORITHM PROBABILITIES ===
+Ensemble: {algo_probs.get('ensemble', 0.5)*100:.1f}% ({team1})
+Bayesian: {algo_probs.get('bayesian', 0.5)*100:.1f}%
+Poisson: {algo_probs.get('poisson', 0.5)*100:.1f}%
+DLS: {algo_probs.get('dls', 0.5)*100:.1f}%
+Momentum: {algo_probs.get('momentum', 0.5)*100:.1f}%
+
+Return JSON:
+{{
+  "predicted_winner": "{t1_short}" or "{t2_short}",
+  "win_pct": number (0-100, winning team's probability),
+  "headline": "1 bold sentence prediction",
+  "reasoning": "3-5 sentences. Factor in: who's batting, batting depth remaining, which bowlers are left, match phase, required rate vs current rate, momentum from recent balls",
+  "batting_depth_assessment": "How strong is the remaining batting lineup? Impact on outcome?",
+  "bowling_assessment": "Which bowlers are left? Can they restrict/accelerate?",
+  "key_matchup": "The single most important player/matchup right now",
+  "momentum": "BATTING" or "BOWLING" or "EVEN",
+  "confidence": "Low" or "Medium" or "High"
+}}"""
+
+    try:
+        response = await chat.send_message(UserMessage(text=prompt))
+        return _extract_json(response)
+    except Exception as e:
+        logger.error(f"Claude SportMonks prediction error: {e}")
+        return {
+            "error": str(e),
+            "predicted_winner": "N/A",
+            "win_pct": 50,
+            "headline": "Live prediction unavailable",
+            "reasoning": f"Claude analysis failed: {e}",
+        }

@@ -18,15 +18,15 @@ export default function LiveScoreboard({ matchData, wsData }) {
   const remainingOvers = 20 - overs;
   let rrr = "--";
   const scoreStr = typeof score === "string" ? score : "";
-  if (innings === 2 && scoreStr.includes("Target")) {
+  if (innings === 2 && data.target) {
+    const rem = data.target - runs;
+    if (remainingOvers > 0 && rem > 0) rrr = (rem / remainingOvers).toFixed(1);
+  } else if (innings === 2 && scoreStr.includes("Target")) {
     try {
-      const target = parseInt(scoreStr.split("Target")[1].trim().split(/\s/)[0]);
+      const target = parseInt(scoreStr.replace(/[^0-9]/g, ""));
       const rem = target - runs;
       if (remainingOvers > 0 && rem > 0) rrr = (rem / remainingOvers).toFixed(1);
     } catch {}
-  } else if (innings === 2 && data.target) {
-    const rem = data.target - runs;
-    if (remainingOvers > 0 && rem > 0) rrr = (rem / remainingOvers).toFixed(1);
   }
 
   return (
