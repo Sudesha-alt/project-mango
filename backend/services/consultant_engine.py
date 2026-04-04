@@ -341,12 +341,24 @@ def simulate_match(
     t2_sorted = sorted(t2_adjusted)
     prob = team1_wins / n_sims
 
+    t1_mean_score = round(sum(t1_scores) / n_sims, 1)
+    t2_mean_score = round(sum(t2_adjusted) / n_sims, 1)
+
+    # Count batting first wins (t1 batting first, t2 chasing)
+    batting_first_wins = sum(1 for i in range(n_sims) if t1_scores[i] > t2_adjusted[i])
+    batting_first_win_pct = round(batting_first_wins / n_sims * 100, 1)
+
     return {
         "team1_win_prob": round(prob, 4),
         "team2_win_prob": round(1 - prob, 4),
         "simulations": n_sims,
+        "batting_first_win_pct": batting_first_win_pct,
+        "mean_team1_score": t1_mean_score,
+        "mean_team2_score": t2_mean_score,
+        "predicted_total_team1": round(t1_mean_score),
+        "predicted_total_team2": round(t2_mean_score),
         "team1_scores": {
-            "mean": round(sum(t1_scores) / n_sims, 1),
+            "mean": t1_mean_score,
             "median": t1_sorted[n_sims // 2],
             "p10": t1_sorted[int(n_sims * 0.1)],
             "p25": t1_sorted[int(n_sims * 0.25)],
@@ -355,7 +367,7 @@ def simulate_match(
             "p90": t1_sorted[int(n_sims * 0.9)],
         },
         "team2_scores": {
-            "mean": round(sum(t2_adjusted) / n_sims, 1),
+            "mean": t2_mean_score,
             "median": t2_sorted[n_sims // 2],
             "p10": t2_sorted[int(n_sims * 0.1)],
             "p25": t2_sorted[int(n_sims * 0.25)],
@@ -475,54 +487,81 @@ def classify_signal(
     edge_pct: float,
     confidence: float,
     calibrated_prob: float,
+    market_pct_team1: float = None,
+    team1_name: str = "",
 ) -> Dict:
     """
     Classify the betting signal based on edge, confidence, and probability.
-    Returns signal label and recommendation.
+    Returns signal label, recommendation with reasoning, and edge explanation.
     """
     if confidence < 0.4:
         return {
             "signal": "WAIT_FOR_MORE_DATA",
             "recommendation": "Model confidence too low. Wait for more match data.",
             "color": "gray",
+            "edge_reasons": ["Insufficient data to generate reliable edge analysis."],
         }
 
     if edge_pct is None:
         return {
             "signal": "NO_MARKET",
-            "recommendation": "No market odds provided. Enter bookmaker odds to compare.",
+            "recommendation": "No market odds provided. Enter bookmaker odds to detect value.",
             "color": "gray",
+            "edge_reasons": ["Enter bookmaker odds for both teams to enable edge detection."],
         }
+
+    model_pct = round(calibrated_prob * 100, 1)
+    market_pct = market_pct_team1 or 50
+    edge_abs = abs(edge_pct)
+
+    # Build reasoning points
+    reasons = []
+    if edge_pct > 0:
+        reasons.append(f"Model rates {team1_name} at {model_pct}%, market only gives {market_pct}% — {edge_abs}% undervalued.")
+        if model_pct > 65:
+            reasons.append(f"High model confidence ({model_pct}%) backed by H2H, venue form, and squad quality.")
+        if edge_pct > 8:
+            reasons.append(f"Edge of {edge_pct}% is significant — this is a clear market mispricing.")
+        elif edge_pct > 4:
+            reasons.append(f"Edge of {edge_pct}% suggests the market hasn't fully priced in recent form shifts.")
+    else:
+        reasons.append(f"Market gives {market_pct}% but model only rates {model_pct}% — market is overvaluing by {edge_abs}%.")
+        reasons.append("The bookmaker odds are already better than fair value. Betting here has negative expected value.")
 
     if edge_pct >= 8:
         return {
             "signal": "STRONG_VALUE",
-            "recommendation": "Strong edge detected. Model significantly disagrees with market.",
+            "recommendation": f"Strong value detected. Model sees {edge_pct}% edge over the market. This is a high-conviction bet.",
             "color": "green",
+            "edge_reasons": reasons,
         }
     elif edge_pct >= 4:
         return {
             "signal": "VALUE",
-            "recommendation": "Positive edge exists. Worth considering based on risk appetite.",
+            "recommendation": f"Value bet. Model finds {edge_pct}% edge — the market is underpricing this outcome.",
             "color": "lime",
+            "edge_reasons": reasons,
         }
     elif edge_pct >= 1:
         return {
             "signal": "SMALL_EDGE",
-            "recommendation": "Marginal edge. Proceed with caution.",
+            "recommendation": f"Marginal edge of {edge_pct}%. Small value exists but proceed with caution.",
             "color": "yellow",
+            "edge_reasons": reasons + ["Thin edges can be wiped out by variance. Only bet if risk-tolerant."],
         }
     elif edge_pct >= -2:
         return {
             "signal": "NO_BET",
-            "recommendation": "No meaningful edge. Market is fairly priced.",
+            "recommendation": "No meaningful edge. The market is fairly priced for this match.",
             "color": "gray",
+            "edge_reasons": reasons + ["Model and market are roughly aligned. No value in betting either side."],
         }
     else:
         return {
             "signal": "AVOID",
-            "recommendation": "Market is offering worse odds than fair value. Do not bet.",
+            "recommendation": f"Negative edge of {edge_pct}%. The market is offering worse odds than the model's fair value.",
             "color": "red",
+            "edge_reasons": reasons + ["Betting here means paying a premium above fair probability. Avoid."],
         }
 
 
@@ -581,9 +620,14 @@ def run_consultation(
         t1_preds = [p for p in player_predictions if p.get("team") == team1]
         t2_preds = [p for p in player_predictions if p.get("team") == team2]
         if t1_preds:
-            t1_mean = sum(p.get("predicted_runs", 15) for p in t1_preds[:11])
+            # Use average runs as a scale factor applied to venue_par, not raw sum
+            avg_runs = sum(p.get("predicted_runs", 15) for p in t1_preds[:11]) / max(len(t1_preds[:11]), 1)
+            t1_mean = venue_par * (avg_runs / 20)  # 20 is baseline avg runs per player
+            t1_mean = max(120, min(220, t1_mean))  # Clamp to realistic IPL range
         if t2_preds:
-            t2_mean = sum(p.get("predicted_runs", 15) for p in t2_preds[:11])
+            avg_runs = sum(p.get("predicted_runs", 15) for p in t2_preds[:11]) / max(len(t2_preds[:11]), 1)
+            t2_mean = venue_par * (avg_runs / 20)
+            t2_mean = max(120, min(220, t2_mean))
 
     sim = simulate_match(t1_mean, t2_mean, venue_par=venue_par, n_sims=50000)
 
@@ -623,7 +667,7 @@ def run_consultation(
 
     # Signal classification
     edge = odds_edge.get("edge_pct")
-    signal = classify_signal(edge or 0, cal["confidence"], cal["calibrated"])
+    signal = classify_signal(edge or 0, cal["confidence"], cal["calibrated"], market_pct_team1, team1)
 
     # Risk-adjusted recommendation
     if risk_tolerance == "safe" and signal["signal"] in ("SMALL_EDGE", "VALUE"):
@@ -712,37 +756,70 @@ def run_consultation(
         top_batter = max(player_predictions, key=lambda x: x.get("predicted_runs", 0), default=None)
         top_bowler = max(player_predictions, key=lambda x: x.get("predicted_wickets", 0), default=None)
         if top_batter and top_batter.get("predicted_runs", 0) > 25:
-            batting_scenarios = {
+            buzz = top_batter.get("buzz_confidence", 50)
+            batter_scenario = {
                 "type": "PLAYER_OUTBURST",
                 "title": f"Watch {top_batter['name']} for big innings",
-                "description": f"Predicted {top_batter['predicted_runs']}r at SR {top_batter.get('predicted_sr', 130)}. If they survive first 10 balls, expect acceleration. Live odds will shift.",
-                "confidence": "HIGH" if top_batter.get("confidence", 50) > 60 else "MEDIUM",
+                "description": f"Predicted {top_batter['predicted_runs']}r at SR {top_batter.get('predicted_sr', 130)}. Buzz: {buzz}/100. If they survive first 10 balls, expect acceleration.",
+                "confidence": "HIGH" if buzz > 60 else "MEDIUM",
                 "timing": "When this player comes to bat",
                 "player": top_batter["name"],
+                "depends_on": f"This outcome most depends on {top_batter['name']}'s form. If dismissed early, consider switching bet.",
             }
-            betting_scenarios.append(batting_scenarios)
+            betting_scenarios.append(batter_scenario)
         if top_bowler and top_bowler.get("predicted_wickets", 0) > 1:
             betting_scenarios.append({
                 "type": "PLAYER_OUTBURST",
                 "title": f"Bet on {top_bowler['name']} to take wickets",
-                "description": f"Predicted {top_bowler['predicted_wickets']}w at economy {top_bowler.get('predicted_economy', 8.0)}. Key spell expected in middle overs.",
+                "description": f"Predicted {top_bowler['predicted_wickets']}w at economy {top_bowler.get('predicted_economy', 8.0)}. Key spell in middle overs.",
                 "confidence": "MEDIUM",
                 "timing": "During their bowling spell",
                 "player": top_bowler["name"],
+                "depends_on": f"Wickets depend on {top_bowler['name']}'s ability to exploit conditions. Watch if pitch assists seam/spin.",
             })
 
-    # Scenario 4: Chase dynamics
+    # Scenario 4: Chase dynamics + predicted scores
     if sim.get("mean_team1_score") and sim.get("mean_team2_score"):
         mean_t1 = sim["mean_team1_score"]
         mean_t2 = sim["mean_team2_score"]
         if abs(mean_t1 - mean_t2) < 15:
             betting_scenarios.append({
                 "type": "CHASE_DYNAMIC",
-                "title": "Tight chase expected — back the chasing team at 10-12 overs",
-                "description": f"Simulated scores: {mean_t1:.0f} vs {mean_t2:.0f} (close). If the match reaches 10 overs in the chase with RRR < 9, chasing team gets favorable live odds.",
+                "title": "Tight chase expected — back chasing team at 10-12 overs",
+                "description": f"Predicted scores: {mean_t1:.0f} vs {mean_t2:.0f}. If chase reaches 10 overs with RRR < 9, chasing team gets favorable odds.",
                 "confidence": "MEDIUM",
                 "timing": "Mid-chase (overs 10-12)",
             })
+
+    # Scenario 5: Bet AGAINST the odds (contrarian)
+    if edge and edge < -3 and market_pct_team1:
+        und_short = snapshot.get("team2Short", team2[:3].upper()) if cal["calibrated"] > 0.5 else snapshot.get("team1Short", team1[:3].upper())
+        betting_scenarios.append({
+            "type": "BET_AGAINST_ODDS",
+            "title": f"Contrarian: Back {und_short} if early wickets fall",
+            "description": f"The market is overvaluing the favorite. If the favorite loses 2+ wickets in powerplay, the underdog's odds will improve rapidly. Cash in on the panic.",
+            "confidence": "MEDIUM",
+            "timing": "If favorite struggles in first 6 overs",
+            "depends_on": "This depends on powerplay performance. If favorite bats well in PP, abandon this scenario.",
+        })
+
+    # Scenario 6: Key player dependence summary
+    if player_predictions:
+        t1_preds = [p for p in player_predictions if p.get("team") == team1]
+        t2_preds = [p for p in player_predictions if p.get("team") == team2]
+        t1_top = sorted(t1_preds, key=lambda x: x.get("predicted_runs", 0), reverse=True)[:2] if t1_preds else []
+        t2_top = sorted(t2_preds, key=lambda x: x.get("predicted_runs", 0), reverse=True)[:2] if t2_preds else []
+        t1_names = " & ".join([p["name"].split()[-1] for p in t1_top])
+        t2_names = " & ".join([p["name"].split()[-1] for p in t2_top])
+        fav_s = snapshot.get("team1Short", team1[:3].upper())
+        und_s = snapshot.get("team2Short", team2[:3].upper())
+        betting_scenarios.append({
+            "type": "KEY_DEPENDENCE",
+            "title": f"Result hinges on key players",
+            "description": f"{fav_s} depends on {t1_names}. {und_s} depends on {t2_names}. If either team's key players fail, the match flips. Monitor their performance closely for live betting windows.",
+            "confidence": "HIGH",
+            "timing": "Throughout the match",
+        })
 
     # ── Odds Visual Data ──
     odds_visual = {
@@ -780,6 +857,7 @@ def run_consultation(
         "odds_visual": odds_visual,
         "value_signal": signal["signal"],
         "signal_color": signal["color"],
+        "edge_reasons": signal.get("edge_reasons", []),
         "bet_recommendation": signal["recommendation"],
         "risk_tolerance": risk_tolerance,
         "uncertainty_band": cal["uncertainty_band"],

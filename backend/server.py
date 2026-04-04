@@ -907,23 +907,38 @@ async def api_consult(match_id: str, body: ConsultRequest = None):
         if ld.get("bowler"):
             snapshot["bowler"] = ld["bowler"]
 
-    # Get player predictions from DB or fetch
-    sq1 = await db.ipl_squads.find_one({"teamShort": t1_short}, {"_id": 0})
-    sq2 = await db.ipl_squads.find_one({"teamShort": t2_short}, {"_id": 0})
-    t1_players = sq1.get("players", [])[:11] if sq1 else []
-    t2_players = sq2.get("players", [])[:11] if sq2 else []
-
-    # Fetch player stats via web search
-    logger.info(f"Consultant: fetching player stats for {team1} vs {team2}")
-    player_stats = await fetch_player_stats_for_prediction(
-        team1, team2, t1_players, t2_players, venue
-    )
-    if not player_stats:
-        player_stats = _generate_default_player_stats(t1_players, t2_players, team1, team2)
-
-    # Apply player prediction formula
-    from services.beta_prediction_engine import predict_player_performance
-    player_preds = [predict_player_performance(p) for p in player_stats]
+    # Get player predictions from Playing XI (cached prediction) instead of random squad
+    player_preds = []
+    cached_pred = await db.pre_match_predictions.find_one({"matchId": match_id}, {"_id": 0})
+    if cached_pred and cached_pred.get("playing_xi"):
+        xi = cached_pred["playing_xi"]
+        for team_key, team_name in [("team1_xi", team1), ("team2_xi", team2)]:
+            for p in xi.get(team_key, []):
+                player_preds.append({
+                    "name": p.get("name", "Unknown"),
+                    "team": team_name,
+                    "role": p.get("role", "All-rounder"),
+                    "predicted_runs": p.get("expected_runs", 15),
+                    "predicted_wickets": p.get("expected_wickets", 0),
+                    "predicted_sr": p.get("season_sr", 130),
+                    "predicted_economy": p.get("season_economy", 8.0),
+                    "confidence": p.get("buzz_confidence", 50) / 100,
+                    "luck_bias": p.get("luck_factor", 1.0),
+                    "venue_stats": p.get("venue_stats", {}),
+                    "buzz_confidence": p.get("buzz_confidence", 50),
+                })
+    
+    if not player_preds:
+        # Fallback: fetch from squads
+        sq1 = await db.ipl_squads.find_one({"teamShort": t1_short}, {"_id": 0})
+        sq2 = await db.ipl_squads.find_one({"teamShort": t2_short}, {"_id": 0})
+        t1_players = sq1.get("players", [])[:11] if sq1 else []
+        t2_players = sq2.get("players", [])[:11] if sq2 else []
+        player_stats = await fetch_player_stats_for_prediction(team1, team2, t1_players, t2_players, venue)
+        if not player_stats:
+            player_stats = _generate_default_player_stats(t1_players, t2_players, team1, team2)
+        from services.beta_prediction_engine import predict_player_performance
+        player_preds = [predict_player_performance(p) for p in player_stats]
 
     # Run consultation engine (market inputs are 0-100 percentages)
     result = run_consultation(
