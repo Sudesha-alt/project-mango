@@ -45,9 +45,24 @@ export default function LiveMatch() {
         }
       }
       setLoading(false);
+
+      // Auto-fetch live data on page load
+      if (!state || state.noLiveData || !state.liveData) {
+        setFetchingLive(true);
+        const data = await fetchLiveData(matchId, null);
+        if (data && !data.error) {
+          if (data.noLiveMatch) {
+            setMatchState(prev => ({ ...prev, ...data, noLiveData: false, noLiveMatch: true }));
+          } else {
+            setMatchState(data);
+            if (data.probabilities) setProbHistory(prev => [...prev, data.probabilities].slice(-50));
+          }
+        }
+        setFetchingLive(false);
+      }
     };
     if (matchId) load();
-  }, [matchId, getMatchState, getTeamSquad]);
+  }, [matchId, getMatchState, getTeamSquad, fetchLiveData]);
 
   useEffect(() => {
     if (wsData && wsData.probabilities) {
@@ -141,13 +156,32 @@ export default function LiveMatch() {
 
           {!hasLiveData && !noLiveMatch && (
             <div className="bg-[#141414] border border-[#007AFF]/30 rounded-md p-8 text-center mb-4" data-testid="no-live-data">
-              <Lightning weight="duotone" className="w-10 h-10 text-[#007AFF] mx-auto mb-3" />
-              <p className="text-sm text-[#A1A1AA] mb-2">No live data loaded yet.</p>
-              <p className="text-xs text-[#71717A] mb-4">Click "Fetch Live Scores" to get real-time data via web search. Set betting odds first for Bayesian model input.</p>
+              {fetchingLive ? (
+                <>
+                  <Spinner className="w-10 h-10 text-[#007AFF] mx-auto mb-3 animate-spin" />
+                  <p className="text-sm text-[#A1A1AA] mb-2">Fetching live match data via GPT Web Search...</p>
+                  <p className="text-xs text-[#71717A]">This may take 15-30 seconds. Searching for live scores, batsmen, bowlers, and match state.</p>
+                </>
+              ) : (
+                <>
+                  <Lightning weight="duotone" className="w-10 h-10 text-[#007AFF] mx-auto mb-3" />
+                  <p className="text-sm text-[#A1A1AA] mb-2">No live data loaded yet.</p>
+                  <p className="text-xs text-[#71717A] mb-4">Click "Fetch Live Scores" to get real-time data via web search. Set betting odds first for Bayesian model input.</p>
+                </>
+              )}
               <p className="text-lg font-bold uppercase" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>{t1Short} vs {t2Short}</p>
-              <div className="max-w-sm mx-auto mt-4">
-                <BettingOddsInput team1={t1Short} team2={t2Short} onOddsChange={handleOddsChange} currentEdge={bettingEdge} />
-              </div>
+              {!fetchingLive && (
+                <div className="max-w-sm mx-auto mt-4">
+                  <BettingOddsInput team1={t1Short} team2={t2Short} onOddsChange={handleOddsChange} currentEdge={bettingEdge} />
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Always show Consultant + Chat even before live data loads */}
+          {!hasLiveData && !noLiveMatch && !loading && (
+            <div className="max-w-xl mx-auto mt-4">
+              <ConsultantDashboard matchId={matchId} team1={t1Short} team2={t2Short} fetchConsultation={fetchConsultation} sendChat={sendChat} />
             </div>
           )}
 
