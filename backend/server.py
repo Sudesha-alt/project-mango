@@ -30,6 +30,7 @@ from services.ai_service import (
     fetch_playing_xi, resolve_tbd_venues,
     claude_deep_match_analysis, claude_live_analysis
 )
+from services.sportmonks_service import fetch_live_match, parse_fixture, fetch_fixture_details
 from services.beta_prediction_engine import run_beta_prediction
 from services.consultant_engine import run_consultation, build_features
 from services.cricdata_service import fetch_live_ipl_details, fetch_venue_stats_from_cricapi
@@ -264,7 +265,7 @@ class ChatRequest(BaseModel):
 
 @api_router.post("/matches/{match_id}/fetch-live")
 async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
-    """Button-triggered: Fetch live data via CricketData.org API + Claude analysis."""
+    """Button-triggered: Fetch live data via SportMonks API + Claude win prediction."""
     if body is None:
         body = FetchLiveRequest()
 
@@ -280,166 +281,128 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
 
     logger.info(f"Fetching live data for {team1} vs {team2}")
 
-    # ── Step 1: Try CricketData.org API (structured, reliable) ──
-    live_data = None
-    source = "cricketdata.org"
-    cricapi_result = await fetch_live_ipl_details()
+    # ── Step 1: Try SportMonks API (rich data: batting, bowling, lineup) ──
+    sm_data = await fetch_live_match(team1, team2)
+    source = "sportmonks"
 
-    if cricapi_result.get("matches"):
-        # Find matching match by team names
-        for m in cricapi_result["matches"]:
-            m_t1 = (m.get("team1", "") or "").lower()
-            m_t2 = (m.get("team2", "") or "").lower()
-            t1_lower = team1.lower()
-            t2_lower = team2.lower()
-            if (t1_lower in m_t1 or m_t1 in t1_lower or t2_lower in m_t1 or m_t1 in t2_lower) and \
-               (t1_lower in m_t2 or m_t2 in t1_lower or t2_lower in m_t2 or m_t2 in t2_lower):
-                cs = m.get("current_score", {})
-                live_data = {
-                    "matchId": match_id,
-                    "team1": team1,
-                    "team2": team2,
-                    "venue": m.get("venue", venue),
-                    "isLive": m.get("matchStarted", False) and not m.get("matchEnded", False),
-                    "noLiveMatch": not m.get("matchStarted", False),
-                    "innings": m.get("current_innings", 1),
-                    "battingTeam": team1,  # Will be updated below
-                    "bowlingTeam": team2,
-                    "score": {
-                        "runs": cs.get("runs", 0),
-                        "wickets": cs.get("wickets", 0),
-                        "overs": cs.get("overs", 0),
-                        "target": m.get("target"),
-                    },
-                    "currentRunRate": round(cs.get("runs", 0) / max(cs.get("overs", 0.1), 0.1), 2),
-                    "batsmen": [],
-                    "bowler": {},
-                    "fallOfWickets": [],
-                    "recentBalls": [],
-                    "status": m.get("status", "Live"),
-                    "lastBallCommentary": m.get("status", ""),
-                    "innings_data": m.get("innings", []),
-                    "team_info": m.get("team_info", {}),
-                    "source": "cricketdata.org",
-                    "api_info": cricapi_result.get("api_info", {}),
-                }
-                # Determine batting team from innings label
-                for inn in m.get("innings", []):
-                    label = inn.get("inning_label", "").lower()
-                    if "inning 1" in label or (inn == m.get("innings", [{}])[-1]):
-                        if team1.lower() in label or t1_short.lower() in label:
-                            live_data["battingTeam"] = team1
-                            live_data["bowlingTeam"] = team2
-                        elif team2.lower() in label or t2_short.lower() in label:
-                            live_data["battingTeam"] = team2
-                            live_data["bowlingTeam"] = team1
-                logger.info(f"CricAPI live data: {cs.get('runs', 0)}/{cs.get('wickets', 0)} ({cs.get('overs', 0)} ov)")
-                break
+    if sm_data:
+        logger.info(f"SportMonks: {sm_data['batting_team']} batting, {sm_data['status']}")
+        current_score = sm_data.get("current_score", {})
+        runs = current_score.get("runs", 0)
+        wickets = current_score.get("wickets", 0)
+        overs = current_score.get("overs", 0)
+        target = sm_data.get("target")
+        innings = sm_data.get("current_innings", 1)
 
-    # ── Step 2: Fallback to Claude web scraping if CricAPI has no data ──
-    if not live_data:
-        logger.info(f"CricAPI has no live data, falling back to Claude web scraping")
-        source = "claude_web_search"
-        claude_data = await fetch_live_match_update(match_info)
-        if claude_data:
-            live_data = claude_data
-            live_data["source"] = source
-        else:
+        # Build the live_data in our standard format from SportMonks
+        live_data = {
+            "matchId": match_id,
+            "team1": team1, "team2": team2,
+            "venue": sm_data.get("venue", venue),
+            "isLive": True,
+            "noLiveMatch": False,
+            "innings": innings,
+            "battingTeam": sm_data.get("batting_team", team1),
+            "bowlingTeam": sm_data.get("bowling_team", team2),
+            "score": {"runs": runs, "wickets": wickets, "overs": overs, "target": target},
+            "currentRunRate": sm_data.get("crr", 0),
+            "requiredRunRate": sm_data.get("rrr"),
+            "status": sm_data.get("status", "Live"),
+            "note": sm_data.get("note", ""),
+            "source": "sportmonks",
+        }
+    else:
+        # ── Step 2: Fallback to CricketData.org ──
+        logger.info("SportMonks has no data, trying CricAPI fallback")
+        source = "cricketdata.org"
+        cricapi_result = await fetch_live_ipl_details()
+        live_data = None
+
+        if cricapi_result.get("matches"):
+            for m in cricapi_result["matches"]:
+                m_t1 = (m.get("team1", "") or "").lower()
+                m_t2 = (m.get("team2", "") or "").lower()
+                t1_lower = team1.lower()
+                t2_lower = team2.lower()
+                if (t1_lower in m_t1 or m_t1 in t1_lower) or (t2_lower in m_t2 or m_t2 in t2_lower):
+                    cs = m.get("current_score", {})
+                    live_data = {
+                        "matchId": match_id, "team1": team1, "team2": team2,
+                        "venue": venue, "isLive": True, "noLiveMatch": False,
+                        "innings": m.get("current_innings", 1),
+                        "battingTeam": team1, "bowlingTeam": team2,
+                        "score": {"runs": cs.get("runs", 0), "wickets": cs.get("wickets", 0),
+                                  "overs": cs.get("overs", 0), "target": m.get("target")},
+                        "status": m.get("status", "Live"),
+                        "source": "cricketdata.org",
+                    }
+                    break
+
+        if not live_data:
             return {
-                "matchId": match_id,
-                "team1": team1, "team1Short": t1_short,
-                "team2": team2, "team2Short": t2_short,
-                "venue": venue,
+                "matchId": match_id, "team1": team1, "team1Short": t1_short,
+                "team2": team2, "team2Short": t2_short, "venue": venue,
                 "noLiveMatch": True, "isLive": False,
-                "status": "No live data available from CricAPI or web search",
+                "status": "No live data available. Match may not be in progress.",
                 "liveData": {}, "source": "none",
                 "fetchedAt": datetime.now(timezone.utc).isoformat(),
             }
 
-    # Handle "no live match" scenario
-    if live_data.get("noLiveMatch"):
-        return {
-            "matchId": match_id,
-            "team1": team1, "team1Short": t1_short,
-            "team2": team2, "team2Short": t2_short,
-            "venue": venue,
-            "noLiveMatch": True, "isLive": False,
-            "status": live_data.get("status", "This match is not live right now"),
-            "liveData": live_data, "source": source,
-            "fetchedAt": datetime.now(timezone.utc).isoformat(),
-        }
+        runs = live_data["score"]["runs"]
+        wickets = live_data["score"]["wickets"]
+        overs = live_data["score"]["overs"]
+        target = live_data["score"].get("target")
+        innings = live_data.get("innings", 1)
 
-    # Parse score
-    score = live_data.get("score", {})
-    runs = score.get("runs", 0) if isinstance(score, dict) else 0
-    wickets = score.get("wickets", 0) if isinstance(score, dict) else 0
-    overs = score.get("overs", 0) if isinstance(score, dict) else 0
-    target = score.get("target") if isinstance(score, dict) else None
-    innings = live_data.get("innings", 1)
-
-    # Build ball objects from recentBalls
-    recent_balls = live_data.get("recentBalls", [])
+    # Parse score for algorithms
+    recent_balls = sm_data.get("recent_balls", []) if sm_data else []
     ball_objects = []
     for b in recent_balls:
         ball_obj = {"runs": 0, "isWicket": False, "isWide": False, "isNoBall": False}
         if b == "W":
             ball_obj["isWicket"] = True
         elif b == "WD":
-            ball_obj["isWide"] = True
-            ball_obj["runs"] = 1
+            ball_obj["isWide"] = True; ball_obj["runs"] = 1
         elif b == "NB":
-            ball_obj["isNoBall"] = True
-            ball_obj["runs"] = 1
+            ball_obj["isNoBall"] = True; ball_obj["runs"] = 1
         elif b in ["0", "\u2022"]:
             ball_obj["runs"] = 0
         else:
-            try:
-                ball_obj["runs"] = int(b)
-            except (ValueError, TypeError):
-                pass
+            try: ball_obj["runs"] = int(b)
+            except: pass
         ball_objects.append(ball_obj)
 
-    # Convert 0-100 pct inputs to decimal odds for probability engine
+    # Betting odds input
     odds_team_a = None
     if body.betting_team1_pct and body.betting_team2_pct:
         t1_prob = max(0.01, body.betting_team1_pct / 100)
         t2_prob = max(0.01, body.betting_team2_pct / 100)
         total_implied = t1_prob + t2_prob
-        odds_team_a = t1_prob / total_implied  # normalized
-        if body.betting_confidence is not None:
-            confidence = body.betting_confidence / 100
-            odds_team_a = odds_team_a * confidence + 0.5 * (1 - confidence)
-
-    # Compute decimal odds from pct for edge detection
+        odds_team_a = t1_prob / total_implied
     betting_t1_decimal = round(1 / max(0.01, body.betting_team1_pct / 100), 2) if body.betting_team1_pct else None
     betting_t2_decimal = round(1 / max(0.01, body.betting_team2_pct / 100), 2) if body.betting_team2_pct else None
 
-    # Run all 4 algorithms + ensemble with ball history and odds
+    # Run all 4 algorithms + ensemble
     probs = ensemble_probability(runs, wickets, overs, target, innings,
                                   odds_team_a, ball_objects, venue_avg=165)
     team1_odds = calculate_odds_from_probability(probs["ensemble"])
     team2_odds = calculate_odds_from_probability(1 - probs["ensemble"])
 
-    # Calculate betting edge
-    edge_team1 = None
-    edge_team2 = None
-    if betting_t1_decimal:
-        edge_team1 = calculate_betting_edge(probs["ensemble"], betting_t1_decimal)
-    if betting_t2_decimal:
-        edge_team2 = calculate_betting_edge(1 - probs["ensemble"], betting_t2_decimal)
+    edge_team1 = calculate_betting_edge(probs["ensemble"], betting_t1_decimal) if betting_t1_decimal else None
+    edge_team2 = calculate_betting_edge(1 - probs["ensemble"], betting_t2_decimal) if betting_t2_decimal else None
 
-    # Get AI prediction
-    ai_pred = await get_match_prediction({
-        "matchId": match_id, "team1": team1, "team2": team2,
-        "venue": venue, "score": score
-    })
+    # ── Claude Win Prediction (pass full SportMonks data) ──
+    claude_prediction = None
+    if sm_data:
+        claude_prediction = await _claude_live_win_prediction(sm_data, probs, match_info)
 
     result = {
         "matchId": match_id,
-        "team1": team1, "team1Short": get_short_name(team1),
-        "team2": team2, "team2Short": get_short_name(team2),
+        "team1": team1, "team1Short": t1_short,
+        "team2": team2, "team2Short": t2_short,
         "venue": venue,
         "liveData": live_data,
+        "sportmonks": sm_data,  # Full rich data from SportMonks
         "probabilities": probs,
         "odds": {"team1": team1_odds, "team2": team2_odds},
         "bettingEdge": {"team1": edge_team1, "team2": edge_team2},
@@ -448,13 +411,13 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
             "team2Pct": body.betting_team2_pct,
             "confidence": body.betting_confidence,
         },
-        "aiPrediction": ai_pred,
+        "claudePrediction": claude_prediction,
         "momentum": calculate_momentum(ball_objects),
         "ballHistory": ball_objects,
-        "batsmen": live_data.get("batsmen", []),
-        "bowler": live_data.get("bowler", {}),
+        "batsmen": sm_data.get("active_batsmen", []) if sm_data else live_data.get("batsmen", []),
+        "bowler": sm_data.get("active_bowler", {}) if sm_data else live_data.get("bowler", {}),
         "fallOfWickets": live_data.get("fallOfWickets", []),
-        "lastBallCommentary": live_data.get("lastBallCommentary", ""),
+        "lastBallCommentary": live_data.get("note", "") or live_data.get("status", ""),
         "source": source,
         "fetchedAt": datetime.now(timezone.utc).isoformat(),
     }
