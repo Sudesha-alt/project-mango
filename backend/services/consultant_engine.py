@@ -298,7 +298,7 @@ def negative_binomial_innings(
     n_param = max(n_param, 1)
     p_param = max(0.01, min(p_param, 0.99))
 
-    samples = nbinom.rvs(n_param, 1 - p_param, size=n_samples).tolist()
+    samples = nbinom.rvs(n_param, p_param, size=n_samples).tolist()
     # Clamp to reasonable cricket range
     return [max(50, min(300, s)) for s in samples]
 

@@ -5,10 +5,17 @@ import InfoTooltip from "./InfoTooltip";
 
 const API = process.env.REACT_APP_BACKEND_URL + "/api";
 
-function FactorBar({ label, weight, logit, icon: Icon, tooltip, children }) {
-  const pct = Math.max(0, Math.min(100, 50 + logit * 200));
+function FactorBar({ label, weight, logit, icon: Icon, tooltip, team1, team2, team1Detail, team2Detail }) {
+  // logit > 0 favors team1, logit < 0 favors team2
+  const absLogit = Math.abs(logit);
+  const barWidth = Math.min(100, absLogit * 300); // visual scale
+  const favorsTeam1 = logit > 0;
+  const favorsTeam2 = logit < 0;
+  const neutral = absLogit < 0.01;
+
   return (
-    <div className="space-y-1.5 py-2 border-b border-[#262626] last:border-0">
+    <div className="py-3 border-b border-[#262626] last:border-0 space-y-2" data-testid={`factor-${label.toLowerCase().replace(/\s+/g, '-')}`}>
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1.5">
           <Icon weight="bold" className="w-3.5 h-3.5 text-[#007AFF]" />
@@ -17,16 +24,46 @@ function FactorBar({ label, weight, logit, icon: Icon, tooltip, children }) {
         </div>
         <span className="text-[9px] font-mono text-[#737373]">Weight: {(weight * 100).toFixed(0)}%</span>
       </div>
-      {/* Direction bar */}
-      <div className="h-1.5 bg-[#262626] rounded-full relative">
-        <div className="absolute top-0 left-1/2 w-px h-full bg-[#737373]/30" />
-        {pct >= 50 ? (
-          <div className="absolute top-0 left-1/2 h-full rounded-r-full bg-[#34C759] transition-all duration-500" style={{ width: `${pct - 50}%` }} />
-        ) : (
-          <div className="absolute top-0 h-full rounded-l-full bg-[#FF3B30] transition-all duration-500" style={{ left: `${pct}%`, width: `${50 - pct}%` }} />
-        )}
+      {/* Two-sided bar */}
+      <div className="flex items-center gap-1">
+        {/* Team 1 side (left) */}
+        <div className="flex-1 flex justify-end">
+          <div className="w-full h-2 bg-[#1A1A1A] rounded-l-full relative overflow-hidden">
+            {favorsTeam1 && (
+              <div className="absolute top-0 right-0 h-full rounded-l-full bg-[#34C759] transition-all duration-500"
+                style={{ width: `${barWidth}%` }} />
+            )}
+            {favorsTeam2 && (
+              <div className="absolute top-0 right-0 h-full rounded-l-full bg-[#FF3B30]/20 transition-all duration-500"
+                style={{ width: `${barWidth}%` }} />
+            )}
+          </div>
+        </div>
+        {/* Center divider */}
+        <div className="w-px h-4 bg-[#525252] flex-shrink-0" />
+        {/* Team 2 side (right) */}
+        <div className="flex-1">
+          <div className="w-full h-2 bg-[#1A1A1A] rounded-r-full relative overflow-hidden">
+            {favorsTeam2 && (
+              <div className="absolute top-0 left-0 h-full rounded-r-full bg-[#34C759] transition-all duration-500"
+                style={{ width: `${barWidth}%` }} />
+            )}
+            {favorsTeam1 && (
+              <div className="absolute top-0 left-0 h-full rounded-r-full bg-[#FF3B30]/20 transition-all duration-500"
+                style={{ width: `${barWidth}%` }} />
+            )}
+          </div>
+        </div>
       </div>
-      <div className="text-[10px] text-[#A3A3A3]">{children}</div>
+      {/* Team details row */}
+      <div className="flex items-start justify-between gap-2">
+        <div className={`flex-1 text-[10px] ${favorsTeam1 ? 'text-[#34C759]' : favorsTeam2 ? 'text-[#FF3B30]' : 'text-[#A3A3A3]'}`}>
+          {team1Detail}
+        </div>
+        <div className={`flex-1 text-right text-[10px] ${favorsTeam2 ? 'text-[#34C759]' : favorsTeam1 ? 'text-[#FF3B30]' : 'text-[#A3A3A3]'}`}>
+          {team2Detail}
+        </div>
+      </div>
     </div>
   );
 }
@@ -133,47 +170,54 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2 }) {
         )}
       </div>
 
-      {/* Factor Breakdown */}
+      {/* Factor Breakdown — Two-sided Team 1 vs Team 2 */}
       <div>
         <div className="flex items-center justify-between mb-2">
-          <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold flex items-center gap-1">Factor Breakdown <InfoTooltip text="Each factor is converted to a logit score. Positive (green bar right) favors Team 1, negative (red bar left) favors Team 2. The combined logit passes through a sigmoid for final probability." /></p>
+          <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold flex items-center gap-1">Factor Breakdown <InfoTooltip text="Each factor shows which team benefits. Green = advantage for that side, Red = disadvantage. The bar extends toward the favored team." /></p>
           {pred.uses_player_data && (
             <span className="text-[8px] px-1.5 py-0.5 bg-[#7C3AED]/15 text-[#7C3AED] rounded font-bold uppercase tracking-wider" data-testid="uses-player-data-badge">Player-Level Data</span>
           )}
         </div>
+        {/* Column headers */}
+        <div className="flex items-center justify-between mb-1 px-1">
+          <span className="text-[9px] font-bold uppercase tracking-wider text-[#007AFF]">{t1}</span>
+          <span className="text-[9px] font-bold uppercase tracking-wider text-[#FF3B30]">{t2}</span>
+        </div>
+
         <FactorBar label="Head-to-Head (5yr)" weight={factors.h2h?.weight || 0.25} logit={factors.h2h?.logit_contribution || 0} icon={Scales}
-          tooltip="Win ratio from all IPL matches between these two teams over the last 5 years (2021-2026). More wins = higher logit contribution.">
-          {t1} {factors.h2h?.team1_wins || 0} – {factors.h2h?.team2_wins || 0} {t2} ({factors.h2h?.total_matches || 0} matches)
-        </FactorBar>
+          tooltip="Win ratio from all IPL matches between these two teams over the last 5 years (2021-2026). More wins = higher logit contribution."
+          team1={t1} team2={t2}
+          team1Detail={`${factors.h2h?.team1_wins || 0} wins`}
+          team2Detail={`${factors.h2h?.team2_wins || 0} wins`}
+        />
 
         <FactorBar label="Venue Performance" weight={factors.venue?.weight || 0.20} logit={factors.venue?.logit_contribution || 0} icon={MapPin}
-          tooltip="Average score and win percentage at this specific ground for each team. Includes first/second innings scoring trends.">
-          {t1}: avg {factors.venue?.team1_avg_score || "?"}, win {factors.venue?.team1_win_pct || "?"}%
-          {" | "}
-          {t2}: avg {factors.venue?.team2_avg_score || "?"}, win {factors.venue?.team2_win_pct || "?"}%
-          {(factors.venue?.is_team1_home || factors.venue?.is_team2_home) && (
-            <span className="ml-1 text-[#FFCC00]"> (Home: {factors.venue?.is_team1_home ? t1 : t2})</span>
-          )}
-        </FactorBar>
+          tooltip="Average score and win percentage at this specific ground for each team. Includes first/second innings scoring trends."
+          team1={t1} team2={t2}
+          team1Detail={<>Avg {Math.round(factors.venue?.team1_avg_score || 0)}, Win {Math.round(factors.venue?.team1_win_pct || 0)}%{factors.venue?.is_team1_home && <span className="text-[#FFCC00] ml-1">(Home)</span>}</>}
+          team2Detail={<>Win {Math.round(factors.venue?.team2_win_pct || 0)}%, Avg {Math.round(factors.venue?.team2_avg_score || 0)}{factors.venue?.is_team2_home && <span className="text-[#FFCC00] ml-1">(Home)</span>}</>}
+        />
 
         <FactorBar label="Recent Form" weight={factors.form?.weight || 0.25} logit={factors.form?.logit_contribution || 0} icon={TrendUp}
-          tooltip="Win/loss record from the last 5 IPL 2026 matches for each team. Captures current momentum and form streaks.">
-          {t1}: {factors.form?.team1_last5_wins || 0}W-{factors.form?.team1_last5_losses || 0}L ({factors.form?.team1_last5_win_pct || 50}%)
-          {" | "}
-          {t2}: {factors.form?.team2_last5_wins || 0}W-{factors.form?.team2_last5_losses || 0}L ({factors.form?.team2_last5_win_pct || 50}%)
-        </FactorBar>
+          tooltip="Win/loss record from the last 5 IPL 2026 matches for each team. Captures current momentum and form streaks."
+          team1={t1} team2={t2}
+          team1Detail={`${factors.form?.team1_last5_wins || 0}W-${factors.form?.team1_last5_losses || 0}L (${factors.form?.team1_last5_win_pct || 50}%)`}
+          team2Detail={`${factors.form?.team2_last5_wins || 0}W-${factors.form?.team2_last5_losses || 0}L (${factors.form?.team2_last5_win_pct || 50}%)`}
+        />
 
         <FactorBar label="Squad Strength" weight={factors.squad?.weight || 0.20} logit={factors.squad?.logit_contribution || 0} icon={UsersThree}
-          tooltip="Batting depth rating (55% weight) + bowling attack quality (45%). Based on key player averages, strike rates, and overseas impact.">
-          {t1}: Bat {factors.squad?.team1_batting_rating || "?"} / Bowl {factors.squad?.team1_bowling_rating || "?"}
-          {" | "}
-          {t2}: Bat {factors.squad?.team2_batting_rating || "?"} / Bowl {factors.squad?.team2_bowling_rating || "?"}
-        </FactorBar>
+          tooltip="Batting depth rating (55% weight) + bowling attack quality (45%). Based on key player averages, strike rates, and overseas impact."
+          team1={t1} team2={t2}
+          team1Detail={`Bat ${factors.squad?.team1_batting_rating || "?"} / Bowl ${factors.squad?.team1_bowling_rating || "?"}`}
+          team2Detail={`Bat ${factors.squad?.team2_batting_rating || "?"} / Bowl ${factors.squad?.team2_bowling_rating || "?"}`}
+        />
 
         <FactorBar label="Home Advantage" weight={factors.home_advantage?.weight || 0.10} logit={factors.home_advantage?.logit_contribution || 0} icon={House}
-          tooltip="Teams playing at their home ground get a small logit boost (+0.25). Accounts for crowd support, familiarity with pitch and conditions.">
-          {factors.venue?.is_team1_home ? `${t1} playing at home` : factors.venue?.is_team2_home ? `${t2} playing at home` : "Neutral venue"}
-        </FactorBar>
+          tooltip="Teams playing at their home ground get a small logit boost (+0.25). Accounts for crowd support, familiarity with pitch and conditions."
+          team1={t1} team2={t2}
+          team1Detail={factors.venue?.is_team1_home ? "Home ground" : "Away"}
+          team2Detail={factors.venue?.is_team2_home ? "Home ground" : "Away"}
+        />
       </div>
 
       {/* Key Players */}

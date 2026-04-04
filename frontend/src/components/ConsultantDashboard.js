@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from "react";
 import {
   Crosshair, Spinner, PaperPlaneTilt, ShieldCheck,
-  Warning, XCircle, Clock, TrendUp, CaretDown, CaretUp
+  Warning, XCircle, Clock, TrendUp, CaretDown, CaretUp,
+  Lightning, Info, ArrowRight
 } from "@phosphor-icons/react";
 import InfoTooltip from "./InfoTooltip";
 
@@ -72,6 +73,25 @@ function EdgeMeter({ edge }) {
     </div>
   );
 }
+
+function EdgeReasons({ reasons, signal }) {
+  if (!reasons || reasons.length === 0) return null;
+  const s = SIGNAL_STYLES[signal] || SIGNAL_STYLES.NO_MARKET;
+  return (
+    <div data-testid="edge-reasons" className={`rounded-md border p-3 space-y-1.5 ${s.bg} ${s.border}`}>
+      <p className="text-[10px] uppercase tracking-[0.2em] font-semibold flex items-center gap-1.5 text-[#A3A3A3]">
+        <Info weight="fill" className="w-3.5 h-3.5" /> Why this signal?
+      </p>
+      {reasons.map((r, i) => (
+        <div key={i} className="flex items-start gap-2 text-[11px] leading-relaxed">
+          <ArrowRight weight="bold" className={`w-3 h-3 flex-shrink-0 mt-0.5 ${s.text}`} />
+          <span className="text-[#D4D4D4]">{r}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 
 function OddsComparison({ data }) {
   if (!data) return null;
@@ -241,22 +261,42 @@ function ChatBox({ matchId, sendChat, riskTolerance, marketOdds }) {
 
 function SimulationSummary({ sim, team1, team2 }) {
   if (!sim) return null;
+  const t1Win = sim.team1_win_prob > sim.team2_win_prob;
   return (
     <div data-testid="simulation-summary" className="space-y-2">
-      <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold flex items-center gap-1">{sim.simulations?.toLocaleString()} Simulations (Neg. Binomial) <InfoTooltip text="10,000 match simulations using Negative Binomial distribution for each innings. Right-skewed like real cricket scores. Chase pressure adjusts the chasing team's expected score." /></p>
+      <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold flex items-center gap-1">{sim.simulations?.toLocaleString()} Simulations (Neg. Binomial) <InfoTooltip text="50,000 match simulations using Negative Binomial distribution for each innings. Right-skewed like real cricket scores. Chase pressure adjusts the chasing team's expected score." /></p>
+      {/* Predicted Scores */}
+      {(sim.mean_team1_score || sim.mean_team2_score) && (
+        <div className="flex items-center justify-between bg-[#0A0A0A] border border-[#262626] rounded-md px-3 py-2">
+          <div className="text-center flex-1">
+            <p className="text-[9px] text-[#737373] uppercase tracking-wider">{team1}</p>
+            <p className="text-xl font-black font-mono text-white" style={{ fontFamily: "'Barlow Condensed'" }}>{Math.round(sim.mean_team1_score)}</p>
+            <p className="text-[8px] text-[#737373]">predicted runs</p>
+          </div>
+          <div className="text-[10px] text-[#525252] font-bold px-2">vs</div>
+          <div className="text-center flex-1">
+            <p className="text-[9px] text-[#737373] uppercase tracking-wider">{team2}</p>
+            <p className="text-xl font-black font-mono text-white" style={{ fontFamily: "'Barlow Condensed'" }}>{Math.round(sim.mean_team2_score)}</p>
+            <p className="text-[8px] text-[#737373]">predicted runs</p>
+          </div>
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-2">
         {[
-          { label: team1, data: sim.team1_scores, prob: sim.team1_win_prob, color: "#007AFF" },
-          { label: team2, data: sim.team2_scores, prob: sim.team2_win_prob, color: "#FF3B30" },
-        ].map(({ label, data, prob, color }) => (
-          <div key={label} className="bg-[#0A0A0A] border border-[#262626] rounded-md p-2.5">
+          { label: team1, data: sim.team1_scores, prob: sim.team1_win_prob, isWinner: t1Win },
+          { label: team2, data: sim.team2_scores, prob: sim.team2_win_prob, isWinner: !t1Win },
+        ].map(({ label, data, prob, isWinner }) => (
+          <div key={label} className={`bg-[#0A0A0A] border rounded-md p-2.5 ${isWinner ? "border-[#34C759]/30" : "border-[#262626]"}`}>
             <p className="text-[10px] text-[#737373] mb-1">{label}</p>
-            <p className="text-lg font-black font-mono" style={{ color, fontFamily: "'Barlow Condensed'" }}>{(prob * 100).toFixed(1)}%</p>
+            <p className={`text-lg font-black font-mono ${isWinner ? "text-[#34C759]" : "text-[#FF3B30]"}`} style={{ fontFamily: "'Barlow Condensed'" }}>{(prob * 100).toFixed(1)}%</p>
             <p className="text-[9px] text-[#737373] font-mono">Mean: {data?.mean} | Med: {data?.median}</p>
             <p className="text-[9px] text-[#737373] font-mono">P10–P90: {data?.p10}–{data?.p90}</p>
           </div>
         ))}
       </div>
+      {sim.batting_first_win_pct && (
+        <p className="text-[9px] text-[#525252] font-mono text-center">Batting first wins {sim.batting_first_win_pct}% of simulations</p>
+      )}
     </div>
   );
 }
@@ -429,6 +469,10 @@ export default function ConsultantDashboard({ matchId, team1, team2, fetchConsul
               </div>
               <p className="text-sm text-[#D4D4D4] leading-relaxed">{data.verdict.text}</p>
               <p className="text-xs text-[#737373] mt-2 font-mono">{data.bet_recommendation}</p>
+              {/* Edge Explanation Pointers */}
+              <div className="mt-3">
+                <EdgeReasons reasons={data.edge_reasons} signal={data.value_signal} />
+              </div>
             </div>
           )}
 
@@ -509,8 +553,9 @@ export default function ConsultantDashboard({ matchId, team1, team2, fetchConsul
                 <SimulationSummary sim={data.simulation} team1={data.team1Short || team1} team2={data.team2Short || team2} />
               </div>
 
-              {/* Match State */}
-              <div className="bg-[#141414] border border-[#262626] rounded-lg p-5 space-y-2">
+              {/* Match State — hidden for upcoming matches */}
+              {data.features && (data.features.overs > 0 || data.features.score > 0) && (
+              <div className="bg-[#141414] border border-[#262626] rounded-lg p-5 space-y-2" data-testid="match-state-section">
                 <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold flex items-center gap-1">Match State <InfoTooltip text="Current match features — CRR (current run rate), RRR (required run rate), Pressure Index, Batting Depth remaining, and Collapse Risk." /></p>
                 <div className="grid grid-cols-3 gap-2">
                   {[
@@ -528,6 +573,7 @@ export default function ConsultantDashboard({ matchId, team1, team2, fetchConsul
                   ))}
                 </div>
               </div>
+              )}
             </div>
 
             {/* Middle: Drivers + Betting Scenarios + Players */}
