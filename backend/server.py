@@ -397,6 +397,33 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
     if sm_data:
         claude_prediction = await claude_sportmonks_prediction(sm_data, probs, match_info)
 
+    # ── Use Claude's probabilities as the single source of truth ──
+    if claude_prediction and not claude_prediction.get("error"):
+        # Extract Claude's team-specific win percentages
+        claude_t1_pct = claude_prediction.get(f"{t1_short}_win_pct")
+        claude_t2_pct = claude_prediction.get(f"{t2_short}_win_pct")
+        if claude_t1_pct is None:
+            # Fallback: derive from predicted_winner + win_pct
+            winner = claude_prediction.get("predicted_winner", "")
+            win_pct = claude_prediction.get("win_pct", 50)
+            if winner == t1_short:
+                claude_t1_pct = win_pct
+                claude_t2_pct = 100 - win_pct
+            else:
+                claude_t2_pct = win_pct
+                claude_t1_pct = 100 - win_pct
+        # Normalize Claude's percentages into probabilities dict
+        claude_t1_pct = float(claude_t1_pct or 50)
+        claude_t2_pct = float(claude_t2_pct or 50)
+        claude_prediction["team1_win_pct"] = round(claude_t1_pct, 1)
+        claude_prediction["team2_win_pct"] = round(claude_t2_pct, 1)
+        # Override ensemble with Claude's probability
+        probs["ensemble"] = round(claude_t1_pct / 100, 4)
+        probs["source"] = "claude"
+        # Recalculate odds from Claude probability
+        team1_odds = calculate_odds_from_probability(probs["ensemble"])
+        team2_odds = calculate_odds_from_probability(1 - probs["ensemble"])
+
     result = {
         "matchId": match_id,
         "team1": team1, "team1Short": t1_short,
@@ -458,6 +485,65 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
     result["live_prediction"] = live_pred
 
     return result
+
+
+@api_router.post("/matches/{match_id}/refresh-claude-prediction")
+async def refresh_claude_prediction(match_id: str):
+    """Re-run Claude prediction using cached SportMonks data (no API refetch)."""
+    cached = live_match_state.get(match_id)
+    if not cached:
+        db_snap = await db.live_snapshots.find_one({"matchId": match_id}, {"_id": 0})
+        if db_snap:
+            cached = db_snap
+    if not cached or not cached.get("sportmonks"):
+        return {"error": "No cached live data. Click 'Fetch Live Scores' first."}
+
+    match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
+    if not match_info:
+        return {"error": "Match not found"}
+
+    sm_data = cached["sportmonks"]
+    t1_short = cached.get("team1Short", "T1")
+    t2_short = cached.get("team2Short", "T2")
+    old_probs = cached.get("probabilities", {})
+
+    claude_prediction = await claude_sportmonks_prediction(sm_data, old_probs, match_info)
+
+    if claude_prediction and not claude_prediction.get("error"):
+        claude_t1 = claude_prediction.get(f"{t1_short}_win_pct")
+        claude_t2 = claude_prediction.get(f"{t2_short}_win_pct")
+        if claude_t1 is None:
+            winner = claude_prediction.get("predicted_winner", "")
+            win_pct = claude_prediction.get("win_pct", 50)
+            if winner == t1_short:
+                claude_t1, claude_t2 = win_pct, 100 - win_pct
+            else:
+                claude_t2, claude_t1 = win_pct, 100 - win_pct
+        claude_t1 = float(claude_t1 or 50)
+        claude_t2 = float(claude_t2 or 50)
+        claude_prediction["team1_win_pct"] = round(claude_t1, 1)
+        claude_prediction["team2_win_pct"] = round(claude_t2, 1)
+
+        # Update cached state
+        new_probs = {**old_probs, "ensemble": round(claude_t1 / 100, 4), "source": "claude"}
+        cached["claudePrediction"] = claude_prediction
+        cached["probabilities"] = new_probs
+        live_match_state[match_id] = cached
+
+        # Persist
+        await db.live_snapshots.update_one(
+            {"matchId": match_id},
+            {"$set": {"claudePrediction": claude_prediction, "probabilities": new_probs,
+                      "updatedAt": datetime.now(timezone.utc).isoformat()}}
+        )
+
+    return {
+        "matchId": match_id,
+        "claudePrediction": claude_prediction,
+        "probabilities": cached.get("probabilities", {}),
+        "refreshedAt": datetime.now(timezone.utc).isoformat(),
+    }
+
 
 
 

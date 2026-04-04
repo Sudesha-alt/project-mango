@@ -157,11 +157,21 @@ export function useMatchData() {
     }
   }, []);
 
+  const refreshClaudePrediction = useCallback(async (matchId) => {
+    try {
+      const res = await axios.post(`${API}/matches/${matchId}/refresh-claude-prediction`);
+      return res.data;
+    } catch (e) {
+      console.error("Claude refresh error:", e);
+      return null;
+    }
+  }, []);
+
   return {
     schedule, squads, loading, apiStatus,
     fetchStatus, loadSchedule, loadSquads, getTeamSquad,
     fetchLiveData, getMatchState, fetchPlayerPredictions, fetchMatchPrediction,
     fetchBetaPrediction, fetchConsultation, sendChat,
-    fetchClaudeAnalysis, clearClaudeAnalysis, fetchClaudeLive,
+    fetchClaudeAnalysis, clearClaudeAnalysis, fetchClaudeLive, refreshClaudePrediction,
   };
 }

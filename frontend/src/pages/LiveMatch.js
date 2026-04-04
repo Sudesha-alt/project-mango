@@ -17,7 +17,7 @@ import { WifiHigh, WifiSlash, Lightning, Spinner, UserCircle } from "@phosphor-i
 
 export default function LiveMatch() {
   const { matchId } = useParams();
-  const { fetchLiveData, getMatchState, getTeamSquad, fetchPlayerPredictions, fetchBetaPrediction, fetchConsultation, sendChat, fetchClaudeLive } = useMatchData();
+  const { fetchLiveData, getMatchState, getTeamSquad, fetchPlayerPredictions, fetchBetaPrediction, fetchConsultation, sendChat, fetchClaudeLive, refreshClaudePrediction } = useMatchData();
   const { data: wsData, connected } = useWebSocket(matchId);
 
   const [matchState, setMatchState] = useState(null);
@@ -31,6 +31,7 @@ export default function LiveMatch() {
   const [bettingOdds, setBettingOdds] = useState(null);
   const [claudeLive, setClaudeLive] = useState(null);
   const [claudeLiveLoading, setClaudeLiveLoading] = useState(false);
+  const [refreshingClaude, setRefreshingClaude] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -95,9 +96,23 @@ export default function LiveMatch() {
     setClaudeLiveLoading(false);
   };
 
+  const handleRefreshClaude = async () => {
+    setRefreshingClaude(true);
+    const res = await refreshClaudePrediction(matchId);
+    if (res && !res.error) {
+      setMatchState(prev => ({
+        ...prev,
+        claudePrediction: res.claudePrediction,
+        probabilities: res.probabilities,
+      }));
+    }
+    setRefreshingClaude(false);
+  };
+
   const liveData = matchState?.liveData || {};
   const score = liveData.score || {};
   const probs = matchState?.probabilities || {};
+  const claudePred = matchState?.claudePrediction;
   const odds = matchState?.odds || {};
   const balls = matchState?.ballHistory || [];
   const team1 = matchState?.team1 || liveData.team1 || "Team A";
@@ -107,6 +122,7 @@ export default function LiveMatch() {
   const hasLiveData = !matchState?.noLiveData && matchState?.liveData && !matchState?.noLiveMatch;
   const noLiveMatch = matchState?.noLiveMatch;
   const bettingEdge = matchState?.bettingEdge || null;
+  const livePred = matchState?.live_prediction;
 
   const rightTabs = [
     { key: "consult", label: "Consult" },
@@ -267,133 +283,83 @@ export default function LiveMatch() {
                 )}
 
                 {/* Claude Opus Live Win Prediction */}
-                {matchState?.claudePrediction && !matchState.claudePrediction.error && (
+                {claudePred && !claudePred.error && (
                   <div className="bg-[#141414] border border-purple-500/30 rounded-md p-4 space-y-3" data-testid="claude-live-prediction">
-                    <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-purple-400 flex items-center gap-1.5" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
-                      Claude Opus Live Prediction
-                    </h4>
-                    <p className="text-base font-bold text-white leading-snug">{matchState.claudePrediction.headline}</p>
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-purple-400" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
+                        Claude Opus Live Prediction
+                      </h4>
+                      <button onClick={handleRefreshClaude} disabled={refreshingClaude} data-testid="refresh-claude-btn"
+                        className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-purple-400 hover:text-purple-300 transition-colors disabled:opacity-50">
+                        {refreshingClaude ? <><Spinner className="w-3 h-3 animate-spin" /> Refreshing...</> : <><Lightning weight="fill" className="w-3 h-3" /> Refresh</>}
+                      </button>
+                    </div>
+                    <p className="text-base font-bold text-white leading-snug">{claudePred.headline}</p>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                       <div className="bg-purple-500/10 border border-purple-500/20 rounded px-3 py-2 text-center">
-                        <p className="text-[9px] text-purple-300 uppercase">Winner</p>
-                        <p className="text-xl font-black font-mono text-purple-400" style={{ fontFamily: "'Barlow Condensed'" }}>{matchState.claudePrediction.predicted_winner}</p>
+                        <p className="text-[9px] text-purple-300 uppercase">{t1Short}</p>
+                        <p className="text-xl font-black font-mono text-purple-400" style={{ fontFamily: "'Barlow Condensed'" }}>{claudePred.team1_win_pct ?? (claudePred.predicted_winner === t1Short ? claudePred.win_pct : 100 - (claudePred.win_pct || 50))}%</p>
                       </div>
                       <div className="bg-purple-500/10 border border-purple-500/20 rounded px-3 py-2 text-center">
-                        <p className="text-[9px] text-purple-300 uppercase">Win %</p>
-                        <p className="text-xl font-black font-mono text-purple-400" style={{ fontFamily: "'Barlow Condensed'" }}>{matchState.claudePrediction.win_pct}%</p>
+                        <p className="text-[9px] text-purple-300 uppercase">{t2Short}</p>
+                        <p className="text-xl font-black font-mono text-purple-400" style={{ fontFamily: "'Barlow Condensed'" }}>{claudePred.team2_win_pct ?? (claudePred.predicted_winner === t2Short ? claudePred.win_pct : 100 - (claudePred.win_pct || 50))}%</p>
                       </div>
                       <div className="bg-purple-500/10 border border-purple-500/20 rounded px-3 py-2 text-center">
                         <p className="text-[9px] text-purple-300 uppercase">Momentum</p>
-                        <p className="text-sm font-bold text-purple-400 uppercase">{matchState.claudePrediction.momentum}</p>
+                        <p className="text-sm font-bold text-purple-400 uppercase">{claudePred.momentum}</p>
                       </div>
                       <div className="bg-purple-500/10 border border-purple-500/20 rounded px-3 py-2 text-center">
                         <p className="text-[9px] text-purple-300 uppercase">Confidence</p>
-                        <p className="text-sm font-bold text-purple-400">{matchState.claudePrediction.confidence}</p>
+                        <p className="text-sm font-bold text-purple-400">{claudePred.confidence}</p>
                       </div>
                     </div>
-                    <p className="text-sm text-[#D4D4D4] leading-relaxed">{matchState.claudePrediction.reasoning}</p>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      {matchState.claudePrediction.batting_depth_assessment && (
-                        <div className="bg-[#0A0A0A] border border-white/5 rounded p-2.5">
-                          <p className="text-[9px] text-[#737373] uppercase mb-1">Batting Depth</p>
-                          <p className="text-[11px] text-[#A3A3A3] leading-relaxed">{matchState.claudePrediction.batting_depth_assessment}</p>
-                        </div>
-                      )}
-                      {matchState.claudePrediction.bowling_assessment && (
-                        <div className="bg-[#0A0A0A] border border-white/5 rounded p-2.5">
-                          <p className="text-[9px] text-[#737373] uppercase mb-1">Bowling Options</p>
-                          <p className="text-[11px] text-[#A3A3A3] leading-relaxed">{matchState.claudePrediction.bowling_assessment}</p>
-                        </div>
-                      )}
-                    </div>
-                    {matchState.claudePrediction.key_matchup && (
-                      <div className="bg-[#0A0A0A] border border-purple-500/10 rounded p-2.5">
-                        <p className="text-[9px] text-purple-300 uppercase mb-1">Key Matchup</p>
-                        <p className="text-[11px] text-[#D4D4D4]">{matchState.claudePrediction.key_matchup}</p>
-                      </div>
-                    )}
-                  </div>
-                )}
+                    <p className="text-sm text-[#D4D4D4] leading-relaxed">{claudePred.reasoning}</p>
 
-                {/* Live Prediction Panel */}
-                {matchState?.live_prediction && (
-                  <div className="bg-[#141414] border border-[#007AFF]/30 rounded-md p-4 space-y-3" data-testid="live-prediction-panel">
-                    <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-[#007AFF] flex items-center gap-1.5" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
-                      <Lightning weight="fill" className="w-4 h-4" /> Live Match Prediction
-                    </h4>
-                    <p className="text-sm text-[#D4D4D4] leading-relaxed">{matchState.live_prediction.summary}</p>
-                    
-                    <div className="grid grid-cols-3 gap-2">
-                      <div className="bg-[#0A0A0A] rounded p-2 text-center">
-                        <p className="text-[9px] text-[#737373] uppercase">Win Prob</p>
-                        <p className="text-xl font-black font-mono text-[#007AFF]" style={{ fontFamily: "'Barlow Condensed'" }}>{matchState.live_prediction.win_probability}%</p>
-                        <p className="text-[8px] text-[#525252]">{matchState.live_prediction.batting_team}</p>
-                      </div>
-                      <div className="bg-[#0A0A0A] rounded p-2 text-center">
-                        <p className="text-[9px] text-[#737373] uppercase">Phase</p>
-                        <p className="text-sm font-bold text-white uppercase">{matchState.live_prediction.phase}</p>
-                        <p className="text-[8px] text-[#525252]">CRR: {matchState.live_prediction.crr}</p>
-                      </div>
-                      <div className="bg-[#0A0A0A] rounded p-2 text-center">
-                        <p className="text-[9px] text-[#737373] uppercase">Wkts in Hand</p>
-                        <p className="text-xl font-black font-mono text-white" style={{ fontFamily: "'Barlow Condensed'" }}>{matchState.live_prediction.wickets_in_hand}</p>
-                      </div>
-                    </div>
-
-                    {matchState.live_prediction.projected_score && (
-                      <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2 text-center">
-                        <p className="text-[9px] text-[#737373] uppercase">Projected Score</p>
-                        <p className="text-2xl font-black font-mono text-[#34C759]" style={{ fontFamily: "'Barlow Condensed'" }}>~{matchState.live_prediction.projected_score}</p>
-                      </div>
-                    )}
-
-                    {matchState.live_prediction.chase_analysis && (
+                    {/* Chase Analysis (merged from live_prediction) */}
+                    {livePred?.chase_analysis && (
                       <div className="bg-[#0A0A0A] border border-[#262626] rounded p-3 space-y-1">
                         <div className="flex items-center justify-between">
                           <p className="text-[9px] text-[#737373] uppercase">Chase Analysis</p>
                           <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${
-                            matchState.live_prediction.chase_analysis.difficulty === "easy" ? "bg-[#34C759]/15 text-[#34C759]" :
-                            matchState.live_prediction.chase_analysis.difficulty === "moderate" ? "bg-[#FFCC00]/15 text-[#FFCC00]" :
+                            livePred.chase_analysis.difficulty === "easy" ? "bg-[#34C759]/15 text-[#34C759]" :
+                            livePred.chase_analysis.difficulty === "moderate" ? "bg-[#FFCC00]/15 text-[#FFCC00]" :
                             "bg-[#FF3B30]/15 text-[#FF3B30]"
-                          }`}>{matchState.live_prediction.chase_analysis.difficulty}</span>
+                          }`}>{livePred.chase_analysis.difficulty}</span>
                         </div>
-                        <div className="grid grid-cols-2 gap-2 text-[10px] font-mono">
-                          <div><span className="text-[#737373]">Need: </span><span className="text-white font-bold">{matchState.live_prediction.chase_analysis.runs_remaining} off {matchState.live_prediction.chase_analysis.balls_remaining}b</span></div>
-                          <div><span className="text-[#737373]">RRR: </span><span className="text-white font-bold">{matchState.live_prediction.chase_analysis.required_rate}</span></div>
+                        <div className="grid grid-cols-3 gap-2 text-[10px] font-mono">
+                          <div><span className="text-[#737373]">Need: </span><span className="text-white font-bold">{livePred.chase_analysis.runs_remaining} off {livePred.chase_analysis.balls_remaining}b</span></div>
+                          <div><span className="text-[#737373]">RRR: </span><span className="text-white font-bold">{livePred.chase_analysis.required_rate}</span></div>
+                          <div><span className="text-[#737373]">Wkts: </span><span className="text-white font-bold">{livePred.wickets_in_hand}</span></div>
                         </div>
                       </div>
                     )}
 
-                    {matchState.live_prediction.batsmen_on_field?.length > 0 && (
-                      <div className="space-y-1">
-                        <p className="text-[9px] text-[#737373] uppercase">Batsmen Impact</p>
-                        {matchState.live_prediction.batsmen_on_field.map((b, i) => (
-                          <div key={i} className="flex items-center justify-between text-[10px]">
-                            <span className="text-white">{b.name} {b.is_set && <span className="text-[#34C759]">(SET)</span>}</span>
-                            <div className="flex items-center gap-2 font-mono">
-                              <span className="text-[#A3A3A3]">{b.runs}({b.balls}) SR:{b.sr}</span>
-                              <span className={`px-1 py-0 rounded text-[8px] font-bold uppercase ${
-                                b.impact === "high" ? "bg-[#34C759]/15 text-[#34C759]" :
-                                b.impact === "medium" ? "bg-[#FFCC00]/15 text-[#FFCC00]" :
-                                "bg-[#525252]/15 text-[#525252]"
-                              }`}>{b.impact}</span>
-                            </div>
-                          </div>
-                        ))}
+                    {/* Projected Score (1st innings) */}
+                    {livePred?.projected_score && !livePred?.chase_analysis && (
+                      <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2 text-center">
+                        <p className="text-[9px] text-[#737373] uppercase">Projected Score</p>
+                        <p className="text-2xl font-black font-mono text-[#34C759]" style={{ fontFamily: "'Barlow Condensed'" }}>~{livePred.projected_score}</p>
                       </div>
                     )}
 
-                    {matchState.live_prediction.current_bowler && (
-                      <div className="flex items-center justify-between text-[10px] bg-[#0A0A0A] rounded p-2">
-                        <span className="text-[#FF3B30]">{matchState.live_prediction.current_bowler.name} (bowling)</span>
-                        <div className="flex items-center gap-2 font-mono text-[#A3A3A3]">
-                          <span>{matchState.live_prediction.current_bowler.wickets}/{matchState.live_prediction.current_bowler.runs} ({matchState.live_prediction.current_bowler.overs}ov)</span>
-                          <span className={`px-1 py-0 rounded text-[8px] font-bold uppercase ${
-                            matchState.live_prediction.current_bowler.impact === "high" ? "bg-[#FF3B30]/15 text-[#FF3B30]" :
-                            matchState.live_prediction.current_bowler.impact === "medium" ? "bg-[#FFCC00]/15 text-[#FFCC00]" :
-                            "bg-[#525252]/15 text-[#525252]"
-                          }`}>{matchState.live_prediction.current_bowler.impact}</span>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {claudePred.batting_depth_assessment && (
+                        <div className="bg-[#0A0A0A] border border-white/5 rounded p-2.5">
+                          <p className="text-[9px] text-[#737373] uppercase mb-1">Batting Depth</p>
+                          <p className="text-[11px] text-[#A3A3A3] leading-relaxed">{claudePred.batting_depth_assessment}</p>
                         </div>
+                      )}
+                      {claudePred.bowling_assessment && (
+                        <div className="bg-[#0A0A0A] border border-white/5 rounded p-2.5">
+                          <p className="text-[9px] text-[#737373] uppercase mb-1">Bowling Options</p>
+                          <p className="text-[11px] text-[#A3A3A3] leading-relaxed">{claudePred.bowling_assessment}</p>
+                        </div>
+                      )}
+                    </div>
+                    {claudePred.key_matchup && (
+                      <div className="bg-[#0A0A0A] border border-purple-500/10 rounded p-2.5">
+                        <p className="text-[9px] text-purple-300 uppercase mb-1">Key Matchup</p>
+                        <p className="text-[11px] text-[#D4D4D4]">{claudePred.key_matchup}</p>
                       </div>
                     )}
                   </div>

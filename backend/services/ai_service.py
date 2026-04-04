@@ -860,13 +860,17 @@ async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_in
 
     chat = _get_claude_chat(
         f"sm-live-pred-{uuid.uuid4().hex[:8]}",
-        """You are an elite cricket match analyst. Given REAL-TIME live match data including full scorecards, 
-batting/bowling lineups, and remaining players, provide a sharp win prediction.
-Factor in: batting depth remaining, bowling options left, match phase, pitch conditions, and momentum.
-Be decisive — give a clear prediction, not a hedge."""
+        f"""You are an elite IPL cricket analyst providing REAL-TIME win predictions.
+You have deep knowledge of IPL player form, career stats, and T20 match dynamics.
+Given live scorecard data, remaining batting/bowling lineups, consider:
+- Each player's recent IPL form and career T20 stats
+- Batting depth and known finishing ability of yet-to-bat players
+- Bowling options remaining and their death overs record
+- Match phase, pitch behavior, required rate, and momentum
+Give a REALISTIC win probability for BOTH teams (must add to 100). Be decisive."""
     )
 
-    prompt = f"""LIVE MATCH: {team1} vs {team2} at {venue}
+    prompt = f"""LIVE MATCH: {team1} ({t1_short}) vs {team2} ({t2_short}) at {venue}
 Innings: {current_inn} | Status: {sm_data.get('status', 'Live')}
 {sm_data.get('note', '')}
 {prev_inn_text}
@@ -881,7 +885,7 @@ CRR: {sm_data.get('crr', 0)} | RRR: {sm_data.get('rrr', 'N/A')}
 === FULL BATTING CARD (this innings) ===
 {full_bat_text}
 
-=== YET TO BAT ===
+=== YET TO BAT (consider their IPL career form & finishing ability) ===
 {ytb_text}
 
 === CURRENT BOWLER ===
@@ -890,28 +894,24 @@ CRR: {sm_data.get('crr', 0)} | RRR: {sm_data.get('rrr', 'N/A')}
 === FULL BOWLING CARD (this innings) ===
 {full_bowl_text}
 
-=== YET TO BOWL ===
+=== YET TO BOWL (consider their death overs record & T20 form) ===
 {ytbowl_text}
 
-=== RECENT BALLS ===
+=== RECENT BALLS (momentum indicator) ===
 {recent_text}
 
-=== ALGORITHM PROBABILITIES ===
-Ensemble: {algo_probs.get('ensemble', 0.5)*100:.1f}% ({team1})
-Bayesian: {algo_probs.get('bayesian', 0.5)*100:.1f}%
-Poisson: {algo_probs.get('poisson', 0.5)*100:.1f}%
-DLS: {algo_probs.get('dls', 0.5)*100:.1f}%
-Momentum: {algo_probs.get('momentum', 0.5)*100:.1f}%
+IMPORTANT: Give realistic win probabilities for BOTH teams. Consider each player's known IPL form and career record.
 
 Return JSON:
 {{
+  "{t1_short}_win_pct": number (0-100),
+  "{t2_short}_win_pct": number (0-100, must equal 100 - {t1_short}_win_pct),
   "predicted_winner": "{t1_short}" or "{t2_short}",
-  "win_pct": number (0-100, winning team's probability),
   "headline": "1 bold sentence prediction",
-  "reasoning": "3-5 sentences. Factor in: who's batting, batting depth remaining, which bowlers are left, match phase, required rate vs current rate, momentum from recent balls",
-  "batting_depth_assessment": "How strong is the remaining batting lineup? Impact on outcome?",
-  "bowling_assessment": "Which bowlers are left? Can they restrict/accelerate?",
-  "key_matchup": "The single most important player/matchup right now",
+  "reasoning": "3-5 sentences. Reference specific players' form, batting depth, bowling options, match phase, required rate",
+  "batting_depth_assessment": "Remaining batters and their known finishing ability",
+  "bowling_assessment": "Remaining bowling options and their death overs record",
+  "key_matchup": "The single most critical player or matchup right now",
   "momentum": "BATTING" or "BOWLING" or "EVEN",
   "confidence": "Low" or "Medium" or "High"
 }}"""
