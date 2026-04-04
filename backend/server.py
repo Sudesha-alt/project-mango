@@ -8,8 +8,11 @@ import json
 import asyncio
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pydantic import BaseModel
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+import pytz
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -84,15 +87,26 @@ live_match_state: Dict[str, Any] = {}
 async def root():
     schedule_count = await db.ipl_schedule.count_documents({})
     squad_count = await db.ipl_squads.count_documents({})
+    now_ist = datetime.now(IST).strftime("%I:%M %p IST")
     return {
         "message": "Baatu - 11 API",
-        "version": "4.0.0",
+        "version": "4.1.0",
         "dataSource": "GPT-5.4 Web Search",
         "scheduleLoaded": schedule_count > 0,
         "squadsLoaded": squad_count > 0,
         "matchesInDB": schedule_count,
         "squadsInDB": squad_count,
+        "scheduler": {"active": scheduler.running, "next_runs": ["4:00 PM IST", "7:00 PM IST"]},
+        "serverTime": now_ist,
     }
+
+
+@api_router.post("/scheduler/promote-now")
+async def manual_promote():
+    """Manually trigger match promotion to LIVE (same as scheduled 4PM/7PM)."""
+    await promote_matches_to_live()
+    live_count = await db.ipl_schedule.count_documents({"status": "live"})
+    return {"status": "done", "live_matches": live_count}
 
 
 # ─── IPL SCHEDULE (AI-powered + cached in MongoDB) ──────────
@@ -1185,8 +1199,14 @@ async def api_chat(match_id: str, body: ChatRequest):
     t1_short = match_info.get("team1Short", get_short_name(team1))
     t2_short = match_info.get("team2Short", get_short_name(team2))
 
-    # Build snapshot
+    # Build snapshot from live state (in-memory or from DB)
     live_state = live_match_state.get(match_id)
+    if not live_state:
+        # Fallback: load from DB snapshot (survives server restarts)
+        db_snapshot = await db.live_snapshots.find_one({"matchId": match_id}, {"_id": 0})
+        if db_snapshot:
+            live_state = db_snapshot
+            live_match_state[match_id] = db_snapshot  # Cache for subsequent calls
     snapshot = {
         "match_id": match_id, "batting_team": team1, "bowling_team": team2,
         "team1": team1, "team2": team2, "team1Short": t1_short, "team2Short": t2_short,
@@ -1219,8 +1239,11 @@ async def api_chat(match_id: str, body: ChatRequest):
         cached_prediction=cached_11f,
     )
 
-    # GPT answer
-    answer = await gpt_consultation(body.question, result, body.risk_tolerance)
+    # Build rich live context for GPT from fetched live data + algo outputs
+    live_context = _build_live_chat_context(live_state) if live_state else None
+
+    # GPT answer with enriched context
+    answer = await gpt_consultation(body.question, result, body.risk_tolerance, live_context=live_context)
 
     return {
         "question": body.question,
@@ -1234,6 +1257,95 @@ async def api_chat(match_id: str, body: ChatRequest):
             "fair_odds": result["fair_decimal_odds"],
         },
     }
+
+
+def _build_live_chat_context(live_state: Dict) -> str:
+    """Build a rich text context from live match state + algorithm outputs for GPT chat."""
+    parts = []
+
+    # Score
+    ld = live_state.get("liveData", {})
+    score = ld.get("score", {})
+    if isinstance(score, dict) and score.get("runs") is not None:
+        parts.append(f"CURRENT SCORE: {score.get('runs', 0)}/{score.get('wickets', 0)} in {score.get('overs', 0)} overs (Innings {ld.get('innings', 1)})")
+        if score.get("target"):
+            parts.append(f"TARGET: {score['target']}")
+
+    # Batsmen on field
+    batsmen = live_state.get("batsmen", [])
+    if batsmen:
+        bat_lines = []
+        for b in batsmen:
+            name = b.get("name", "Unknown")
+            runs = b.get("runs", 0)
+            balls = b.get("balls", 0)
+            sr = b.get("strikeRate", 0)
+            fours = b.get("fours", 0)
+            sixes = b.get("sixes", 0)
+            bat_lines.append(f"  {name}: {runs}({balls}) SR:{sr} 4s:{fours} 6s:{sixes}")
+        parts.append("BATSMEN AT CREASE:\n" + "\n".join(bat_lines))
+
+    # Bowler
+    bowler = live_state.get("bowler", {})
+    if bowler and bowler.get("name"):
+        parts.append(f"CURRENT BOWLER: {bowler['name']} — {bowler.get('wickets', 0)}/{bowler.get('runs', 0)} ({bowler.get('overs', 0)} ov) Econ: {bowler.get('economy', 0)}")
+
+    # Algorithm probabilities
+    probs = live_state.get("probabilities", {})
+    if probs:
+        parts.append(f"ALGORITHM PROBABILITIES: Ensemble={probs.get('ensemble', 0)*100:.1f}%, "
+                     f"Bayesian={probs.get('bayesian', 0)*100:.1f}%, "
+                     f"Poisson={probs.get('poisson', 0)*100:.1f}%, "
+                     f"DLS={probs.get('dls', 0)*100:.1f}%, "
+                     f"Momentum={probs.get('momentum', 0)*100:.1f}%")
+        if probs.get("projected_score"):
+            parts.append(f"PROJECTED SCORE: ~{round(probs['projected_score'])}")
+
+    # Live prediction (batsmen impact, phase, chase analysis)
+    lp = live_state.get("live_prediction", {})
+    if lp:
+        parts.append(f"LIVE PREDICTION: {lp.get('summary', '')}")
+        parts.append(f"PHASE: {lp.get('phase', 'unknown')} | WIN PROB: {lp.get('win_probability', 0)}% ({lp.get('batting_team', '')})")
+        parts.append(f"CRR: {lp.get('crr', 0)} | WICKETS IN HAND: {lp.get('wickets_in_hand', 0)}")
+
+        if lp.get("projected_score"):
+            parts.append(f"LIVE PROJECTED SCORE: ~{lp['projected_score']}")
+
+        chase = lp.get("chase_analysis")
+        if chase:
+            parts.append(f"CHASE ANALYSIS: Need {chase.get('runs_remaining', 0)} off {chase.get('balls_remaining', 0)} balls, "
+                         f"RRR: {chase.get('required_rate', 0)}, Difficulty: {chase.get('difficulty', 'unknown')}")
+
+        bat_on_field = lp.get("batsmen_on_field", [])
+        if bat_on_field:
+            for b in bat_on_field:
+                set_tag = " (SET)" if b.get("is_set") else ""
+                parts.append(f"  BATSMAN IMPACT: {b.get('name', '')}{set_tag} — {b.get('runs', 0)}({b.get('balls', 0)}) SR:{b.get('sr', 0)} Impact:{b.get('impact', 'low')}")
+
+        cb = lp.get("current_bowler")
+        if cb:
+            parts.append(f"  BOWLER IMPACT: {cb.get('name', '')} — {cb.get('wickets', 0)}/{cb.get('runs', 0)} ({cb.get('overs', 0)}ov) Impact:{cb.get('impact', 'low')}")
+
+    # Betting edge
+    edge = live_state.get("bettingEdge", {})
+    t1_edge = edge.get("team1")
+    t2_edge = edge.get("team2")
+    if t1_edge:
+        parts.append(f"BETTING EDGE {live_state.get('team1Short', 'T1')}: Market={t1_edge.get('market_implied', 0)}% Model={t1_edge.get('model_prob', 0)}% Edge={t1_edge.get('edge', 0)}%")
+    if t2_edge:
+        parts.append(f"BETTING EDGE {live_state.get('team2Short', 'T2')}: Market={t2_edge.get('market_implied', 0)}% Model={t2_edge.get('model_prob', 0)}% Edge={t2_edge.get('edge', 0)}%")
+
+    # AI prediction summary
+    ai = live_state.get("aiPrediction", {})
+    if ai and ai.get("analysis"):
+        parts.append(f"AI ANALYSIS: {ai['analysis']}")
+
+    # Last ball commentary
+    commentary = live_state.get("lastBallCommentary", "")
+    if commentary:
+        parts.append(f"LAST BALL: {commentary}")
+
+    return "\n".join(parts)
 
 
 # ─── BETA PREDICTION ENGINE ──────────────────────────────────
@@ -1400,14 +1512,66 @@ async def broadcast_update(match_id, data):
         ws_connections[match_id].remove(ws)
 
 
+# ─── MATCH SCHEDULER (4PM & 7PM IST) ─────────────────────────
+
+IST = pytz.timezone("Asia/Kolkata")
+scheduler = AsyncIOScheduler(timezone=IST)
+
+async def promote_matches_to_live():
+    """Move today's upcoming matches to 'live' status at scheduled times (4PM & 7PM IST)."""
+    now_ist = datetime.now(IST)
+    today_date = now_ist.date()
+
+    logger.info(f"[Scheduler] Checking for matches to promote to LIVE at {now_ist.strftime('%I:%M %p IST')}")
+
+    matches = await db.ipl_schedule.find(
+        {"status": {"$in": ["upcoming", "scheduled", "Upcoming", "Scheduled"]}},
+        {"_id": 0}
+    ).to_list(100)
+
+    promoted = 0
+    for m in matches:
+        # Check dateTimeGMT field (ISO format: "2026-04-04T14:00:00Z")
+        dt_gmt = m.get("dateTimeGMT") or m.get("date") or ""
+        if not dt_gmt:
+            continue
+        try:
+            if isinstance(dt_gmt, str):
+                match_dt = datetime.fromisoformat(dt_gmt.replace("Z", "+00:00"))
+            else:
+                match_dt = dt_gmt
+            match_date_ist = match_dt.astimezone(IST).date()
+        except (ValueError, TypeError):
+            continue
+
+        if match_date_ist == today_date:
+            await db.ipl_schedule.update_one(
+                {"matchId": m["matchId"]},
+                {"$set": {"status": "live", "promotedAt": datetime.now(timezone.utc).isoformat()}}
+            )
+            promoted += 1
+            logger.info(f"[Scheduler] Promoted {m.get('team1', '')} vs {m.get('team2', '')} ({m['matchId']}) to LIVE")
+
+    if promoted == 0:
+        logger.info(f"[Scheduler] No matches to promote today ({today_date})")
+    else:
+        logger.info(f"[Scheduler] Promoted {promoted} match(es) to LIVE")
+
+
 # ─── STARTUP ─────────────────────────────────────────────────
 
 @app.on_event("startup")
 async def startup():
     logger.info("Baatu - 11 starting up...")
+    # Schedule match promotion at 4:00 PM and 7:00 PM IST daily
+    scheduler.add_job(promote_matches_to_live, CronTrigger(hour=16, minute=0), id="promote_4pm", replace_existing=True)
+    scheduler.add_job(promote_matches_to_live, CronTrigger(hour=19, minute=0), id="promote_7pm", replace_existing=True)
+    scheduler.start()
+    logger.info("[Scheduler] Started — will promote matches to LIVE at 4:00 PM and 7:00 PM IST daily")
 
 @app.on_event("shutdown")
 async def shutdown():
+    scheduler.shutdown(wait=False)
     client.close()
 
 app.include_router(api_router)

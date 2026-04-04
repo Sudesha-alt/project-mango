@@ -45,24 +45,9 @@ export default function LiveMatch() {
         }
       }
       setLoading(false);
-
-      // Auto-fetch live data on page load
-      if (!state || state.noLiveData || !state.liveData) {
-        setFetchingLive(true);
-        const data = await fetchLiveData(matchId, null);
-        if (data && !data.error) {
-          if (data.noLiveMatch) {
-            setMatchState(prev => ({ ...prev, ...data, noLiveData: false, noLiveMatch: true }));
-          } else {
-            setMatchState(data);
-            if (data.probabilities) setProbHistory(prev => [...prev, data.probabilities].slice(-50));
-          }
-        }
-        setFetchingLive(false);
-      }
     };
     if (matchId) load();
-  }, [matchId, getMatchState, getTeamSquad, fetchLiveData]);
+  }, [matchId, getMatchState, getTeamSquad]);
 
   useEffect(() => {
     if (wsData && wsData.probabilities) {

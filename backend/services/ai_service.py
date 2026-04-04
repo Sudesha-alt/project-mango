@@ -518,7 +518,7 @@ Return JSON:
         }
 
 
-async def gpt_consultation(user_question: str, consultation_data: Dict, risk_tolerance: str = "balanced"):
+async def gpt_consultation(user_question: str, consultation_data: Dict, risk_tolerance: str = "balanced", live_context: str = None):
     """
     GPT-5.4: Answer user's betting question in layman language,
     analyzing all model outputs and risk profile.
@@ -535,7 +535,8 @@ Rules:
 - Never guarantee outcomes. Acknowledge uncertainty.
 - If the data says NO, say NO firmly. Don't sugarcoat.
 - Reference specific numbers from the analysis (probability, edge, odds).
-- Keep it under 150 words."""
+- If live match data is provided, use it: cite current score, batsmen performance, bowler impact, projected scores, phase of play.
+- Keep it under 200 words."""
     )
 
     # Build context from consultation data
@@ -565,7 +566,18 @@ Current analysis for {team} vs {opponent}:
 - Market odds: {market_odds or 'not provided'}
 - Edge: {edge}% {'(positive - model sees value)' if edge and edge > 0 else '(negative - market is better)' if edge and edge < 0 else ''}
 - Key drivers: {drivers_text}
-- System recommendation: {recommendation}
+- System recommendation: {recommendation}"""
+
+    if live_context:
+        prompt += f"""
+
+=== LIVE MATCH DATA & ALGORITHM OUTPUTS ===
+{live_context}
+=== END LIVE DATA ===
+
+Use the live match data above to enrich your answer. Reference specific player performances, algorithm probabilities, projected scores, and match phase."""
+
+    prompt += f"""
 
 Answer their question directly. Be honest. Factor in their {risk_tolerance} risk profile."""
 
