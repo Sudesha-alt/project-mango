@@ -663,7 +663,19 @@ def run_consultation(
             }
 
     # Layer 5: Calibration
-    cal = calibrate_probability(blended_raw)
+    if model_source == "11_factor_algorithm":
+        # Already calibrated by the 11-factor model, skip Platt
+        cal = {
+            "raw": round(blended_raw, 4),
+            "calibrated": round(blended_raw, 4),
+            "uncertainty_band": {
+                "low": round(max(0.01, blended_raw - 0.05), 4),
+                "high": round(min(0.99, blended_raw + 0.05), 4),
+            },
+            "confidence": round(max(0.3, min(0.95, 1 - 0.08 * (1 - abs(blended_raw - 0.5) * 2))), 2),
+        }
+    else:
+        cal = calibrate_probability(blended_raw)
 
     # Layer 6: Odds & Edge (market inputs are 0-100 percentages)
     odds_edge = compute_odds_and_edge(
