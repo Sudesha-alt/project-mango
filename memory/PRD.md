@@ -1,11 +1,11 @@
 # Baatu - 11 — Product Requirements Document
 
 ## Overview
-AI-powered IPL 2026 betting consultant (renamed from "Gamble Consultant") combining 50K Negative Binomial simulations, 11-factor prediction algorithms, GPT-5.4 web search, and CricketData.org live data.
+AI-powered IPL 2026 betting consultant combining 50K Negative Binomial simulations, 11-factor prediction algorithms, GPT-5.4 web search, and CricketData.org live data.
 
 ## Architecture
 - **Frontend**: React (Vite), Shadcn/UI, Phosphor Icons
-- **Backend**: FastAPI, MongoDB, Scipy (NB/Poisson), OpenAI GPT-5.4
+- **Backend**: FastAPI, MongoDB, Scipy (NB/Poisson), OpenAI GPT-5.4, APScheduler
 - **Data**: CricketData.org API (100/day), GPT web scraping
 
 ## Core Features (All Implemented)
@@ -51,11 +51,30 @@ AI-powered IPL 2026 betting consultant (renamed from "Gamble Consultant") combin
   - Phase (Powerplay/Middle/Death)
   - Wickets in hand
 
+### Match Scheduler (v4.1 — NEW)
+- APScheduler runs at **4:00 PM IST** and **7:00 PM IST** daily
+- Promotes today's upcoming matches to "live" status on the Live tab
+- Manual trigger available via `POST /api/scheduler/promote-now`
+- No API hits used — only changes match status in DB
+
+### Manual Live Fetch (v4.1 — UPDATED)
+- Live scores fetched **on-demand only** (manual "Fetch Live Scores" button)
+- Saves limited API hits — no auto-fetch on page load
+- After fetch: runs all 4 probability algorithms + live prediction
+
+### Enriched Chat Context (v4.1 — NEW)
+- After live fetch, chat endpoint passes full live context to GPT:
+  - Current score, batsmen on field (runs, SR, impact), bowler stats
+  - Win probability from all algorithms (Ensemble, Bayesian, Poisson, DLS, Momentum)
+  - Live prediction (projected score, phase, chase analysis, RRR)
+  - Batting edge, AI prediction, last ball commentary
+- GPT answers user questions referencing specific player performances and algorithm outputs
+
 ### User Guide (In-App)
 - 10-section FAQ modal covering all features
 
 ## Key Bug Fixes
-- **v5.1**: scipy nbinom parameterization (1-p → p)
+- **v5.1**: scipy nbinom parameterization (1-p -> p)
 - **v5.3**: Form factor damping for small samples, Playing XI background fetch
 - **v5.4**: Consultation uses 11-factor cached prediction instead of 5-factor fallback, skip double Platt calibration
 
@@ -66,6 +85,7 @@ AI-powered IPL 2026 betting consultant (renamed from "Gamble Consultant") combin
 - v5.2: Buzz sentiment (-100 to +100), performance formula
 - v5.3: Form damping, background Playing XI fetch
 - v5.4: 11-factor model, renamed Baatu-11, live match prediction, extensive GPT data fetch
+- v4.1: Scheduler (4PM/7PM IST), manual-only live fetch, enriched chat context with live data
 
 ## Backlog
 - P2: Split ConsultantDashboard.js into sub-components
