@@ -1,46 +1,57 @@
 # Baatu - 11 — Product Requirements Document
 
 ## Overview
-AI-powered IPL 2026 betting consultant combining 50K Negative Binomial simulations, 11-factor prediction algorithms, Claude Opus deep narrative analysis, SportMonks live API, and background auto-scraping.
+AI-powered IPL 2026 betting consultant combining Weighted Probability Formula, Claude Opus AI prediction, 50K NB simulations, 11-factor algorithms, SportMonks live API, and background auto-scraping.
 
 ## Architecture
 - **Frontend**: React (Vite), Shadcn/UI, Phosphor Icons
 - **Backend**: FastAPI, MongoDB, Scipy (NB/Poisson), Claude Opus 4.5 (Anthropic), APScheduler
-- **Data Sources**: SportMonks API (primary live), CricketData.org API (fallback, 100/day), DuckDuckGo web scraping (analysis)
+- **Data Sources**: SportMonks API (primary live), CricketData.org API (fallback), DuckDuckGo web scraping
 - **AI Engine**: Claude Opus 4.5 via emergentintegrations LlmChat
 - **Background Jobs**: APScheduler (promote at 4PM/7PM IST, auto-scrape every 5 min)
 
 ## Core Features
 
-### Two-Section Pre-Match Prediction
-- **Section 1**: Algorithm-Based (11-Factor Model with 50K NB simulations)
-- **Section 2**: Claude Opus Deep Narrative (web-scraped data, factors, injuries, toss scenarios, prediction)
+### Dual Live Prediction Models (NEW - v6)
+Two side-by-side prediction models during live matches:
 
-### Claude vs Algorithm Comparison Dashboard (/compare)
-- Side-by-side comparison across all IPL 2026 matches
-- Agreement metrics: Matches Compared, Same Winner, Disagreements, Agreement %
+**Model 1 — Weighted Probability Prediction (Formula-based)**
+- P(win) = alpha x H + (1 - alpha) x L
+- Alpha = balls_remaining / total_match_balls (dynamic weight)
+- H (Historical) = 0.40 x H2H + 0.25 x Venue + 0.20 x Recent_Form + 0.15 x Toss_Advantage
+- L (Live) = 0.40 x Run_Rate_Ratio + 0.35 x Wickets_in_Hand + 0.25 x Phase_Momentum
+- Historical factors fetched from Claude (H2H win%, venue win%, recent form, toss advantage)
+- Info (i) button shows full methodology breakdown
 
-### Live Match System — Claude as Single Source of Truth
-- **Primary**: SportMonks API for rich live data (batting, bowling, lineup, scoreboards)
-- **Fallback**: CricketData.org API when SportMonks has no data
-- **Manual fetch**: "Fetch Live Scores" button only (saves API hits)
-- **Claude Live Prediction**: Full context including yet-to-bat/bowl + previous form consideration for realistic win probabilities
-- **Unified probabilities**: Claude's team1_win_pct and team2_win_pct are THE probabilities shown everywhere (scoreboard, prediction panel)
-- **Refreshable**: Independent "Refresh" button re-runs Claude prediction using cached SportMonks data (no API refetch)
-- **No duplication**: Single Claude Opus panel with chase analysis merged in — removed old algorithmic prediction panel
+**Model 2 — Claude Opus Prediction (AI-based)**
+- Full scorecard + remaining batting/bowling lineups passed to Claude
+- Considers player form, career stats, finishing ability, death overs record
+- Returns headline, reasoning, batting depth assessment, bowling assessment, key matchup
+- Momentum and confidence indicators
 
-### SportMonks Integration
-- Rich live data: full batting card, bowling card, lineup, recent balls, extras
-- Yet to Bat / Yet to Bowl lineups displayed in UI
-- Claude Opus receives full scorecard + remaining players for depth-aware predictions
-- Fields: active_batsmen, active_bowler, batsmen_inn1/2, bowlers_inn1/2, yet_to_bat, yet_to_bowl
+Both models refreshable via single "Refresh Both" button.
+
+### Live Match System
+- **Primary**: SportMonks API for rich live data
+- **Manual fetch**: "Fetch Live Scores" button only
+- **Claude probabilities**: Single source of truth for scoreboard
+- **Yet to Bat/Bowl**: Full lineups displayed
+- **Refreshable**: Independent refresh without re-fetching SportMonks data
+
+### Pre-Match System
+- **Algorithm-Based**: 11-Factor Model with 50K NB simulations
+- **Claude Opus Deep Narrative**: web-scraped analysis with factors, injuries, toss scenarios
+
+### Compare Dashboard (/compare)
+- Algorithm vs Claude side-by-side across all matches
+- Agreement metrics and color-coded levels
 
 ### Key API Endpoints
-- `POST /api/matches/{id}/fetch-live` — Manual live fetch (SportMonks → Claude prediction → unified probs)
-- `POST /api/matches/{id}/refresh-claude-prediction` — Refresh Claude prediction only (cached data, no API refetch)
+- `POST /api/matches/{id}/fetch-live` — Manual live fetch (SportMonks + Claude + Weighted)
+- `POST /api/matches/{id}/refresh-claude-prediction` — Refresh both predictions (cached data)
 - `GET /api/predictions/{id}/pre-match` — Cached algo prediction
-- `POST /api/matches/{id}/claude-analysis` — Generate fresh Claude analysis
-- `POST /api/matches/{id}/chat` — Consultation chat (Claude Opus)
+- `POST /api/matches/{id}/claude-analysis` — Fresh Claude analysis
+- `POST /api/matches/{id}/chat` — Consultation chat
 
 ## Completed
 - [x] 11-Factor prediction model with 50K NB simulations
@@ -50,11 +61,12 @@ AI-powered IPL 2026 betting consultant combining 50K Negative Binomial simulatio
 - [x] Component modularization (ConsultantWidgets, ChatBox)
 - [x] APScheduler background tasks
 - [x] SportMonks API integration for live data
-- [x] Claude live win prediction with full batting/bowling lineup context
-- [x] Yet-to-bat/bowl display in Live Match UI
-- [x] Unified Claude probabilities (single source of truth for scoreboard + prediction)
-- [x] Refreshable Claude prediction (independent refresh without re-fetching SportMonks)
-- [x] Removed duplicate Live Match Prediction panel
+- [x] Claude live win prediction with full lineup context
+- [x] Unified Claude probabilities (scoreboard + panels)
+- [x] Weighted Probability Prediction (formula-based model)
+- [x] Dual prediction models UI (side-by-side display)
+- [x] Formula methodology info (i) button
+- [x] Shared refresh button for both models
 
 ## Backlog
 - P2: Shareable prediction card
