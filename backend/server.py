@@ -871,6 +871,8 @@ async def api_consult(match_id: str, body: ConsultRequest = None):
         "bowling_team": team2,
         "team1": team1,
         "team2": team2,
+        "team1Short": t1_short,
+        "team2Short": t2_short,
         "venue": venue,
         "innings": 1,
         "over": 0,
@@ -958,7 +960,8 @@ async def api_chat(match_id: str, body: ChatRequest):
     live_state = live_match_state.get(match_id)
     snapshot = {
         "match_id": match_id, "batting_team": team1, "bowling_team": team2,
-        "team1": team1, "team2": team2, "venue": venue,
+        "team1": team1, "team2": team2, "team1Short": t1_short, "team2Short": t2_short,
+        "venue": venue,
         "innings": 1, "over": 0, "ball": 0, "score": 0, "wickets_lost": 0,
         "balls_remaining": 120, "target": None, "venue_par_score": 165,
         "ball_history": [],

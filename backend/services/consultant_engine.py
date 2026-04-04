@@ -279,7 +279,7 @@ def _live_prob_chase(f: Dict) -> float:
 def negative_binomial_innings(
     mean_score: float,
     variance_factor: float = 1.4,
-    n_samples: int = 10000,
+    n_samples: int = 50000,
 ) -> List[int]:
     """
     Sample innings totals from negative binomial distribution.
@@ -309,7 +309,7 @@ def simulate_match(
     team1_var_factor: float = 1.4,
     team2_var_factor: float = 1.5,  # chasing has more variance
     venue_par: float = 165,
-    n_sims: int = 10000,
+    n_sims: int = 50000,
     phase_adj: Dict = None,
 ) -> Dict:
     """
@@ -585,7 +585,7 @@ def run_consultation(
         if t2_preds:
             t2_mean = sum(p.get("predicted_runs", 15) for p in t2_preds[:11])
 
-    sim = simulate_match(t1_mean, t2_mean, venue_par=venue_par, n_sims=10000)
+    sim = simulate_match(t1_mean, t2_mean, venue_par=venue_par, n_sims=50000)
 
     # Blend simulation probability with feature model
     sim_prob = sim["team1_win_prob"]
@@ -648,12 +648,124 @@ def run_consultation(
             })
 
     from datetime import datetime, timezone
+
+    # ── Strong Verdict ──
+    win_prob = round(cal["calibrated"] * 100, 1)
+    lose_prob = round((1 - cal["calibrated"]) * 100, 1)
+    favorite = team1 if win_prob > 50 else team2
+    underdog = team2 if win_prob > 50 else team1
+    fav_prob = max(win_prob, lose_prob)
+    fav_short = snapshot.get("team1Short", team1[:3].upper()) if favorite == team1 else snapshot.get("team2Short", team2[:3].upper())
+    und_short = snapshot.get("team1Short", team1[:3].upper()) if underdog == team1 else snapshot.get("team2Short", team2[:3].upper())
+
+    if fav_prob >= 80:
+        verdict_strength = "DOMINANT"
+        verdict_text = f"{fav_short} will DOMINATE this match. {fav_prob}% probability backed by {sim['simulations']:,} simulations."
+    elif fav_prob >= 65:
+        verdict_strength = "STRONG"
+        verdict_text = f"{fav_short} are STRONG FAVORITES at {fav_prob}%. Data backs this with solid edge across H2H, form, and squad depth."
+    elif fav_prob >= 55:
+        verdict_strength = "SLIGHT"
+        verdict_text = f"{fav_short} have a SLIGHT EDGE at {fav_prob}%. This is a competitive match — look for in-play value."
+    else:
+        verdict_strength = "TOSS-UP"
+        verdict_text = f"This is a COIN-FLIP. {fav_short} barely edges at {fav_prob}%. Wait for live data before committing."
+
+    verdict = {
+        "winner": favorite,
+        "winner_short": fav_short,
+        "loser": underdog,
+        "loser_short": und_short,
+        "winner_probability": fav_prob,
+        "loser_probability": round(100 - fav_prob, 1),
+        "strength": verdict_strength,
+        "text": verdict_text,
+    }
+
+    # ── Betting Scenarios (for upcoming matches) ──
+    betting_scenarios = []
+    # Scenario 1: Pre-match bet on favorite
+    if signal["signal"] in ("VALUE", "STRONG_VALUE"):
+        betting_scenarios.append({
+            "type": "PRE_MATCH",
+            "title": f"Back {fav_short} Pre-Match",
+            "description": f"Model shows {fav_prob}% vs bookmaker's {odds_edge.get('market_implied_probability', '?')}%. Edge of {abs(edge or 0)}%.",
+            "confidence": "HIGH" if fav_prob >= 65 else "MEDIUM",
+            "timing": "Before toss",
+        })
+
+    # Scenario 2: In-play at powerplay
+    batting_first_win = sim.get("batting_first_win_pct", 50)
+    if batting_first_win > 55:
+        pp_team = team1 if batting_first_win > 50 else team2
+        pp_short = snapshot.get("team1Short", team1[:3].upper()) if pp_team == team1 else snapshot.get("team2Short", team2[:3].upper())
+        betting_scenarios.append({
+            "type": "IN_PLAY_POWERPLAY",
+            "title": f"Back {pp_short} if batting first, after powerplay",
+            "description": f"Batting first wins {batting_first_win}% of simulations. If {pp_short} bats first and posts 50+ in PP with <=1 wicket, odds will shift significantly.",
+            "confidence": "MEDIUM",
+            "timing": "After 6 overs (powerplay)",
+        })
+
+    # Scenario 3: Key player outburst
+    if player_predictions:
+        top_batter = max(player_predictions, key=lambda x: x.get("predicted_runs", 0), default=None)
+        top_bowler = max(player_predictions, key=lambda x: x.get("predicted_wickets", 0), default=None)
+        if top_batter and top_batter.get("predicted_runs", 0) > 25:
+            batting_scenarios = {
+                "type": "PLAYER_OUTBURST",
+                "title": f"Watch {top_batter['name']} for big innings",
+                "description": f"Predicted {top_batter['predicted_runs']}r at SR {top_batter.get('predicted_sr', 130)}. If they survive first 10 balls, expect acceleration. Live odds will shift.",
+                "confidence": "HIGH" if top_batter.get("confidence", 50) > 60 else "MEDIUM",
+                "timing": "When this player comes to bat",
+                "player": top_batter["name"],
+            }
+            betting_scenarios.append(batting_scenarios)
+        if top_bowler and top_bowler.get("predicted_wickets", 0) > 1:
+            betting_scenarios.append({
+                "type": "PLAYER_OUTBURST",
+                "title": f"Bet on {top_bowler['name']} to take wickets",
+                "description": f"Predicted {top_bowler['predicted_wickets']}w at economy {top_bowler.get('predicted_economy', 8.0)}. Key spell expected in middle overs.",
+                "confidence": "MEDIUM",
+                "timing": "During their bowling spell",
+                "player": top_bowler["name"],
+            })
+
+    # Scenario 4: Chase dynamics
+    if sim.get("mean_team1_score") and sim.get("mean_team2_score"):
+        mean_t1 = sim["mean_team1_score"]
+        mean_t2 = sim["mean_team2_score"]
+        if abs(mean_t1 - mean_t2) < 15:
+            betting_scenarios.append({
+                "type": "CHASE_DYNAMIC",
+                "title": "Tight chase expected — back the chasing team at 10-12 overs",
+                "description": f"Simulated scores: {mean_t1:.0f} vs {mean_t2:.0f} (close). If the match reaches 10 overs in the chase with RRR < 9, chasing team gets favorable live odds.",
+                "confidence": "MEDIUM",
+                "timing": "Mid-chase (overs 10-12)",
+            })
+
+    # ── Odds Visual Data ──
+    odds_visual = {
+        "team1_name": team1,
+        "team2_name": team2,
+        "team1_short": snapshot.get("team1Short", team1[:3].upper()),
+        "team2_short": snapshot.get("team2Short", team2[:3].upper()),
+        "team1_model_pct": win_prob,
+        "team2_model_pct": lose_prob,
+        "team1_market_pct": odds_edge.get("bookmaker_pct_team1"),
+        "team2_market_pct": odds_edge.get("bookmaker_pct_team2"),
+        "team1_fair_odds": odds_edge.get("fair_decimal_odds"),
+        "team2_fair_odds": odds_edge.get("fair_odds_opponent"),
+        "edge_team1": odds_edge.get("edge_pct"),
+        "overround": odds_edge.get("overround"),
+    }
+
     return {
         "match_id": match_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "team": team1,
         "opponent": team2,
-        "win_probability": round(cal["calibrated"] * 100, 1),
+        "win_probability": win_prob,
         "odds_0_100": round(cal["calibrated"] * 100),
         "fair_decimal_odds": odds_edge["fair_decimal_odds"],
         "market_decimal_odds": odds_edge.get("market_decimal_odds"),
@@ -663,6 +775,9 @@ def run_consultation(
         "overround": odds_edge.get("overround"),
         "confidence": cal["confidence"],
         "calibration": cal,
+        "verdict": verdict,
+        "betting_scenarios": betting_scenarios,
+        "odds_visual": odds_visual,
         "value_signal": signal["signal"],
         "signal_color": signal["color"],
         "bet_recommendation": signal["recommendation"],
@@ -676,6 +791,8 @@ def run_consultation(
         "pre_match_factors": factors,
         "odds_detail": odds_edge,
         "market_momentum": market_momentum,
+        "team1Short": snapshot.get("team1Short", team1[:3].upper()),
+        "team2Short": snapshot.get("team2Short", team2[:3].upper()),
     }
 
 
