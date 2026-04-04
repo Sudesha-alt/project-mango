@@ -2,18 +2,20 @@ import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useMatchData } from "@/hooks/useMatchData";
 import PlayingXIPerformance from "@/components/PlayingXIPerformance";
-import BetaPrediction from "@/components/BetaPrediction";
 import ConsultantDashboard from "@/components/ConsultantDashboard";
 import PreMatchPredictionBreakdown from "@/components/PreMatchPredictionBreakdown";
+import ClaudeAnalysis from "@/components/ClaudeAnalysis";
 import { WinProbabilityChart, AlgorithmRadarChart, PreMatchRadarChart } from "@/components/Charts";
 import { ArrowRight, Spinner, MapPin, CalendarBlank } from "@phosphor-icons/react";
 
 export default function PreMatch() {
   const { matchId } = useParams();
   const navigate = useNavigate();
-  const { getTeamSquad, fetchMatchPrediction, fetchBetaPrediction, fetchConsultation, sendChat } = useMatchData();
+  const { getTeamSquad, fetchMatchPrediction, fetchBetaPrediction, fetchConsultation, sendChat, fetchClaudeAnalysis, clearClaudeAnalysis } = useMatchData();
   const [matchInfo, setMatchInfo] = useState(null);
   const [prediction, setPrediction] = useState(null);
+  const [claudeData, setClaudeData] = useState(null);
+  const [claudeLoading, setClaudeLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [predLoading, setPredLoading] = useState(false);
 
@@ -37,6 +39,25 @@ export default function PreMatch() {
     if (res?.prediction) setPrediction(res.prediction);
     setPredLoading(false);
   };
+
+  const handleClaudeAnalysis = async () => {
+    setClaudeLoading(true);
+    // Clear cache to force fresh analysis
+    await clearClaudeAnalysis(matchId);
+    const res = await fetchClaudeAnalysis(matchId);
+    if (res) setClaudeData(res);
+    setClaudeLoading(false);
+  };
+
+  // Load cached claude analysis on mount
+  useEffect(() => {
+    const loadCached = async () => {
+      const res = await fetchClaudeAnalysis(matchId);
+      if (res && res.analysis) setClaudeData(res);
+    };
+    if (matchId && matchInfo) loadCached();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matchId, matchInfo]);
 
   const team1 = matchInfo?.team1 || "Team A";
   const team2 = matchInfo?.team2 || "Team B";
@@ -70,66 +91,19 @@ export default function PreMatch() {
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
             <div className="lg:col-span-8 space-y-4">
-              {/* Algorithm Prediction Breakdown */}
+              {/* Section 1: Algorithm-Based Prediction (11-factor) */}
               <PreMatchPredictionBreakdown matchId={matchId} team1={t1Short} team2={t2Short} />
+
+              {/* Section 2: Claude Opus Deep Analysis */}
+              <ClaudeAnalysis
+                data={claudeData}
+                matchInfo={matchInfo}
+                loading={claudeLoading}
+                onFetch={handleClaudeAnalysis}
+              />
 
               {/* Expected Playing XI with Performance */}
               <PlayingXIPerformance matchId={matchId} team1={t1Short} team2={t2Short} />
-
-              {/* AI Prediction */}
-              <div className="bg-[#141414] border border-white/10 rounded-md p-4" data-testid="ai-predictions">
-                <div className="flex items-center justify-between mb-4">
-                  <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-[#A1A1AA]" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
-                    GPT Match Prediction
-                  </h4>
-                  <button onClick={handlePredict} disabled={predLoading} data-testid="predict-btn"
-                    className="text-[10px] font-bold uppercase px-3 py-1.5 rounded bg-[#007AFF]/20 text-[#007AFF] hover:bg-[#007AFF]/30 transition-colors disabled:opacity-50">
-                    {predLoading ? <span className="flex items-center gap-1"><Spinner className="w-3 h-3 animate-spin" /> Analyzing...</span> : prediction ? "Refresh Prediction" : "Generate Prediction"}
-                  </button>
-                </div>
-                {prediction ? (
-                  <div className="space-y-3">
-                    <p className="text-sm text-[#A1A1AA]">{prediction.analysis}</p>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="bg-[#1E1E1E] rounded-md p-3 text-center">
-                        <p className="text-xs text-[#71717A] mb-1">{t1Short}</p>
-                        <p className="text-2xl font-bold font-mono tabular-nums text-[#007AFF]">{((prediction.team1WinProb || 0.5) * 100).toFixed(0)}%</p>
-                      </div>
-                      <div className="bg-[#1E1E1E] rounded-md p-3 text-center">
-                        <p className="text-xs text-[#71717A] mb-1">{t2Short}</p>
-                        <p className="text-2xl font-bold font-mono tabular-nums text-[#FF3B30]">{((prediction.team2WinProb || 0.5) * 100).toFixed(0)}%</p>
-                      </div>
-                    </div>
-                    {prediction.projectedScore && (
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="bg-[#1E1E1E] rounded-md p-2 text-center">
-                          <p className="text-[10px] text-[#71717A]">{t1Short} Projected</p>
-                          <p className="text-sm font-mono font-bold">{prediction.projectedScore.team1?.expected || "—"}</p>
-                          <p className="text-[10px] text-[#71717A]">{prediction.projectedScore.team1?.low}—{prediction.projectedScore.team1?.high}</p>
-                        </div>
-                        <div className="bg-[#1E1E1E] rounded-md p-2 text-center">
-                          <p className="text-[10px] text-[#71717A]">{t2Short} Projected</p>
-                          <p className="text-sm font-mono font-bold">{prediction.projectedScore.team2?.expected || "—"}</p>
-                          <p className="text-[10px] text-[#71717A]">{prediction.projectedScore.team2?.low}—{prediction.projectedScore.team2?.high}</p>
-                        </div>
-                      </div>
-                    )}
-                    {prediction.keyFactors?.length > 0 && (
-                      <div>
-                        <p className="text-[10px] uppercase tracking-wider text-[#71717A] mb-1">Key Factors</p>
-                        <ul className="space-y-1">
-                          {prediction.keyFactors.map((f, i) => (
-                            <li key={i} className="text-xs text-[#A1A1AA] flex items-start gap-1.5"><span className="text-[#007AFF]">-</span>{f}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    {prediction.venueStats && <p className="text-xs text-[#71717A] italic">{prediction.venueStats}</p>}
-                  </div>
-                ) : (
-                  <p className="text-sm text-[#71717A]">Click "Generate Prediction" for GPT-powered match analysis</p>
-                )}
-              </div>
             </div>
 
             <div className="lg:col-span-4 space-y-4">

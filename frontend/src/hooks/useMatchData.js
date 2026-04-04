@@ -124,10 +124,37 @@ export function useMatchData() {
     }
   }, []);
 
+  const fetchClaudeAnalysis = useCallback(async (matchId) => {
+    try {
+      const res = await axios.post(`${API}/matches/${matchId}/claude-analysis`);
+      return res.data;
+    } catch (e) {
+      console.error("Claude analysis error:", e);
+      return null;
+    }
+  }, []);
+
+  const clearClaudeAnalysis = useCallback(async (matchId) => {
+    try {
+      await axios.delete(`${API}/matches/${matchId}/claude-analysis`);
+    } catch (e) { console.error(e); }
+  }, []);
+
+  const fetchClaudeLive = useCallback(async (matchId) => {
+    try {
+      const res = await axios.post(`${API}/matches/${matchId}/claude-live`);
+      return res.data;
+    } catch (e) {
+      console.error("Claude live error:", e);
+      return null;
+    }
+  }, []);
+
   return {
     schedule, squads, loading, apiStatus,
     fetchStatus, loadSchedule, loadSquads, getTeamSquad,
     fetchLiveData, getMatchState, fetchPlayerPredictions, fetchMatchPrediction,
     fetchBetaPrediction, fetchConsultation, sendChat,
+    fetchClaudeAnalysis, clearClaudeAnalysis, fetchClaudeLive,
   };
 }

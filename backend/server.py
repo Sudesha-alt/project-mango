@@ -26,13 +26,14 @@ from services.ai_service import (
     fetch_ipl_schedule, fetch_ipl_squads, fetch_live_match_update,
     get_match_prediction, get_player_predictions,
     fetch_player_stats_for_prediction, gpt_contextual_analysis,
-    gpt_consultation, fetch_pre_match_stats
+    gpt_consultation, fetch_pre_match_stats,
+    fetch_playing_xi, resolve_tbd_venues,
+    claude_deep_match_analysis, claude_live_analysis
 )
 from services.beta_prediction_engine import run_beta_prediction
 from services.consultant_engine import run_consultation, build_features
 from services.cricdata_service import fetch_live_ipl_details, fetch_venue_stats_from_cricapi
 from services.pre_match_predictor import compute_prediction
-from services.ai_service import fetch_playing_xi, resolve_tbd_venues
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -91,7 +92,7 @@ async def root():
     return {
         "message": "Baatu - 11 API",
         "version": "4.1.0",
-        "dataSource": "GPT-5.4 Web Search",
+        "dataSource": "Claude Opus + Web Scraping",
         "scheduleLoaded": schedule_count > 0,
         "squadsLoaded": squad_count > 0,
         "matchesInDB": schedule_count,
@@ -1225,6 +1226,86 @@ async def api_consult(match_id: str, body: ConsultRequest = None):
     result["team1Short"] = t1_short
     result["team2Short"] = t2_short
     return result
+
+
+# ─── CLAUDE DEEP ANALYSIS ENDPOINT ───────────────────────────
+
+@api_router.post("/matches/{match_id}/claude-analysis")
+async def api_claude_analysis(match_id: str, background_tasks: BackgroundTasks = None):
+    """Claude Opus deep narrative match analysis with real-time web data."""
+    match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
+    if not match_info:
+        return {"error": "Match not found"}
+
+    # Check cache first
+    cached = await db.claude_analysis.find_one({"matchId": match_id}, {"_id": 0})
+    if cached and cached.get("analysis"):
+        return cached
+
+    team1 = match_info.get("team1", "")
+    team2 = match_info.get("team2", "")
+    venue = match_info.get("venue", "")
+
+    # Run Claude deep analysis (this takes time due to web scraping + Claude)
+    analysis = await claude_deep_match_analysis(team1, team2, venue, match_info)
+
+    # Cache in DB
+    result = {
+        "matchId": match_id,
+        "team1": team1,
+        "team2": team2,
+        "team1Short": match_info.get("team1Short", get_short_name(team1)),
+        "team2Short": match_info.get("team2Short", get_short_name(team2)),
+        "venue": venue,
+        "analysis": analysis,
+        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "model": "claude-opus-4.5",
+    }
+    await db.claude_analysis.update_one(
+        {"matchId": match_id},
+        {"$set": result},
+        upsert=True
+    )
+    return result
+
+
+@api_router.delete("/matches/{match_id}/claude-analysis")
+async def api_clear_claude_analysis(match_id: str):
+    """Clear cached Claude analysis to force re-generation."""
+    await db.claude_analysis.delete_one({"matchId": match_id})
+    return {"status": "cleared"}
+
+
+# ─── CLAUDE LIVE ANALYSIS ENDPOINT ───────────────────────────
+
+@api_router.post("/matches/{match_id}/claude-live")
+async def api_claude_live(match_id: str):
+    """Claude Opus real-time analysis during a live match."""
+    match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
+    if not match_info:
+        return {"error": "Match not found"}
+
+    live_state = live_match_state.get(match_id)
+    if not live_state:
+        db_snapshot = await db.live_snapshots.find_one({"matchId": match_id}, {"_id": 0})
+        if db_snapshot:
+            live_state = db_snapshot
+
+    if not live_state:
+        return {"error": "No live data available. Fetch live scores first."}
+
+    algo_probs = live_state.get("probabilities", {})
+    live_data = live_state.get("liveData", {})
+
+    analysis = await claude_live_analysis(match_info, live_data, algo_probs)
+
+    return {
+        "matchId": match_id,
+        "analysis": analysis,
+        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "model": "claude-opus-4.5",
+    }
+
 
 
 @api_router.post("/matches/{match_id}/chat")

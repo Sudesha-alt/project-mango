@@ -12,11 +12,12 @@ import PlayingXI from "@/components/PlayingXI";
 import BetaPrediction from "@/components/BetaPrediction";
 import ConsultantDashboard from "@/components/ConsultantDashboard";
 import CricApiLivePanel from "@/components/CricApiLivePanel";
+import ClaudeLiveAnalysis from "@/components/ClaudeLiveAnalysis";
 import { WifiHigh, WifiSlash, Lightning, Spinner, UserCircle } from "@phosphor-icons/react";
 
 export default function LiveMatch() {
   const { matchId } = useParams();
-  const { fetchLiveData, getMatchState, getTeamSquad, fetchPlayerPredictions, fetchBetaPrediction, fetchConsultation, sendChat } = useMatchData();
+  const { fetchLiveData, getMatchState, getTeamSquad, fetchPlayerPredictions, fetchBetaPrediction, fetchConsultation, sendChat, fetchClaudeLive } = useMatchData();
   const { data: wsData, connected } = useWebSocket(matchId);
 
   const [matchState, setMatchState] = useState(null);
@@ -28,6 +29,8 @@ export default function LiveMatch() {
   const [activeTab, setActiveTab] = useState("consult");
   const [probHistory, setProbHistory] = useState([]);
   const [bettingOdds, setBettingOdds] = useState(null);
+  const [claudeLive, setClaudeLive] = useState(null);
+  const [claudeLiveLoading, setClaudeLiveLoading] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -85,6 +88,13 @@ export default function LiveMatch() {
     setBettingOdds(odds);
   };
 
+  const handleClaudeLive = async () => {
+    setClaudeLiveLoading(true);
+    const res = await fetchClaudeLive(matchId);
+    if (res) setClaudeLive(res);
+    setClaudeLiveLoading(false);
+  };
+
   const liveData = matchState?.liveData || {};
   const score = liveData.score || {};
   const probs = matchState?.probabilities || {};
@@ -100,8 +110,8 @@ export default function LiveMatch() {
 
   const rightTabs = [
     { key: "consult", label: "Consult" },
+    { key: "claude", label: "Claude" },
     { key: "liveapi", label: "Live API" },
-    { key: "beta", label: "Beta" },
     { key: "models", label: "Models" },
     { key: "odds", label: "Odds" },
     { key: "squad", label: "Squad" },
@@ -370,11 +380,11 @@ export default function LiveMatch() {
                 {activeTab === "consult" && (
                   <ConsultantDashboard matchId={matchId} team1={t1Short} team2={t2Short} fetchConsultation={fetchConsultation} sendChat={sendChat} />
                 )}
+                {activeTab === "claude" && (
+                  <ClaudeLiveAnalysis data={claudeLive} loading={claudeLiveLoading} onFetch={handleClaudeLive} />
+                )}
                 {activeTab === "liveapi" && (
                   <CricApiLivePanel />
-                )}
-                {activeTab === "beta" && (
-                  <BetaPrediction matchId={matchId} team1={t1Short} team2={t2Short} fetchBetaPrediction={fetchBetaPrediction} />
                 )}
                 {activeTab === "models" && (
                   <>
@@ -394,7 +404,7 @@ export default function LiveMatch() {
                     {fetchingPlayers ? (
                       <div className="bg-[#141414] border border-white/10 rounded-md p-8 text-center">
                         <Spinner className="w-6 h-6 animate-spin mx-auto mb-2 text-[#007AFF]" />
-                        <p className="text-xs text-[#A1A1AA]">Generating player predictions via GPT...</p>
+                        <p className="text-xs text-[#A1A1AA]">Generating player predictions via Claude...</p>
                       </div>
                     ) : <PlayerPredictions players={playerPreds} />}
                     {playerPreds.length === 0 && !fetchingPlayers && (

@@ -3,38 +3,30 @@ import logging
 import json
 import uuid
 import re
-from typing import Dict, List
-from openai import AsyncOpenAI
+from typing import Dict, List, Optional
 from emergentintegrations.llm.chat import LlmChat, UserMessage
+from services.web_scraper import web_search, search_cricket_live, search_match_context, search_player_data
 
 logger = logging.getLogger(__name__)
 
+ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
 EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 
-_openai_client = None
+# ─── Claude Opus helpers ──────────────────────────────────────
 
-
-def _get_openai_client():
-    global _openai_client
-    if _openai_client is None:
-        key = OPENAI_KEY
-        if not key:
-            raise ValueError("OPENAI_API_KEY not configured in .env")
-        _openai_client = AsyncOpenAI(api_key=key)
-    return _openai_client
-
-
-def _get_gpt_chat(session_id, system_msg):
-    """For analytical tasks (predictions) that don't need web search."""
-    key = OPENAI_KEY if OPENAI_KEY else EMERGENT_KEY
+def _get_claude_chat(session_id: str, system_msg: str):
+    """Create a Claude Opus chat instance."""
+    key = ANTHROPIC_KEY
+    if not key:
+        raise ValueError("ANTHROPIC_API_KEY not configured in .env")
     chat = LlmChat(api_key=key, session_id=session_id, system_message=system_msg)
-    chat.with_model("openai", "gpt-5.4")
+    chat.with_model("anthropic", "claude-opus-4-5-20251101")
     return chat
 
 
 def _extract_json(text):
-    """Robustly extract JSON from GPT response text."""
+    """Robustly extract JSON from Claude response text."""
     cleaned = text.strip()
     cleaned = re.sub(r'\[\d+\]', '', cleaned)
     if "```json" in cleaned:
@@ -66,43 +58,25 @@ def _extract_json(text):
     return json.loads(cleaned)
 
 
-async def _web_search(prompt):
-    """Step 1: GPT-5.1 web search to get raw text data."""
-    client = _get_openai_client()
-    response = await client.responses.create(
-        model="gpt-5.4",
-        tools=[{"type": "web_search_preview"}],
-        input=prompt,
-    )
-    return response.output_text
+async def _claude_json(prompt: str, system_msg: str = "You are a precise data parser. Output ONLY valid JSON with no markdown formatting, no code blocks, no explanation.") -> dict:
+    """Send a prompt to Claude and parse the JSON response."""
+    chat = _get_claude_chat(f"parse-{uuid.uuid4().hex[:8]}", system_msg)
+    response = await chat.send_message(UserMessage(text=prompt))
+    return _extract_json(response)
 
 
-async def _parse_to_json(raw_text, parse_instruction):
-    """Step 2: Parse raw web search text into structured JSON (no web search needed)."""
-    client = _get_openai_client()
-    response = await client.responses.create(
-        model="gpt-5.4",
-        instructions="You are a precise data parser. Output ONLY valid JSON with no markdown formatting, no code blocks, no explanation. Just raw JSON.",
-        input=f"{parse_instruction}\n\nSource data:\n{raw_text}",
-    )
-    return _extract_json(response.output_text)
-
+# ─── Schedule & Squads ────────────────────────────────────────
 
 async def fetch_ipl_schedule():
-    """Fetch real IPL 2026 schedule using GPT-5.1 web search (two-step)."""
-    # Step 1: Web search for raw schedule data
-    raw_text = await _web_search(
-        "Search for the complete IPL 2026 Indian Premier League 2026 schedule. "
-        "I need ALL completed match results with scores, winners, and dates, "
-        "ALL upcoming fixtures with dates and venues, "
-        "and any currently LIVE matches. "
-        "Include as many matches as possible from the full season."
+    """Fetch IPL 2026 schedule via web scraping + Claude parsing."""
+    raw_text = await web_search(
+        "IPL 2026 Indian Premier League complete schedule results fixtures all matches",
+        max_results=10
     )
-    logger.info(f"Web search schedule raw response: {len(raw_text)} chars")
+    logger.info(f"Web search schedule: {len(raw_text)} chars")
 
-    # Step 2: Parse into structured JSON
-    parse_instruction = """Parse the IPL 2026 schedule data below into this exact JSON format.
-Return a JSON object: {"matches": [...]}
+    prompt = f"""Parse the IPL 2026 schedule data below into this exact JSON format.
+Return a JSON object: {{"matches": [...]}}
 
 Each match object must have:
 - "matchId": unique string like "ipl2026_001" (number based on match_number)
@@ -111,174 +85,115 @@ Each match object must have:
 - "team2": full team name
 - "team1Short": abbreviation (CSK, MI, RCB, KKR, DC, RR, SRH, PBKS, GT, LSG)
 - "team2Short": abbreviation
-- "venue": stadium/city from source data (or "TBD" if not mentioned)
+- "venue": stadium/city
 - "dateTimeGMT": ISO date string (e.g. "2026-03-28T14:00:00Z")
 - "status": exactly one of "Completed", "Live", or "Upcoming"
 - "matchType": "T20"
 - "series": "IPL 2026"
 
-For Completed matches, also include:
-- "winner": full name of winning team
-- "score": score summary string like "RCB 203/4 (15.4) | SRH 201/9 (20)"
-- "manOfMatch": player name if available (or omit)
+For Completed matches also include: "winner", "score", "manOfMatch"
+For Upcoming matches no score/winner.
 
-For Live matches, also include:
-- "score": current score string
-
-For Upcoming matches, no score/winner fields.
-
-IMPORTANT: Only include matches that appear in the source data. Do not invent additional matches.
-Use these team name mappings:
-- CSK = Chennai Super Kings
-- MI = Mumbai Indians
-- RCB = Royal Challengers Bengaluru
-- KKR = Kolkata Knight Riders
-- DC = Delhi Capitals
-- RR = Rajasthan Royals
-- SRH = Sunrisers Hyderabad
-- PBKS = Punjab Kings
-- GT = Gujarat Titans
-- LSG = Lucknow Super Giants"""
+Source data:
+{raw_text}"""
 
     try:
-        data = await _parse_to_json(raw_text, parse_instruction)
+        data = await _claude_json(prompt)
         matches = data.get("matches", [])
-        logger.info(f"Parsed {len(matches)} real matches from web search")
+        logger.info(f"Parsed {len(matches)} matches from web search")
         return matches
     except Exception as e:
         logger.error(f"Schedule parse error: {e}")
         return []
 
 
-
 async def resolve_tbd_venues(matches: list) -> list:
-    """
-    GPT-5.4 Web Search: Resolve TBD venues for IPL 2026 matches.
-    Searches for actual venue assignments based on team home grounds and IPL schedule.
-    """
+    """Resolve TBD venues using web search + Claude."""
     tbd_matches = [m for m in matches if not m.get("venue") or m.get("venue") == "TBD"]
     if not tbd_matches:
         return matches
 
-    # Build a compact list for GPT to resolve
     match_list = "\n".join([
         f"Match #{m.get('match_number', '?')}: {m.get('team1Short', '?')} vs {m.get('team2Short', '?')} on {m.get('dateTimeGMT', '?')}"
-        for m in tbd_matches[:40]  # Limit to 40 per batch
+        for m in tbd_matches[:40]
     ])
 
-    raw_text = await _web_search(
-        f"Search for IPL 2026 match venues and stadium assignments. "
-        f"I need the confirmed or expected venue/stadium for these IPL 2026 matches. "
-        f"Search ESPNcricinfo, Cricbuzz, BCCI for the schedule with venues. "
-        f"IPL team home grounds: CSK=MA Chidambaram Stadium Chennai, "
-        f"MI=Wankhede Stadium Mumbai, RCB=M Chinnaswamy Stadium Bengaluru, "
-        f"KKR=Eden Gardens Kolkata, DC=Arun Jaitley Stadium Delhi, "
-        f"RR=Sawai Mansingh Stadium Jaipur, SRH=Rajiv Gandhi International Stadium Hyderabad, "
-        f"PBKS=IS Bindra Stadium Mohali, GT=Narendra Modi Stadium Ahmedabad, "
-        f"LSG=BRSABV Ekana Cricket Stadium Lucknow. "
-        f"Matches:\n{match_list}"
-    )
-    logger.info(f"Venue resolution web search: {len(raw_text)} chars for {len(tbd_matches)} matches")
+    raw_text = await web_search(f"IPL 2026 match venues stadium schedule {match_list[:200]}", max_results=6)
+    logger.info(f"Venue resolution search: {len(raw_text)} chars")
 
-    parse_instruction = """Parse the venue data into this exact JSON format:
-{"venues": [
-  {"match_number": number, "venue": "Stadium Name, City"}
-]}
+    prompt = f"""Parse the venue data into JSON: {{"venues": [{{"match_number": number, "venue": "Stadium Name, City"}}]}}
 
-RULES:
-- Use the actual stadium name from source if found
-- If not found in source, assign the HOME GROUND of the first-listed team (team1)
-- IPL home grounds:
-  CSK = MA Chidambaram Stadium, Chennai
-  MI = Wankhede Stadium, Mumbai
-  RCB = M Chinnaswamy Stadium, Bengaluru
-  KKR = Eden Gardens, Kolkata
-  DC = Arun Jaitley Stadium, Delhi
-  RR = Sawai Mansingh Stadium, Jaipur
-  SRH = Rajiv Gandhi Intl Stadium, Hyderabad
-  PBKS = IS Bindra Stadium, Mohali
-  GT = Narendra Modi Stadium, Ahmedabad
-  LSG = BRSABV Ekana Stadium, Lucknow
-- Return ALL matches from the input list"""
+Home grounds: CSK=MA Chidambaram Chennai, MI=Wankhede Mumbai, RCB=M Chinnaswamy Bengaluru,
+KKR=Eden Gardens Kolkata, DC=Arun Jaitley Delhi, RR=Sawai Mansingh Jaipur,
+SRH=Rajiv Gandhi Hyderabad, PBKS=IS Bindra Mohali, GT=Narendra Modi Ahmedabad, LSG=Ekana Lucknow.
+If not found, assign home ground of team1.
+
+Matches needing venues:
+{match_list}
+
+Source data:
+{raw_text}"""
 
     try:
-        data = await _parse_to_json(raw_text, parse_instruction)
+        data = await _claude_json(prompt)
         venue_map = {v["match_number"]: v["venue"] for v in data.get("venues", [])}
-
         for m in matches:
             mn = m.get("match_number")
             if mn in venue_map and venue_map[mn]:
                 m["venue"] = venue_map[mn]
-
-        resolved = sum(1 for m in matches if m.get("venue") and m["venue"] != "TBD")
-        logger.info(f"Venue resolution: {resolved}/{len(matches)} matches now have venues")
         return matches
     except Exception as e:
         logger.error(f"Venue resolution error: {e}")
         return matches
 
 
-
 async def fetch_ipl_squads():
-    """Fetch real IPL 2026 squads using GPT-5.1 web search (two-step)."""
-    raw_text = await _web_search(
-        "Search for IPL 2026 team squads and player lists for all 10 IPL teams: "
-        "CSK, MI, RCB, KKR, DC, RR, SRH, PBKS, GT, LSG. "
-        "Include captain names and key players for each team."
-    )
+    """Fetch IPL 2026 squads via web search + Claude."""
+    raw_text = await web_search("IPL 2026 all team squads player lists captain", max_results=8)
 
-    parse_instruction = """Parse the IPL 2026 squad data into this JSON format:
-{"squads": [
-  {
-    "teamName": "Full Team Name",
-    "teamShort": "ABR",
-    "captain": "Captain Name",
-    "players": [
-      {"name": "Player Name", "role": "Batsman/Bowler/All-rounder/Wicketkeeper", "isCaptain": false, "isKeeper": false, "isOverseas": false}
-    ]
-  }
-]}
-Include only players mentioned in the source data. Mark captains and overseas players based on available info."""
+    prompt = f"""Parse the IPL 2026 squad data into JSON:
+{{"squads": [
+  {{"teamName": "Full Team Name", "teamShort": "ABR", "captain": "Captain Name",
+    "players": [{{"name": "Player Name", "role": "Batsman/Bowler/All-rounder/Wicketkeeper", "isCaptain": false, "isKeeper": false, "isOverseas": false}}]
+  }}
+]}}
+
+Source data:
+{raw_text}"""
 
     try:
-        data = await _parse_to_json(raw_text, parse_instruction)
+        data = await _claude_json(prompt)
         return data.get("squads", [])
     except Exception as e:
         logger.error(f"Squads parse error: {e}")
         return []
 
 
+# ─── Live Match ───────────────────────────────────────────────
+
 async def fetch_live_match_update(match_info):
-    """Fetch real live match data using GPT-5.1 web search (two-step)."""
+    """Fetch live match data via web scraping + Claude parsing."""
     team1 = match_info.get("team1", "Team A")
     team2 = match_info.get("team2", "Team B")
     venue = match_info.get("venue", "")
     match_id = match_info.get("matchId", "")
 
-    # Step 1: Web search for live score
-    raw_text = await _web_search(
-        f"Search for the LIVE cricket score of {team1} vs {team2} IPL 2026 right now. "
-        f"If the match is currently being played, get the latest score, batting details, bowling figures. "
-        f"If not live, get the most recent result or upcoming status."
-    )
-    logger.info(f"Web search live data for {team1} vs {team2}: {len(raw_text)} chars")
+    raw_text = await search_cricket_live(team1, team2)
+    logger.info(f"Live search for {team1} vs {team2}: {len(raw_text)} chars")
 
-    # Step 2: Parse into structured JSON
-    parse_instruction = f"""Parse the cricket match data below into this exact JSON format:
+    prompt = f"""Parse the cricket match data below into this exact JSON format:
 {{
   "matchId": "{match_id}",
   "team1": "{team1}",
   "team2": "{team2}",
   "venue": "{venue}",
   "isLive": boolean (true if match is currently in progress),
-  "noLiveMatch": boolean (true if the match is NOT currently being played),
+  "noLiveMatch": boolean (true if NOT currently being played),
   "innings": 1 or 2,
   "battingTeam": "team currently batting",
   "bowlingTeam": "team currently bowling",
   "score": {{
-    "runs": number,
-    "wickets": number,
-    "overs": number (like 15.2),
+    "runs": number, "wickets": number, "overs": number (like 15.2),
     "target": null or number (set if 2nd innings)
   }},
   "currentRunRate": number,
@@ -288,43 +203,48 @@ async def fetch_live_match_update(match_info):
     {{"name": "Player", "runs": number, "balls": number, "fours": number, "sixes": number, "strikeRate": number}}
   ],
   "bowler": {{"name": "Player", "overs": number, "runs": number, "wickets": number, "economy": number}},
-  "fallOfWickets": [],
+  "fallOfWickets": [{{"player": "Name", "score": "score at fall", "overs": number}}],
+  "recentOvers": [{{"over_num": number, "runs": number, "events": "description"}}],
+  "partnerships": [{{"bat1": "Name", "bat2": "Name", "runs": number, "balls": number}}],
   "status": "descriptive match status text",
   "lastBallCommentary": "latest event description"
 }}
 
 RULES:
-- If the match IS live, set isLive=true and noLiveMatch=false, fill score from real data
-- If the match is NOT live (completed, not started, or no data), set isLive=false and noLiveMatch=true
-- For completed matches, put final result in status
-- Only use data from the source text. Fill unavailable fields with reasonable defaults (empty arrays, null, 0)."""
+- If match IS live, set isLive=true, noLiveMatch=false, fill all score data
+- If NOT live, set isLive=false, noLiveMatch=true
+- Fill unavailable fields with reasonable defaults (empty arrays, null, 0)
+
+Source data:
+{raw_text}"""
 
     try:
-        data = await _parse_to_json(raw_text, parse_instruction)
+        data = await _claude_json(prompt)
         return data
     except Exception as e:
         logger.error(f"Live data parse error: {e}")
         return None
 
 
+# ─── Match Prediction ─────────────────────────────────────────
+
 async def get_match_prediction(match_data):
-    """AI-powered match prediction with detailed analysis."""
+    """Claude Opus match prediction with detailed analysis."""
     team1 = match_data.get("team1", "Team A")
     team2 = match_data.get("team2", "Team B")
     venue = match_data.get("venue", "")
     score = match_data.get("score", {})
 
-    chat = _get_gpt_chat(
-        f"pred-{match_data.get('matchId', '')}-{uuid.uuid4().hex[:6]}",
-        "You are an expert cricket analyst. Provide detailed match predictions. Respond ONLY with valid JSON."
-    )
     score_context = ""
     if isinstance(score, dict) and score.get("runs"):
         score_context = f"\nCurrent score: {score.get('runs', 0)}/{score.get('wickets', 0)} in {score.get('overs', 0)} overs."
         if score.get("target"):
             score_context += f" Target: {score['target']}"
-    elif isinstance(score, str) and score:
-        score_context = f"\nScore: {score}"
+
+    chat = _get_claude_chat(
+        f"pred-{match_data.get('matchId', '')}-{uuid.uuid4().hex[:6]}",
+        "You are an expert cricket analyst. Provide detailed match predictions. Respond ONLY with valid JSON."
+    )
 
     prompt = f"""Analyze this IPL 2026 match and predict outcomes:
 {team1} vs {team2} at {venue}{score_context}
@@ -346,20 +266,15 @@ Respond with:
 
     try:
         response = await chat.send_message(UserMessage(text=prompt))
-        cleaned = response.strip()
-        if "```json" in cleaned:
-            cleaned = cleaned.split("```json")[1].split("```")[0].strip()
-        elif "```" in cleaned:
-            cleaned = cleaned.split("```")[1].split("```")[0].strip()
-        return json.loads(cleaned)
+        return _extract_json(response)
     except Exception as e:
-        logger.error(f"GPT prediction error: {e}")
+        logger.error(f"Claude prediction error: {e}")
         return {"team1WinProb": 0.5, "team2WinProb": 0.5, "analysis": "Prediction unavailable", "keyFactors": []}
 
 
 async def get_player_predictions(team1, team2, venue, squad1=None, squad2=None):
-    """AI-powered player performance predictions."""
-    chat = _get_gpt_chat(
+    """Claude Opus player performance predictions."""
+    chat = _get_claude_chat(
         f"players-{uuid.uuid4().hex[:8]}",
         "You are an expert IPL cricket analyst. Predict individual player performances. Respond ONLY with valid JSON."
     )
@@ -373,12 +288,11 @@ async def get_player_predictions(team1, team2, venue, squad1=None, squad2=None):
 {team1} squad: {squad1_str}
 {team2} squad: {squad2_str}
 
-For each player predict:
+Return JSON:
 {{
   "players": [
     {{
-      "name": "Player Name",
-      "team": "Team Name",
+      "name": "Player Name", "team": "Team Name",
       "role": "Batsman/Bowler/All-rounder/Wicketkeeper",
       "batting": {{"predictedRuns": 35, "strikeRate": 140, "boundaryProb": 0.7, "fiftyProb": 0.3, "duckProb": 0.05, "confidence": 0.6}},
       "bowling": {{"predictedWickets": 1, "economy": 8.5, "dotBallPerc": 35, "maidenProb": 0.05, "confidence": 0.5}},
@@ -389,80 +303,54 @@ For each player predict:
 
     try:
         response = await chat.send_message(UserMessage(text=prompt))
-        cleaned = response.strip()
-        if "```json" in cleaned:
-            cleaned = cleaned.split("```json")[1].split("```")[0].strip()
-        elif "```" in cleaned:
-            cleaned = cleaned.split("```")[1].split("```")[0].strip()
-        data = json.loads(cleaned)
+        data = _extract_json(response)
         return data.get("players", [])
     except Exception as e:
-        logger.error(f"GPT player predictions error: {e}")
+        logger.error(f"Claude player predictions error: {e}")
         return []
 
 
-def _get_gpt_mini_chat(session_id, system_msg):
-    """GPT-5.4 mini for quick real-time decisions."""
-    key = OPENAI_KEY if OPENAI_KEY else EMERGENT_KEY
-    chat = LlmChat(api_key=key, session_id=session_id, system_message=system_msg)
-    chat.with_model("openai", "gpt-5.4-mini")
-    return chat
-
+# ─── Player Stats for Prediction Engine ───────────────────────
 
 async def fetch_player_stats_for_prediction(team1, team2, team1_players, team2_players, venue):
-    """
-    GPT-5.4 Web Search: Fetch real player stats (last 5 matches, venue averages)
-    for the beta prediction engine.
-    """
+    """Web search + Claude: Fetch real player stats for the prediction engine."""
     players_str = ""
     for p in (team1_players or [])[:11]:
         players_str += f"- {p.get('name', 'Unknown')} ({team1})\n"
     for p in (team2_players or [])[:11]:
         players_str += f"- {p.get('name', 'Unknown')} ({team2})\n"
 
-    raw_text = await _web_search(
-        f"Search for recent IPL 2026 cricket stats for these players. "
-        f"I need their last 5 match performances (runs scored, wickets taken), "
-        f"their average at {venue}, and current form. "
-        f"Match: {team1} vs {team2}\n"
-        f"Players:\n{players_str}\n"
-        f"Search ESPNcricinfo, Cricbuzz for actual stats."
+    raw_text = await web_search(
+        f"{team1} vs {team2} IPL 2026 player stats form runs wickets at {venue}",
+        max_results=8
     )
-    logger.info(f"Player stats web search: {len(raw_text)} chars")
+    logger.info(f"Player stats search: {len(raw_text)} chars")
 
-    parse_instruction = f"""Parse the player statistics into this JSON format:
+    prompt = f"""Parse the player statistics into this JSON format:
 {{"players": [
   {{
     "name": "Player Name",
     "team": "Full Team Name (must be exactly '{team1}' or '{team2}')",
     "role": "Batsman/Bowler/All-rounder/Wicketkeeper",
-    "last5_avg_runs": number (average runs in last 5 IPL matches),
-    "last5_avg_wickets": number (average wickets in last 5 IPL matches),
-    "venue_avg_runs": number (average runs at this venue),
-    "venue_avg_wickets": number (average wickets at this venue),
-    "opponent_adj_runs": number (average runs vs this opponent),
-    "opponent_adj_wickets": number (average wickets vs this opponent),
-    "form_momentum_runs": number (weighted recent form score for batting),
-    "form_momentum_wickets": number (weighted recent form score for bowling),
-    "predicted_sr": number (expected strike rate),
-    "predicted_economy": number (expected economy rate),
-    "consistency": number between 0.5 and 1.0 (how consistent the player is)
+    "last5_avg_runs": number, "last5_avg_wickets": number,
+    "venue_avg_runs": number, "venue_avg_wickets": number,
+    "opponent_adj_runs": number, "opponent_adj_wickets": number,
+    "form_momentum_runs": number, "form_momentum_wickets": number,
+    "predicted_sr": number, "predicted_economy": number,
+    "consistency": number between 0.5 and 1.0
   }}
 ]}}
 
-RULES:
-- Use real stats from the source data where available
-- For missing data, use reasonable IPL T20 defaults based on player role:
-  * Top-order batsman: ~30 runs avg, 0.2 wickets, SR 135
-  * Middle-order: ~22 runs, 0.3 wickets, SR 130
-  * All-rounder: ~18 runs, 1.0 wickets, SR 125, econ 8.0
-  * Bowler: ~8 runs, 1.5 wickets, SR 110, econ 7.5
-  * Wicketkeeper: ~25 runs, 0 wickets, SR 128
-- Include all players from both teams (up to 11 per team)
-- team field MUST be exactly '{team1}' or '{team2}'"""
+Players:
+{players_str}
+
+Use real stats from source. For missing data use IPL T20 defaults based on role.
+
+Source data:
+{raw_text}"""
 
     try:
-        data = await _parse_to_json(raw_text, parse_instruction)
+        data = await _claude_json(prompt)
         players = data.get("players", [])
         logger.info(f"Parsed {len(players)} player stats")
         return players
@@ -471,12 +359,11 @@ RULES:
         return []
 
 
+# ─── Contextual Analysis (Quick) ─────────────────────────────
+
 async def gpt_contextual_analysis(match_context, team1, team2, score_summary, alerts):
-    """
-    GPT-5.4 mini: Quick contextual analysis and alert explanations.
-    Used for real-time pattern detection and pressure assessment.
-    """
-    chat = _get_gpt_mini_chat(
+    """Claude Opus: Quick contextual analysis and alert explanations."""
+    chat = _get_claude_chat(
         f"ctx-{uuid.uuid4().hex[:8]}",
         "You are an expert cricket analyst. Provide brief, sharp tactical insights. Respond ONLY with valid JSON."
     )
@@ -487,28 +374,22 @@ async def gpt_contextual_analysis(match_context, team1, team2, score_summary, al
 Match state: {score_summary}
 Phase: {match_context.get('phase', 'unknown')}
 Pressure: {match_context.get('pressure', 'medium')}
-Wickets pressure: {match_context.get('wickets_pressure', 'normal')}
 Active alerts: {alerts_str if alerts_str else 'None'}
 
 Return JSON:
 {{
   "tactical_insight": "1-2 sentence sharp tactical observation",
-  "pattern_detected": "any pattern (scoring acceleration, collapse, etc.) or null",
-  "pressure_assessment": "brief assessment of current pressure dynamics",
-  "recommended_strategy": "what the batting/bowling side should do",
-  "key_phase": "powerplay/middle/death and why it matters now"
+  "pattern_detected": "any pattern or null",
+  "pressure_assessment": "brief assessment",
+  "recommended_strategy": "what sides should do",
+  "key_phase": "powerplay/middle/death and why"
 }}"""
 
     try:
         response = await chat.send_message(UserMessage(text=prompt))
-        cleaned = response.strip()
-        if "```json" in cleaned:
-            cleaned = cleaned.split("```json")[1].split("```")[0].strip()
-        elif "```" in cleaned:
-            cleaned = cleaned.split("```")[1].split("```")[0].strip()
-        return json.loads(cleaned)
+        return _extract_json(response)
     except Exception as e:
-        logger.error(f"GPT contextual analysis error: {e}")
+        logger.error(f"Claude contextual analysis error: {e}")
         return {
             "tactical_insight": "Analysis unavailable",
             "pattern_detected": None,
@@ -518,12 +399,11 @@ Return JSON:
         }
 
 
+# ─── Consultation Chat ───────────────────────────────────────
+
 async def gpt_consultation(user_question: str, consultation_data: Dict, risk_tolerance: str = "balanced", live_context: str = None):
-    """
-    GPT-5.4: Answer user's betting question in layman language,
-    analyzing all model outputs and risk profile.
-    """
-    chat = _get_gpt_chat(
+    """Claude Opus: Answer user's betting question in layman language."""
+    chat = _get_claude_chat(
         f"consult-{uuid.uuid4().hex[:8]}",
         """You are a sharp, no-nonsense gambling consultant. You analyze cricket match data and betting models to give clear, honest advice.
 
@@ -539,7 +419,6 @@ Rules:
 - Keep it under 200 words."""
     )
 
-    # Build context from consultation data
     prob = consultation_data.get("win_probability", 50)
     signal = consultation_data.get("value_signal", "NO_BET")
     edge = consultation_data.get("edge_pct")
@@ -585,142 +464,82 @@ Answer their question directly. Be honest. Factor in their {risk_tolerance} risk
         response = await chat.send_message(UserMessage(text=prompt))
         return response.strip()
     except Exception as e:
-        logger.error(f"GPT consultation error: {e}")
+        logger.error(f"Claude consultation error: {e}")
         return f"I couldn't analyze this right now. Based on the numbers: win probability is {prob}%, signal is {signal}. {recommendation}"
 
 
-async def fetch_pre_match_stats(team1: str, team2: str, venue: str) -> Dict:
-    """
-    GPT-5.4 Web Search: Fetch comprehensive match stats for 11-factor prediction model.
-    """
-    raw_text = await _web_search(
-        f"Search ESPNcricinfo and Cricbuzz for detailed IPL cricket stats for {team1} vs {team2} at {venue}. "
-        f"I need COMPREHENSIVE data across MULTIPLE dimensions: "
-        f"1) COMPLETE head-to-head record between {team1} and {team2} in IPL from 2021 to 2026. "
-        f"Every match with date, venue, winner, and margin. "
-        f"2) Detailed performance at {venue} — avg 1st/2nd innings scores, highest/lowest totals, "
-        f"win % batting first vs chasing, toss decisions and outcomes at this ground, "
-        f"each team's individual win record at this ground. "
-        f"3) Recent form — LAST 5 IPL 2026 match results for both teams with opponents, scores, and margins. "
-        f"Include win/loss streaks, NRR if available. "
-        f"4) Squad strength — batting depth, bowling attack quality, overseas player impact for both teams. "
-        f"5) TOSS IMPACT at {venue} — what % of toss winners chose to bat vs bowl, "
-        f"and what % of toss winners went on to WIN the match. "
-        f"6) PITCH CONDITIONS at {venue} — is it a batting paradise, bowling-friendly, or balanced? "
-        f"Does dew play a role in night matches? Spin vs pace assistance? "
-        f"7) KEY PLAYER MATCHUPS — top batsmen from each team vs key bowlers from the other. "
-        f"For example: Virat Kohli vs Jasprit Bumrah career T20 record. "
-        f"8) DEATH OVERS (16-20) performance — each team's avg runs scored and conceded in death overs this season. "
-        f"9) POWERPLAY (1-6) performance — each team's avg powerplay score and wickets lost/taken this season. "
-        f"10) MOMENTUM — current winning/losing streak for each team, any comeback patterns."
-    )
-    logger.info(f"Pre-match stats web search for {team1} vs {team2}: {len(raw_text)} chars")
+# ─── Pre-Match Stats (11-Factor) ─────────────────────────────
 
-    parse_instruction = f"""Parse the cricket statistics into this exact JSON format:
+async def fetch_pre_match_stats(team1: str, team2: str, venue: str) -> dict:
+    """Web search + Claude: Fetch comprehensive 11-factor pre-match stats."""
+    raw_text = await search_match_context(team1, team2, venue)
+    logger.info(f"Pre-match stats search for {team1} vs {team2}: {len(raw_text)} chars")
+
+    prompt = f"""Parse the cricket statistics into this exact JSON format:
 {{
   "h2h": {{
-    "team1_wins": number,
-    "team2_wins": number,
-    "no_result": number,
-    "total_matches": number,
+    "team1_wins": number, "team2_wins": number, "no_result": number, "total_matches": number,
     "last_5_results": ["W", "L", "W", "W", "L"],
     "match_details": [{{"date": "YYYY-MM-DD", "venue": "Ground", "winner": "Team", "margin": "5 wkts"}}]
   }},
   "venue_stats": {{
-    "venue_name": "{venue}",
-    "team1_avg_score": number,
-    "team2_avg_score": number,
-    "avg_first_innings_score": number,
-    "avg_second_innings_score": number,
-    "highest_total": number,
-    "lowest_total": number,
-    "bat_first_win_pct": number (0-100),
-    "team1_win_pct": number (0-100),
-    "team2_win_pct": number (0-100),
-    "team1_matches_at_venue": number,
-    "team2_matches_at_venue": number,
-    "is_team1_home": boolean,
-    "is_team2_home": boolean
+    "venue_name": "{venue}", "team1_avg_score": number, "team2_avg_score": number,
+    "avg_first_innings_score": number, "avg_second_innings_score": number,
+    "highest_total": number, "lowest_total": number, "bat_first_win_pct": number,
+    "team1_win_pct": number, "team2_win_pct": number,
+    "team1_matches_at_venue": number, "team2_matches_at_venue": number,
+    "is_team1_home": boolean, "is_team2_home": boolean
   }},
   "form": {{
-    "team1_last5_wins": number,
-    "team1_last5_losses": number,
-    "team1_last5_win_pct": number (0-100),
+    "team1_last5_wins": number, "team1_last5_losses": number, "team1_last5_win_pct": number,
     "team1_recent_results": ["W vs CSK by 20 runs", "L vs MI by 5 wkts"],
     "team1_nrr": number or null,
-    "team2_last5_wins": number,
-    "team2_last5_losses": number,
-    "team2_last5_win_pct": number (0-100),
-    "team2_recent_results": ["W vs KKR by 8 wkts", "L vs GT by 15 runs"],
+    "team2_last5_wins": number, "team2_last5_losses": number, "team2_last5_win_pct": number,
+    "team2_recent_results": ["W vs KKR by 8 wkts"],
     "team2_nrr": number or null
   }},
   "squad_strength": {{
-    "team1_batting_rating": number (0-100),
-    "team1_bowling_rating": number (0-100),
+    "team1_batting_rating": number (0-100), "team1_bowling_rating": number (0-100),
     "team1_key_players": ["Player1", "Player2", "Player3"],
-    "team2_batting_rating": number (0-100),
-    "team2_bowling_rating": number (0-100),
+    "team2_batting_rating": number (0-100), "team2_bowling_rating": number (0-100),
     "team2_key_players": ["Player1", "Player2", "Player3"]
   }},
   "toss": {{
-    "toss_bat_pct": number (0-100, % of toss winners choosing to bat at this venue),
-    "toss_bowl_pct": number (0-100, % choosing to bowl),
-    "toss_winner_match_win_pct": number (0-100, how often toss winner wins the match),
-    "venue_chase_friendly": boolean (true if chasing is historically easier here)
+    "toss_bat_pct": number, "toss_bowl_pct": number,
+    "toss_winner_match_win_pct": number, "venue_chase_friendly": boolean
   }},
   "pitch_conditions": {{
-    "pitch_type": "batting" or "bowling" or "balanced",
-    "pace_assistance": number (1-10, how much pace bowlers are helped),
-    "spin_assistance": number (1-10, how much spinners are helped),
-    "dew_factor": number (1-10, how much dew affects 2nd innings, 1=no dew, 10=heavy dew),
-    "avg_first_innings_score": number,
+    "pitch_type": "batting"/"bowling"/"balanced",
+    "pace_assistance": number (1-10), "spin_assistance": number (1-10),
+    "dew_factor": number (1-10), "avg_first_innings_score": number,
     "description": "Brief pitch description"
   }},
   "key_matchups": {{
-    "team1_batters_vs_team2_bowlers": [
-      {{"batter": "Name", "bowler": "Name", "runs": number, "balls": number, "dismissals": number, "sr": number}}
-    ],
-    "team2_batters_vs_team1_bowlers": [
-      {{"batter": "Name", "bowler": "Name", "runs": number, "balls": number, "dismissals": number, "sr": number}}
-    ]
+    "team1_batters_vs_team2_bowlers": [{{"batter": "Name", "bowler": "Name", "runs": number, "balls": number, "dismissals": number, "sr": number}}],
+    "team2_batters_vs_team1_bowlers": [same]
   }},
   "death_overs": {{
-    "team1_avg_death_score": number (avg runs scored in overs 16-20),
-    "team1_avg_death_conceded": number (avg runs conceded in overs 16-20),
-    "team2_avg_death_score": number,
-    "team2_avg_death_conceded": number
+    "team1_avg_death_score": number, "team1_avg_death_conceded": number,
+    "team2_avg_death_score": number, "team2_avg_death_conceded": number
   }},
   "powerplay": {{
-    "team1_avg_pp_score": number (avg runs in overs 1-6),
-    "team1_avg_pp_wickets_lost": number,
-    "team2_avg_pp_score": number,
-    "team2_avg_pp_wickets_lost": number
+    "team1_avg_pp_score": number, "team1_avg_pp_wickets_lost": number,
+    "team2_avg_pp_score": number, "team2_avg_pp_wickets_lost": number
   }},
   "momentum": {{
-    "team1_current_streak": number (positive = wins, negative = losses, e.g. 3 = 3 consecutive wins, -2 = 2 consecutive losses),
-    "team2_current_streak": number,
-    "team1_last10_wins": number (wins in last 10 IPL matches overall),
-    "team2_last10_wins": number
+    "team1_current_streak": number, "team2_current_streak": number,
+    "team1_last10_wins": number, "team2_last10_wins": number
   }}
 }}
 
-RULES:
-- Use ONLY real data from the source text.
-- For stats not found, use reasonable IPL defaults:
-  * H2H: if unknown, use 5-5 split
-  * Venue avg: if unknown, use 165
-  * Form: if unknown, use 50% win rate
-  * Squad rating: estimate from known player quality (60-80 range)
-  * Toss: default 55% bowl, toss_winner_match_win_pct=52%
-  * Pitch: default balanced, pace=5, spin=5, dew=3
-  * Death overs: default 45 scored, 48 conceded per team
-  * Powerplay: default 48 scored, 1.2 wickets lost
-  * Momentum: default 0 streak
-  * Key matchups: include top 3-5 most impactful matchups per side if found
-- team1 is always {team1}, team2 is always {team2}"""
+Use ONLY real data from source. For missing stats, use reasonable IPL defaults.
+team1={team1}, team2={team2}
+
+Source data:
+{raw_text[:12000]}"""
 
     try:
-        data = await _parse_to_json(raw_text, parse_instruction)
+        data = await _claude_json(prompt)
         return data
     except Exception as e:
         logger.error(f"Pre-match stats parse error: {e}")
@@ -756,32 +575,14 @@ def _default_pre_match_stats():
     }
 
 
+# ─── Playing XI ───────────────────────────────────────────────
 
 async def fetch_playing_xi(team1: str, team2: str, venue: str) -> Dict:
-    """
-    GPT-5.4 Web Search: Fetch expected/confirmed 2026 Playing XI for an IPL match.
-    Returns player names, roles, venue-specific stats, buzz sentiment (-100 to +100), and base performance.
-    """
-    raw_text = await _web_search(
-        f"Search for the expected or confirmed Playing XI for {team1} vs {team2} "
-        f"IPL 2026 match at {venue}. "
-        f"Search Cricbuzz, ESPNcricinfo, social media (Twitter/X), fantasy cricket sites for predicted or announced lineups. "
-        f"IMPORTANT: Also search for INJURY NEWS, negative news, controversies, team announcements, squad changes, "
-        f"and players who are UNAVAILABLE (injured, rested, dropped, banned) for this match. "
-        f"EXCLUDE completely unavailable players and replace them with likely replacements from the squad. "
-        f"For EACH player in the expected XI, I need: "
-        f"1) Their stats specifically at {venue} in the last 5 matches they played there — "
-        f"runs scored, batting average, strike rate at this venue; wickets taken and economy at this venue. "
-        f"2) Their overall IPL 2026 form — total season runs, wickets, avg, SR, economy. "
-        f"3) Social media buzz and sentiment — is this player trending POSITIVELY or NEGATIVELY? "
-        f"Are experts picking them? Any injury concerns, fitness doubts, recent controversy, poor form streaks, "
-        f"or team conflict? Also check for POSITIVE signals like player-of-the-match awards, captain praise, "
-        f"century in last match, etc. "
-        f"Include whether each player is capped, uncapped, or overseas."
-    )
-    logger.info(f"Playing XI web search for {team1} vs {team2}: {len(raw_text)} chars")
+    """Web search + Claude: Fetch expected Playing XI with buzz scores."""
+    raw_text = await search_player_data(team1, team2, venue)
+    logger.info(f"Playing XI search for {team1} vs {team2}: {len(raw_text)} chars")
 
-    parse_instruction = f"""Parse the Playing XI data into this exact JSON format:
+    prompt = f"""Parse the Playing XI data into this exact JSON format:
 {{
   "team1_name": "{team1}",
   "team2_name": "{team2}",
@@ -792,52 +593,190 @@ async def fetch_playing_xi(team1: str, team2: str, venue: str) -> Dict:
       "is_overseas": boolean,
       "is_captain": boolean,
       "venue_stats": {{
-        "matches_at_venue": number (how many matches played at {venue}),
-        "runs_at_venue": number (total runs at this venue in last 5 matches),
-        "avg_at_venue": number (batting avg at this venue),
-        "sr_at_venue": number (strike rate at this venue),
-        "wickets_at_venue": number (total wickets at this venue),
-        "economy_at_venue": number (economy rate at this venue)
+        "matches_at_venue": number, "runs_at_venue": number, "avg_at_venue": number,
+        "sr_at_venue": number, "wickets_at_venue": number, "economy_at_venue": number
       }},
-      "season_runs": number (IPL 2026 runs so far, 0 if not available),
-      "season_avg": number (batting average this season),
-      "season_sr": number (strike rate this season),
-      "season_wickets": number (wickets this season),
-      "season_economy": number (economy rate this season),
-      "base_expected_runs": number (raw predicted runs based on 60% venue form + 40% season form, BEFORE buzz/luck),
-      "base_expected_wickets": number (raw predicted wickets based on 60% venue form + 40% season form, BEFORE buzz/luck),
-      "buzz_score": number (-100 to +100, sentiment score: positive = good news/form, negative = injury/controversy/poor form),
-      "buzz_reason": string (1-sentence explanation of WHY this buzz score, e.g. "Scored century last match, experts' top pick" or "Recovering from hamstring injury, missed last 2 matches")
+      "season_runs": number, "season_avg": number, "season_sr": number,
+      "season_wickets": number, "season_economy": number,
+      "base_expected_runs": number, "base_expected_wickets": number,
+      "buzz_score": number (-100 to +100),
+      "buzz_reason": string (1-sentence explanation)
     }}
   ],
-  "team2_xi": [same structure as above],
-  "confidence": "confirmed" or "predicted" (whether XI is officially announced or predicted)
+  "team2_xi": [same structure],
+  "confidence": "confirmed" or "predicted"
 }}
 
 RULES:
-- Include exactly 11 AVAILABLE players per team. EXCLUDE injured, rested, dropped, or banned players.
-- If a key player is unavailable, replace them with the most likely replacement from the squad.
-- venue_stats: Use the player's stats specifically at {venue}. If no venue data, use overall IPL average with venue_matches=0.
-- buzz_score is a SENTIMENT scale from -100 to +100:
-  * +70 to +100: Exceptional recent form, trending star, MOTM awards, captain's praise, experts' #1 pick
-  * +30 to +69: Good form, positive sentiment, picked in most fantasy teams
-  * -10 to +29: Neutral or mixed signals, average form, inconsistent
-  * -50 to -10: Poor recent form, niggle concerns, dropped from fantasy picks, struggling with technique
-  * -100 to -50: Major injury concern (but still playing), recent controversy, terrible form streak, team conflict
-- buzz_reason: MUST explain the score. Include specific facts (e.g. "3 ducks in last 5 innings" or "87 off 42 balls last match")
-- base_expected_runs: Weighted by venue_stats (60%) and season form (40%). This is the RAW stat-based prediction.
-- base_expected_wickets: Same weighting. RAW stat-based prediction.
-- Use real stats from source. For missing stats use reasonable defaults:
-  * Top-order bat: 30 runs, avg 28, SR 135, 0 wkts, buzz +20
-  * Middle-order: 22 runs, avg 22, SR 128, 0 wkts, buzz +10
-  * All-rounder: 18 runs, avg 20, SR 125, 1 wkt, econ 8.0, buzz +15
-  * Bowler: 5 runs, avg 8, SR 100, 1.5 wkts, econ 7.8, buzz +15
-  * Wicketkeeper: 25 runs, avg 25, SR 130, buzz +10
-- team1 is {team1}, team2 is {team2}"""
+- 11 AVAILABLE players per team. EXCLUDE injured/rested/dropped.
+- buzz_score: -100 to +100 sentiment. Positive = good form/news, Negative = injury/controversy.
+- buzz_reason: Must explain the score with specific facts.
+- base_expected_runs/wickets: 60% venue form + 40% season form.
+- team1={team1}, team2={team2}
+
+Source data:
+{raw_text[:12000]}"""
 
     try:
-        data = await _parse_to_json(raw_text, parse_instruction)
+        data = await _claude_json(prompt)
         return data
     except Exception as e:
         logger.error(f"Playing XI parse error: {e}")
         return {"team1_xi": [], "team2_xi": [], "confidence": "unavailable"}
+
+
+# ─── Claude Deep Narrative Analysis (NEW) ─────────────────────
+
+async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_info: dict) -> dict:
+    """
+    Claude Opus: Generate a rich, narrative match analysis in the style of an expert cricket pundit.
+    This is the "Claude Analysis" section — separate from the algorithm-based prediction.
+    """
+    # First, gather real-time data via web scraping
+    raw_context = await search_match_context(team1, team2, venue)
+    player_data = await search_player_data(team1, team2, venue)
+
+    t1_short = match_info.get("team1Short", team1[:3].upper())
+    t2_short = match_info.get("team2Short", team2[:3].upper())
+    date_str = match_info.get("dateTimeGMT", "")
+    match_num = match_info.get("match_number", "")
+
+    chat = _get_claude_chat(
+        f"deep-{uuid.uuid4().hex[:8]}",
+        """You are the sharpest cricket betting analyst alive. You write match previews that read like a friend who's watched every ball of every IPL season explaining the match over drinks. You're brutally honest, data-driven, and never hedge unless the data genuinely says it's close.
+
+Your style:
+- Direct, conversational, opinionated
+- Every claim backed by a specific stat or recent event
+- Short punchy sections with bold titles
+- Win probability is your final word — no wishy-washy "could go either way"
+- Confidence level is honest: low-medium for genuinely close games, high only when data is overwhelming"""
+    )
+
+    prompt = f"""Analyze this IPL 2026 match using ALL the real-time data I'm giving you. Do NOT make up stats — use what's in the data.
+
+Match: {team1} ({t1_short}) vs {team2} ({t2_short})
+Match #{match_num} | Venue: {venue} | Date: {date_str}
+
+=== REAL-TIME WEB DATA ===
+{raw_context[:8000]}
+
+=== PLAYER DATA ===
+{player_data[:5000]}
+=== END DATA ===
+
+Return a JSON object with this EXACT structure:
+{{
+  "match_header": {{
+    "match_number": {match_num or 0},
+    "venue": "{venue}",
+    "date": "{date_str}",
+    "time_slot": "AFTERNOON" or "EVENING" (guess from date/time),
+    "home_team": "{t1_short}" or "{t2_short}" (which team plays at home at this venue)
+  }},
+  "team1_win_pct": number (0-100),
+  "team2_win_pct": number (0-100),
+  "headline": "One-line summary of THE single biggest factor (e.g. 'Kotla afternoon game')",
+  "factors": [
+    {{
+      "title": "Short bold title (e.g. 'H2H at Kotla')",
+      "analysis": "2-4 sentences of sharp analysis with specific stats and recent results",
+      "tag": "Short tag like 'Narrow DC edge' or 'MI key weapon'",
+      "favors": "{t1_short}" or "{t2_short}" or "NEUTRAL"
+    }}
+  ],
+  "key_injuries": [
+    {{
+      "player": "Player Name",
+      "team": "{t1_short}" or "{t2_short}",
+      "status": "Out" or "Doubtful" or "Fit",
+      "impact": "How this affects the team in 1 sentence"
+    }}
+  ],
+  "batting_first_scenario": {{
+    "if_team1_bats": {{"team1_win_pct": number}},
+    "if_team2_bats": {{"team2_win_pct": number}}
+  }},
+  "deciding_logic": "3-5 sentences explaining your REASONING for the final probability. This is the key paragraph — why one team edges it.",
+  "prediction_summary": "1-2 sentence bold prediction (e.g. 'MI win narrowly. 52%. MI's superior bowling depth...')",
+  "confidence": "Low" or "Low-medium" or "Medium" or "Medium-high" or "High",
+  "confidence_reason": "Why this confidence level (e.g. 'genuinely close contest')"
+}}
+
+RULES:
+- Include 6-10 factors covering: venue/conditions, H2H, form, injuries, key matchups, bowling depth, batting depth, spin/pace advantage, toss impact
+- Every factor MUST reference specific stats or recent events from the data
+- Win probabilities must add to 100
+- Be opinionated. If one team is better, say so. Don't be safe.
+- Tag each factor with which team it favors"""
+
+    try:
+        response = await chat.send_message(UserMessage(text=prompt))
+        return _extract_json(response)
+    except Exception as e:
+        logger.error(f"Claude deep analysis error: {e}")
+        return {"error": str(e), "team1_win_pct": 50, "team2_win_pct": 50, "factors": [], "headline": "Analysis unavailable"}
+
+
+# ─── Claude Live Match Analysis (NEW) ─────────────────────────
+
+async def claude_live_analysis(match_info: dict, live_data: dict, algo_probs: dict) -> dict:
+    """
+    Claude Opus: Generate real-time analysis during a live match.
+    Combines scraped live data with algorithm outputs.
+    """
+    team1 = match_info.get("team1", "Team A")
+    team2 = match_info.get("team2", "Team B")
+    t1_short = match_info.get("team1Short", team1[:3].upper())
+    t2_short = match_info.get("team2Short", team2[:3].upper())
+
+    # Scrape latest live data
+    live_scraped = await search_cricket_live(team1, team2)
+
+    chat = _get_claude_chat(
+        f"live-analysis-{uuid.uuid4().hex[:8]}",
+        """You are a live cricket match analyst providing real-time betting insights. 
+Be sharp, data-driven, and reference specific player performances happening NOW.
+Never hedge — give clear directional advice."""
+    )
+
+    prompt = f"""Analyze this LIVE IPL 2026 match. Give me a real-time prediction update.
+
+{team1} ({t1_short}) vs {team2} ({t2_short})
+
+=== LIVE MATCH DATA (from our system) ===
+{json.dumps(live_data, indent=2, default=str)[:4000]}
+
+=== ALGORITHM PROBABILITIES ===
+{json.dumps(algo_probs, indent=2, default=str)[:1000]}
+
+=== LATEST SCRAPED DATA ===
+{live_scraped[:4000]}
+
+Return JSON:
+{{
+  "current_state_summary": "2-3 sentence summary of where the match stands RIGHT NOW",
+  "momentum": "{t1_short}" or "{t2_short}" or "EVEN",
+  "momentum_reason": "Why momentum favors this team",
+  "key_batsman_assessment": [
+    {{"name": "Player", "assessment": "How they're playing right now", "threat_level": "HIGH/MEDIUM/LOW"}}
+  ],
+  "key_bowler_assessment": [
+    {{"name": "Player", "assessment": "How they're bowling", "threat_level": "HIGH/MEDIUM/LOW"}}
+  ],
+  "phase_analysis": "What phase of the game we're in and what to expect next",
+  "projected_outcome": "What's likely to happen based on current trajectory",
+  "betting_advice": "Clear, direct betting advice for RIGHT NOW",
+  "win_probability": {{
+    "{t1_short}": number (0-100),
+    "{t2_short}": number (0-100)
+  }},
+  "confidence": "Low/Medium/High"
+}}"""
+
+    try:
+        response = await chat.send_message(UserMessage(text=prompt))
+        return _extract_json(response)
+    except Exception as e:
+        logger.error(f"Claude live analysis error: {e}")
+        return {"error": str(e), "current_state_summary": "Live analysis unavailable"}
