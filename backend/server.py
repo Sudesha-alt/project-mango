@@ -35,6 +35,39 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
+
+def apply_buzz_and_luck(xi_data: dict) -> dict:
+    """
+    Apply buzz sentiment and luck factor to player base stats.
+    Formula: expected = base * (1 + buzz_modifier) * luck_factor
+    buzz_score: -100 to +100 → buzz_modifier: -0.20 to +0.20
+    luck_factor: random ±15%
+    """
+    import random
+    for team_key in ["team1_xi", "team2_xi"]:
+        for player in xi_data.get(team_key, []):
+            buzz_score = player.get("buzz_score", 0)
+            # Clamp buzz to [-100, +100]
+            buzz_score = max(-100, min(100, buzz_score))
+            # Map buzz to ±20% modifier
+            buzz_modifier = buzz_score / 500.0  # -100→-0.20, +100→+0.20
+            luck_factor = random.uniform(0.85, 1.15)
+
+            base_runs = player.get("base_expected_runs") or player.get("expected_runs", 15)
+            base_wickets = player.get("base_expected_wickets") or player.get("expected_wickets", 0)
+
+            adjusted_runs = base_runs * (1 + buzz_modifier) * luck_factor
+            adjusted_wickets = base_wickets * (1 + buzz_modifier) * random.uniform(0.85, 1.15)
+
+            player["expected_runs"] = round(max(0, adjusted_runs), 1)
+            player["expected_wickets"] = round(max(0, adjusted_wickets), 1)
+            player["luck_factor"] = round(luck_factor, 3)
+            player["buzz_modifier"] = round(buzz_modifier, 3)
+
+            # Backward compat: keep buzz_confidence as abs(buzz_score) mapped to 0-100
+            player["buzz_confidence"] = abs(buzz_score)
+    return xi_data
+
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
@@ -409,15 +442,9 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
     logger.info(f"Pre-match predict: {team1} vs {team2} at {venue}")
     stats = await fetch_pre_match_stats(team1, team2, venue)
 
-    # Fetch Playing XI with expected performance + luck biasness FIRST (needed for prediction)
-    import random
+    # Fetch Playing XI with expected performance + buzz sentiment + luck biasness
     xi_data = await fetch_playing_xi(team1, team2, venue)
-    for team_key in ["team1_xi", "team2_xi"]:
-        for player in xi_data.get(team_key, []):
-            luck_factor = random.uniform(0.85, 1.15)
-            player["expected_runs"] = round(player.get("expected_runs", 15) * luck_factor, 1)
-            player["expected_wickets"] = round(player.get("expected_wickets", 0) * random.uniform(0.80, 1.20), 1)
-            player["luck_factor"] = round(luck_factor, 3)
+    xi_data = apply_buzz_and_luck(xi_data)
 
     # Run algorithm stack with player-level data
     prediction = compute_prediction(stats, playing_xi=xi_data)
@@ -521,14 +548,9 @@ async def api_predict_upcoming(force: bool = False):
 
             stats = await fetch_pre_match_stats(team1, team2, venue)
 
-            # Fetch Playing XI first (needed for prediction)
+            # Fetch Playing XI with buzz sentiment + luck
             xi_data = await fetch_playing_xi(team1, team2, venue)
-            for team_key in ["team1_xi", "team2_xi"]:
-                for player in xi_data.get(team_key, []):
-                    luck_factor = random.uniform(0.85, 1.15)
-                    player["expected_runs"] = round(player.get("expected_runs", 15) * luck_factor, 1)
-                    player["expected_wickets"] = round(player.get("expected_wickets", 0) * random.uniform(0.80, 1.20), 1)
-                    player["luck_factor"] = round(luck_factor, 3)
+            xi_data = apply_buzz_and_luck(xi_data)
 
             prediction = compute_prediction(stats, playing_xi=xi_data)
 
@@ -627,14 +649,9 @@ async def _background_repredict_all():
 
             stats = await fetch_pre_match_stats(team1, team2, venue)
 
-            # Fetch Playing XI first (needed for player-level prediction)
+            # Fetch Playing XI with buzz sentiment + luck
             xi_data = await fetch_playing_xi(team1, team2, venue)
-            for team_key in ["team1_xi", "team2_xi"]:
-                for player in xi_data.get(team_key, []):
-                    luck_factor = random.uniform(0.85, 1.15)
-                    player["expected_runs"] = round(player.get("expected_runs", 15) * luck_factor, 1)
-                    player["expected_wickets"] = round(player.get("expected_wickets", 0) * random.uniform(0.80, 1.20), 1)
-                    player["luck_factor"] = round(luck_factor, 3)
+            xi_data = apply_buzz_and_luck(xi_data)
 
             prediction = compute_prediction(stats, playing_xi=xi_data)
 
@@ -820,15 +837,8 @@ async def api_fetch_playing_xi(match_id: str):
 
     xi_data = await fetch_playing_xi(team1, team2, venue)
 
-    # Apply luck biasness to expected performance
-    import random
-    for team_key in ["team1_xi", "team2_xi"]:
-        for player in xi_data.get(team_key, []):
-            # Luck biasness: random variance +-15% representing unpredictable match-day factors
-            luck_factor = random.uniform(0.85, 1.15)
-            player["expected_runs"] = round(player.get("expected_runs", 15) * luck_factor, 1)
-            player["expected_wickets"] = round(player.get("expected_wickets", 0) * random.uniform(0.80, 1.20), 1)
-            player["luck_factor"] = round(luck_factor, 3)
+    # Apply buzz sentiment + luck biasness to expected performance
+    xi_data = apply_buzz_and_luck(xi_data)
 
     xi_data["matchId"] = match_id
     xi_data["venue"] = venue
@@ -922,9 +932,11 @@ async def api_consult(match_id: str, body: ConsultRequest = None):
                     "predicted_wickets": p.get("expected_wickets", 0),
                     "predicted_sr": p.get("season_sr", 130),
                     "predicted_economy": p.get("season_economy", 8.0),
-                    "confidence": p.get("buzz_confidence", 50) / 100,
+                    "confidence": max(0, min(1, (p.get("buzz_score", 0) + 100) / 200)),
                     "luck_bias": p.get("luck_factor", 1.0),
                     "venue_stats": p.get("venue_stats", {}),
+                    "buzz_score": p.get("buzz_score", 0),
+                    "buzz_reason": p.get("buzz_reason", ""),
                     "buzz_confidence": p.get("buzz_confidence", 50),
                 })
     

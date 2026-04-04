@@ -689,6 +689,9 @@ def run_consultation(
                 "predicted_runs": p.get("predicted_runs", 0),
                 "predicted_wickets": p.get("predicted_wickets", 0),
                 "confidence": p.get("confidence", 50),
+                "buzz_score": p.get("buzz_score", 0),
+                "buzz_reason": p.get("buzz_reason", ""),
+                "buzz_confidence": p.get("buzz_confidence", 50),
             })
 
     from datetime import datetime, timezone

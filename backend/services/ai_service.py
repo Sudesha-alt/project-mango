@@ -693,21 +693,23 @@ def _default_pre_match_stats():
 async def fetch_playing_xi(team1: str, team2: str, venue: str) -> Dict:
     """
     GPT-5.4 Web Search: Fetch expected/confirmed 2026 Playing XI for an IPL match.
-    Returns player names, roles, venue-specific last-5-match stats, and social buzz confidence.
+    Returns player names, roles, venue-specific stats, buzz sentiment (-100 to +100), and base performance.
     """
     raw_text = await _web_search(
         f"Search for the expected or confirmed Playing XI for {team1} vs {team2} "
         f"IPL 2026 match at {venue}. "
         f"Search Cricbuzz, ESPNcricinfo, social media (Twitter/X), fantasy cricket sites for predicted or announced lineups. "
-        f"IMPORTANT: Also search for INJURY NEWS, team announcements, squad changes, "
+        f"IMPORTANT: Also search for INJURY NEWS, negative news, controversies, team announcements, squad changes, "
         f"and players who are UNAVAILABLE (injured, rested, dropped, banned) for this match. "
-        f"EXCLUDE unavailable players and replace them with likely replacements from the squad. "
+        f"EXCLUDE completely unavailable players and replace them with likely replacements from the squad. "
         f"For EACH player in the expected XI, I need: "
         f"1) Their stats specifically at {venue} in the last 5 matches they played there — "
         f"runs scored, batting average, strike rate at this venue; wickets taken and economy at this venue. "
         f"2) Their overall IPL 2026 form — total season runs, wickets, avg, SR, economy. "
-        f"3) Social media buzz and fantasy cricket expert sentiment — is this player trending? "
-        f"Are experts picking them? Any injury concerns or recent controversy? "
+        f"3) Social media buzz and sentiment — is this player trending POSITIVELY or NEGATIVELY? "
+        f"Are experts picking them? Any injury concerns, fitness doubts, recent controversy, poor form streaks, "
+        f"or team conflict? Also check for POSITIVE signals like player-of-the-match awards, captain praise, "
+        f"century in last match, etc. "
         f"Include whether each player is capped, uncapped, or overseas."
     )
     logger.info(f"Playing XI web search for {team1} vs {team2}: {len(raw_text)} chars")
@@ -735,9 +737,10 @@ async def fetch_playing_xi(team1: str, team2: str, venue: str) -> Dict:
       "season_sr": number (strike rate this season),
       "season_wickets": number (wickets this season),
       "season_economy": number (economy rate this season),
-      "expected_runs": number (predicted runs for this match based on venue form),
-      "expected_wickets": number (predicted wickets for this match based on venue form),
-      "buzz_confidence": number (0-100, confidence score based on social media buzz, expert picks, form, fitness - 100 means max confidence this player will perform)
+      "base_expected_runs": number (raw predicted runs based on 60% venue form + 40% season form, BEFORE buzz/luck),
+      "base_expected_wickets": number (raw predicted wickets based on 60% venue form + 40% season form, BEFORE buzz/luck),
+      "buzz_score": number (-100 to +100, sentiment score: positive = good news/form, negative = injury/controversy/poor form),
+      "buzz_reason": string (1-sentence explanation of WHY this buzz score, e.g. "Scored century last match, experts' top pick" or "Recovering from hamstring injury, missed last 2 matches")
     }}
   ],
   "team2_xi": [same structure as above],
@@ -748,20 +751,21 @@ RULES:
 - Include exactly 11 AVAILABLE players per team. EXCLUDE injured, rested, dropped, or banned players.
 - If a key player is unavailable, replace them with the most likely replacement from the squad.
 - venue_stats: Use the player's stats specifically at {venue}. If no venue data, use overall IPL average with venue_matches=0.
-- buzz_confidence: 
-  * 80-100: Star player, great form, trending positively, experts' top pick
-  * 60-79: Solid player, decent form, moderate buzz
-  * 40-59: Average form, mixed signals, or new/inconsistent player
-  * 20-39: Poor recent form, injury concerns, or dropped recently
-  * 0-19: Likely to underperform, negative buzz, fitness doubts
-- expected_runs: Weighted by venue_stats (60%) and season form (40%)
-- expected_wickets: Weighted by venue_stats (60%) and season form (40%)
+- buzz_score is a SENTIMENT scale from -100 to +100:
+  * +70 to +100: Exceptional recent form, trending star, MOTM awards, captain's praise, experts' #1 pick
+  * +30 to +69: Good form, positive sentiment, picked in most fantasy teams
+  * -10 to +29: Neutral or mixed signals, average form, inconsistent
+  * -50 to -10: Poor recent form, niggle concerns, dropped from fantasy picks, struggling with technique
+  * -100 to -50: Major injury concern (but still playing), recent controversy, terrible form streak, team conflict
+- buzz_reason: MUST explain the score. Include specific facts (e.g. "3 ducks in last 5 innings" or "87 off 42 balls last match")
+- base_expected_runs: Weighted by venue_stats (60%) and season form (40%). This is the RAW stat-based prediction.
+- base_expected_wickets: Same weighting. RAW stat-based prediction.
 - Use real stats from source. For missing stats use reasonable defaults:
-  * Top-order bat: 30 runs, avg 28, SR 135, 0 wkts, buzz 65
-  * Middle-order: 22 runs, avg 22, SR 128, 0 wkts, buzz 55
-  * All-rounder: 18 runs, avg 20, SR 125, 1 wkt, econ 8.0, buzz 60
-  * Bowler: 5 runs, avg 8, SR 100, 1.5 wkts, econ 7.8, buzz 60
-  * Wicketkeeper: 25 runs, avg 25, SR 130, buzz 60
+  * Top-order bat: 30 runs, avg 28, SR 135, 0 wkts, buzz +20
+  * Middle-order: 22 runs, avg 22, SR 128, 0 wkts, buzz +10
+  * All-rounder: 18 runs, avg 20, SR 125, 1 wkt, econ 8.0, buzz +15
+  * Bowler: 5 runs, avg 8, SR 100, 1.5 wkts, econ 7.8, buzz +15
+  * Wicketkeeper: 25 runs, avg 25, SR 130, buzz +10
 - team1 is {team1}, team2 is {team2}"""
 
     try:

@@ -158,11 +158,19 @@ const SECTIONS = [
     content: [
       {
         q: "Where does the Playing XI come from?",
-        a: "The expected Playing XI is scraped via GPT-5.4 web search from news sources. It includes:\n- Venue-specific stats for each player\n- 'Buzz Confidence' (0-100) — how confident the news is about them playing\n- Luck biasness (±15%) — random variance to simulate real match-day unpredictability"
+        a: "The expected Playing XI is scraped via GPT-5.4 web search from news sources (Cricbuzz, ESPNcricinfo, Twitter/X, fantasy sites). It checks for:\n- Confirmed lineups or expert predictions\n- Injury news, fitness concerns, dropped players\n- Squad changes and team announcements\n\nUnavailable players are automatically replaced with likely squad members."
+      },
+      {
+        q: "What does Buzz Score mean?",
+        a: "Buzz is a SENTIMENT score from -100 to +100:\n\n+70 to +100: Star form, MOTM awards, experts' top pick\n+30 to +69: Good form, trending positively\n-10 to +29: Neutral/mixed signals\n-50 to -10: Poor form, niggle concerns, dropped from fantasy\n-100 to -50: Major injury doubt, controversy, terrible streak\n\nClick a player's buzz badge to see the specific reason (e.g., 'Scored century last match' or 'Recovering from hamstring injury')."
+      },
+      {
+        q: "How are runs/wickets calculated?",
+        a: "Performance = Base Stats x Buzz Modifier x Luck Factor\n\n- Base Stats: 60% venue-specific performance + 40% IPL 2026 season form\n- Buzz Modifier: Maps buzz score to ±20% adjustment (positive buzz boosts, negative reduces)\n- Luck Factor: Random ±15% variance simulating match-day unpredictability\n\nA player with buzz -60 (injury doubt) will have their expected runs reduced by ~12%, while +80 (star form) gets a ~16% boost."
       },
       {
         q: "What does Player Impact show?",
-        a: "The top 8 impactful players from both teams, ranked by predicted runs. For each player:\n- Predicted runs and wickets\n- Confidence % (how reliable the prediction is)\n\nThese come from the cached Playing XI, not random squad picks."
+        a: "The top impactful players from both teams in the Consultant Dashboard. Shows predicted runs, wickets, and their buzz score. Hover over a player to see the buzz reason. These come from the cached Playing XI — not random squad picks."
       },
     ],
   },

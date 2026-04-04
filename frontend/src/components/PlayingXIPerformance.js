@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import axios from "axios";
-import { Spinner, Lightning, TrendUp, TrendDown, Minus, UsersThree } from "@phosphor-icons/react";
+import { Spinner, Lightning, TrendUp, TrendDown, Minus, UsersThree, ChatDots } from "@phosphor-icons/react";
 import InfoTooltip from "./InfoTooltip";
 
 const API = process.env.REACT_APP_BACKEND_URL + "/api";
@@ -56,54 +56,94 @@ export default function PlayingXIPerformance({ matchId, team1, team2 }) {
     return { icon: Minus, color: "#737373", label: "Neutral" };
   };
 
+  const buzzDisplay = (player) => {
+    const score = player.buzz_score;
+    // Support both new buzz_score (-100 to +100) and legacy buzz_confidence (0-100)
+    if (score === undefined && player.buzz_confidence !== undefined) {
+      // Legacy: treat as positive-only
+      const bc = player.buzz_confidence;
+      return {
+        value: bc,
+        label: `+${bc}`,
+        color: bc >= 60 ? "#34C759" : bc >= 30 ? "#FFCC00" : "#FF3B30",
+        bgColor: bc >= 60 ? "rgba(52,199,89,0.12)" : bc >= 30 ? "rgba(234,179,8,0.12)" : "rgba(255,59,48,0.12)",
+        isPositive: bc >= 30,
+        reason: player.buzz_reason || "",
+      };
+    }
+    const s = score || 0;
+    const abs = Math.abs(s);
+    const isPositive = s >= 0;
+    return {
+      value: s,
+      label: isPositive ? `+${abs}` : `-${abs}`,
+      color: s >= 40 ? "#34C759" : s >= 10 ? "#8BC34A" : s >= -10 ? "#737373" : s >= -40 ? "#FF9800" : "#FF3B30",
+      bgColor: s >= 40 ? "rgba(52,199,89,0.12)" : s >= 10 ? "rgba(139,195,58,0.12)" : s >= -10 ? "rgba(115,115,115,0.12)" : s >= -40 ? "rgba(255,152,0,0.12)" : "rgba(255,59,48,0.12)",
+      isPositive,
+      reason: player.buzz_reason || "",
+    };
+  };
+
   const PlayerRow = ({ player, idx }) => {
     const luck = luckLabel(player.luck_factor);
-    const buzz = player.buzz_confidence;
+    const buzz = buzzDisplay(player);
     const venueStats = player.venue_stats;
-    const buzzColor = buzz >= 80 ? "#34C759" : buzz >= 60 ? "#007AFF" : buzz >= 40 ? "#FFCC00" : "#FF3B30";
+    const [showReason, setShowReason] = useState(false);
     return (
-      <div className={`flex items-center gap-2 py-1.5 ${idx > 0 ? "border-t border-[#1E1E1E]" : ""}`}>
-        <span className="w-5 text-[10px] text-[#525252] font-mono text-right">{idx + 1}</span>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-1.5">
-            <span className="text-xs font-medium text-white truncate">{player.name}</span>
-            {player.is_captain && <span className="text-[8px] px-1 py-0 bg-[#FFCC00]/20 text-[#FFCC00] rounded font-bold">C</span>}
-            {player.is_overseas && <span className="text-[8px] px-1 py-0 bg-[#007AFF]/20 text-[#007AFF] rounded">OS</span>}
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-[9px] font-bold uppercase tracking-wider" style={{ color: roleColor(player.role) }}>
-              {player.role}
-            </span>
-            {venueStats && venueStats.matches_at_venue > 0 && (
-              <span className="text-[8px] text-[#525252] font-mono">
-                @venue: {venueStats.runs_at_venue}r/{venueStats.wickets_at_venue}w in {venueStats.matches_at_venue}m
+      <div className={`py-1.5 ${idx > 0 ? "border-t border-[#1E1E1E]" : ""}`}>
+        <div className="flex items-center gap-2">
+          <span className="w-5 text-[10px] text-[#525252] font-mono text-right">{idx + 1}</span>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-medium text-white truncate">{player.name}</span>
+              {player.is_captain && <span className="text-[8px] px-1 py-0 bg-[#FFCC00]/20 text-[#FFCC00] rounded font-bold">C</span>}
+              {player.is_overseas && <span className="text-[8px] px-1 py-0 bg-[#007AFF]/20 text-[#007AFF] rounded">OS</span>}
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-[9px] font-bold uppercase tracking-wider" style={{ color: roleColor(player.role) }}>
+                {player.role}
               </span>
-            )}
+              {venueStats && venueStats.matches_at_venue > 0 && (
+                <span className="text-[8px] text-[#525252] font-mono">
+                  @venue: {venueStats.runs_at_venue}r/{venueStats.wickets_at_venue}w in {venueStats.matches_at_venue}m
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="text-right space-y-0.5 flex-shrink-0">
+            <div className="flex items-center gap-1.5 justify-end">
+              <span className="text-[10px] text-[#A1A1AA] font-mono" data-testid="player-expected-runs">
+                {player.expected_runs}r
+              </span>
+              <span className="text-[10px] text-[#A1A1AA] font-mono" data-testid="player-expected-wickets">
+                {player.expected_wickets}w
+              </span>
+              {/* Buzz badge */}
+              <button
+                onClick={() => buzz.reason && setShowReason(!showReason)}
+                className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded flex items-center gap-0.5 transition-all"
+                style={{ color: buzz.color, backgroundColor: buzz.bgColor }}
+                title={buzz.reason || `Buzz: ${buzz.label}`}
+                data-testid="player-buzz-score"
+              >
+                {buzz.isPositive ? <TrendUp weight="bold" className="w-2.5 h-2.5" /> : <TrendDown weight="bold" className="w-2.5 h-2.5" />}
+                {buzz.label}
+                {buzz.reason && <ChatDots weight="fill" className="w-2.5 h-2.5 opacity-50" />}
+              </button>
+              {luck && (
+                <span className="flex items-center gap-0.5" title={`Luck: ${luck.label} (${player.luck_factor})`}>
+                  <luck.icon weight="bold" className="w-2.5 h-2.5" style={{ color: luck.color }} />
+                </span>
+              )}
+            </div>
           </div>
         </div>
-        <div className="text-right space-y-0.5 flex-shrink-0">
-          <div className="flex items-center gap-2 justify-end">
-            <span className="text-[10px] text-[#A1A1AA] font-mono" data-testid="player-expected-runs">
-              {player.expected_runs}r
-            </span>
-            <span className="text-[10px] text-[#A1A1AA] font-mono" data-testid="player-expected-wickets">
-              {player.expected_wickets}w
-            </span>
-            {buzz !== undefined && (
-              <span className="text-[9px] font-mono font-bold px-1 rounded" 
-                style={{ color: buzzColor, backgroundColor: buzzColor + "15" }}
-                title={`Buzz confidence: ${buzz}/100`}
-                data-testid="player-buzz-confidence">
-                {buzz}
-              </span>
-            )}
-            {luck && (
-              <span className="flex items-center gap-0.5" title={`Luck: ${luck.label} (${player.luck_factor})`}>
-                <luck.icon weight="bold" className="w-2.5 h-2.5" style={{ color: luck.color }} />
-              </span>
-            )}
+        {/* Buzz reason tooltip */}
+        {showReason && buzz.reason && (
+          <div className="ml-7 mt-1 mb-0.5 px-2 py-1 bg-[#1A1A1A] border border-[#262626] rounded text-[9px] text-[#A3A3A3] leading-relaxed" data-testid="player-buzz-reason">
+            <span style={{ color: buzz.color }} className="font-bold">BUZZ:</span> {buzz.reason}
           </div>
-        </div>
+        )}
       </div>
     );
   };
@@ -114,7 +154,7 @@ export default function PlayingXIPerformance({ matchId, team1, team2 }) {
         <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-[#A1A1AA] flex items-center gap-1.5" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
           <UsersThree weight="fill" className="w-4 h-4 text-[#7C3AED]" />
           Expected Playing XI + Performance
-          <InfoTooltip text="Predicted or confirmed Playing XI. Expected performance weighted by venue-specific stats (last 5 matches at this ground, 60%) and season form (40%). Buzz score (0-100) reflects social media sentiment, expert picks, and recent form. Luck biasness adds +-15% random variance for realistic projections." />
+          <InfoTooltip text="Predicted or confirmed Playing XI from web search (news, injuries, expert picks). Buzz Score (-100 to +100): positive = great form/trending, negative = injury doubts/poor form/controversy. Performance = base stats x buzz modifier x luck (+-15% random). Click a player's buzz badge to see WHY." />
         </h4>
         {!data && (
           <button onClick={handleFetch} disabled={loading} data-testid="fetch-playing-xi-btn"

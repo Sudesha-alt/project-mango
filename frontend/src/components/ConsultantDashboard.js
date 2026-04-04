@@ -131,23 +131,36 @@ function DriversPanel({ drivers }) {
 
 function PlayerImpact({ players }) {
   if (!players || players.length === 0) return null;
+  const buzzColor = (score) => {
+    if (score >= 40) return "#34C759";
+    if (score >= 10) return "#8BC34A";
+    if (score >= -10) return "#737373";
+    if (score >= -40) return "#FF9800";
+    return "#FF3B30";
+  };
   return (
     <div data-testid="player-impact" className="space-y-1.5">
-      <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold flex items-center gap-1">Player Impact <InfoTooltip text="Individual player predictions from the weighted formula: 40% Last-5 avg, 30% venue average, 20% opponent-adjusted, 10% form momentum. Includes a luck biasness variance (+-12%) for realism." /></p>
+      <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold flex items-center gap-1">Player Impact <InfoTooltip text="Player predictions from Expected Playing XI. Performance = base stats (60% venue + 40% season) adjusted by Buzz Sentiment (-100 to +100) and Luck (+-15%). Buzz from web-scraped news, injuries, and social media." /></p>
       <div className="space-y-1">
-        {players.map((p, i) => (
-          <div key={i} className="flex items-center justify-between py-1 border-b border-[#262626] last:border-0">
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-white font-medium">{p.name}</span>
-              <span className="text-[9px] text-[#737373] font-mono">{p.role?.slice(0, 3).toUpperCase()}</span>
+        {players.map((p, i) => {
+          const bs = p.buzz_score ?? 0;
+          const isPos = bs >= 0;
+          return (
+            <div key={i} className="flex items-center justify-between py-1 border-b border-[#262626] last:border-0" title={p.buzz_reason || ""}>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-white font-medium">{p.name}</span>
+                <span className="text-[9px] text-[#737373] font-mono">{p.role?.slice(0, 3).toUpperCase()}</span>
+              </div>
+              <div className="flex items-center gap-2 text-[10px] font-mono tabular-nums">
+                <span className="text-[#007AFF]">{p.predicted_runs}r</span>
+                <span className="text-[#FF3B30]">{p.predicted_wickets}w</span>
+                <span className="px-1 py-0 rounded text-[9px] font-bold" style={{ color: buzzColor(bs), backgroundColor: buzzColor(bs) + "18" }}>
+                  {isPos ? "+" : ""}{bs}
+                </span>
+              </div>
             </div>
-            <div className="flex items-center gap-3 text-[10px] font-mono tabular-nums">
-              <span className="text-[#007AFF]">{p.predicted_runs}r</span>
-              <span className="text-[#FF3B30]">{p.predicted_wickets}w</span>
-              <span className={`${p.confidence >= 70 ? "text-[#34C759]" : p.confidence >= 50 ? "text-[#FFCC00]" : "text-[#737373]"}`}>{p.confidence}%</span>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
