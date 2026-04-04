@@ -1,0 +1,99 @@
+{
+  "summary": "Completed testing of Iteration 17 features: (1) Playing XI background fetch with polling pattern - POST returns immediately with status=started, GET /status returns running/done/error. (2) Form factor damping - small sample (1W-0L) has ~20% of the logit contribution compared to large sample (5W-0L). (3) RR vs GT (ipl2026_009) now correctly shows GT winning at 68.8% (was incorrectly showing RR winning before fix). (4) Consultation returns realistic simulation probs and edge_reasons. (5) Player impact includes buzz_score and buzz_reason fields. All 10 backend tests passed. All frontend features verified.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Pre-match page", "issues": ["Minor React warning: textTransform prop on DOM element - cosmetic only, does not affect functionality"]}
+    ]
+  },
+  "passed_tests": [
+    "Backend: POST /api/matches/ipl2026_008/playing-xi returns immediately (<5s) with status=started",
+    "Backend: GET /api/matches/ipl2026_008/playing-xi/status returns status field (idle/running/done/error)",
+    "Backend: Form factor damping - small sample (1W-0L) logit is <50% of large sample (5W-0L) logit",
+    "Backend: RR vs GT (ipl2026_009) prediction shows GT winning at ~68.8% (not RR)",
+    "Backend: POST /api/matches/ipl2026_008/consult returns realistic simulation probs (not 100/0)",
+    "Backend: Consultation returns edge_reasons array when market odds provided",
+    "Backend: Player impact includes buzz_score (-100 to +100) and buzz_reason fields",
+    "Backend: API root endpoint returns health info",
+    "Backend: Schedule endpoint returns matches",
+    "Backend: Predictions/upcoming endpoint returns predictions",
+    "Frontend: Home page loads with match cards showing updated predictions",
+    "Frontend: RR vs GT card shows GT winning (RR 29% vs GT 71%)",
+    "Frontend: Pre-match page shows Factor Breakdown with two-sided green/red bars",
+    "Frontend: Factor Breakdown shows H2H, Venue, Form, Squad, Home factors",
+    "Frontend: Playing XI section shows 22 buzz score badges (11 per team)",
+    "Frontend: Playing XI shows expected runs and expected wickets for each player",
+    "Frontend: Consultant Dashboard has risk tolerance toggle and market odds inputs",
+    "Frontend: Run Consultation button triggers 50K simulations",
+    "Frontend: Simulation Summary shows predicted scores (MI 154 vs DC 182)",
+    "Frontend: Verdict section displays winner with confidence badge",
+    "Frontend: Edge reasons section shows WHY THIS SIGNAL explanation",
+    "Frontend: Player Impact shows players with buzz_score values",
+    "Frontend: Match State hidden for upcoming matches (correct behavior)",
+    "Frontend: User Guide opens from floating ? button in bottom-left",
+    "Frontend: User Guide modal has 10 sections including Playing XI & Players"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_iteration17_features.py",
+    "/app/test_reports/pytest/iteration17_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Form damping formula correctly implemented: damping = min(1.0, min_games/5.0), then form_adj = 0.5 + (form_pct - 0.5) * damping",
+    "Playing XI background fetch pattern correctly implemented with asyncio.create_task() and in-memory task tracking",
+    "apply_buzz_and_luck helper correctly maps buzz_score (-100 to +100) to ±20% modifier"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration17_features.py"
+  ],
+  "success_rate": {
+    "backend": "100% (10/10 tests passed)",
+    "frontend": "100% (all UI components working correctly)"
+  },
+  "test_credentials": "No authentication required - open access app",
+  "seed_data_creation": "None - used existing matches ipl2026_008 (MI vs DC) and ipl2026_009 (RR vs GT)",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration 17 features fully working. Key changes: (1) Playing XI fetch now uses background task + polling pattern - POST /playing-xi returns immediately with status=started, then poll GET /playing-xi/status until status=done. (2) Form factor damping implemented - with small sample sizes (1-2 games), form logit is regressed toward 50% to prevent overweighting. Formula: damping = min(1.0, min_games/5.0). (3) RR vs GT prediction fixed - GT now correctly shows as winning (~68-71%) due to better H2H, venue, and squad factors. (4) Buzz score is -100 to +100 sentiment scale with buzz_reason explanation.",
+  "feature_verification": {
+    "playing_xi_background_fetch": {
+      "status": "WORKING",
+      "post_response": "Returns immediately with status=started",
+      "get_status_response": "Returns running/done/error with data when done",
+      "timeout": "Frontend polls for up to 120s (40 attempts x 3s)"
+    },
+    "form_factor_damping": {
+      "status": "WORKING",
+      "formula": "damping = min(1.0, min_games/5.0)",
+      "effect": "1 game = 20% weight, 5+ games = 100% weight",
+      "regression": "form_adj = 0.5 + (form_pct - 0.5) * damping"
+    },
+    "rr_vs_gt_prediction": {
+      "status": "FIXED",
+      "before": "RR was incorrectly winning due to 1W-0L (100%) vs 0W-1L (0%) form",
+      "after": "GT now winning at 68.8% due to better H2H (6-2), venue (home), squad factors",
+      "damping_effect": "Form factor now properly damped for small sample sizes"
+    },
+    "consultation_simulation": {
+      "status": "WORKING",
+      "probabilities": "Realistic (not 100/0)",
+      "predicted_scores": "MI 154 vs DC 182",
+      "edge_reasons": "Returns array of explanations when market odds provided"
+    },
+    "player_impact_buzz": {
+      "status": "WORKING",
+      "fields": ["buzz_score", "buzz_reason", "predicted_runs", "predicted_wickets"],
+      "buzz_range": "-100 to +100"
+    },
+    "user_guide": {
+      "status": "WORKING",
+      "sections": 10,
+      "includes": ["Getting Started", "Match Selector", "Algorithm Prediction", "Consultation Engine", "Understanding the Verdict", "50K Simulations", "Betting Scenarios", "Playing XI & Players", "Consultant Chat", "Live Matches"]
+    }
+  }
+}

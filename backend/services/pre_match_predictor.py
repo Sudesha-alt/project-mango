@@ -65,7 +65,16 @@ def compute_prediction(stats: Dict, playing_xi: Dict = None) -> Dict:
     # ── Factor 3: Form (Individual + Team) ──
     t1_form_pct = form.get("team1_last5_win_pct", 50) / 100
     t2_form_pct = form.get("team2_last5_win_pct", 50) / 100
-    team_form_logit = 2.0 * (t1_form_pct - t2_form_pct)
+    # Sample-size damping: with fewer games, regress toward 50%
+    t1_games = form.get("team1_last5_wins", 0) + form.get("team1_last5_losses", 0)
+    t2_games = form.get("team2_last5_wins", 0) + form.get("team2_last5_losses", 0)
+    min_games = min(t1_games, t2_games)
+    # Damping factor: 0 games→0.0, 1→0.25, 2→0.45, 3→0.60, 4→0.75, 5+→1.0
+    damping = min(1.0, min_games / 5.0) if min_games > 0 else 0.0
+    # Regress to 50% based on sample size
+    t1_form_adj = 0.5 + (t1_form_pct - 0.5) * damping
+    t2_form_adj = 0.5 + (t2_form_pct - 0.5) * damping
+    team_form_logit = 2.0 * (t1_form_adj - t2_form_adj)
 
     # Player-level individual form: use buzz confidence as a proxy for form
     player_form_logit = 0.0
@@ -207,8 +216,15 @@ def _calc_player_venue_score(players: list) -> float:
 
 
 def _calc_avg_buzz(players: list) -> float:
-    """Calculate average buzz confidence for a team's Playing XI."""
+    """Calculate average buzz for a team's Playing XI. Supports both buzz_score (-100 to +100) and legacy buzz_confidence (0-100)."""
     if not players:
         return 50
-    buzzes = [p.get("buzz_confidence", 50) for p in players]
+    buzzes = []
+    for p in players:
+        bs = p.get("buzz_score")
+        if bs is not None:
+            # New format: -100 to +100 → map to 0-100 for backward compat
+            buzzes.append((bs + 100) / 2)
+        else:
+            buzzes.append(p.get("buzz_confidence", 50))
     return sum(buzzes) / len(buzzes)

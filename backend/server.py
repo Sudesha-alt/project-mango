@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, APIRouter, WebSocket, WebSocketDisconnect, BackgroundTasks
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -824,9 +824,49 @@ async def api_cricdata_venue(venue_name: str):
 
 # ─── PLAYING XI (GPT Web Search) ────────────────────────────
 
+# In-memory store for playing XI background tasks
+playing_xi_tasks: Dict[str, Dict] = {}
+
+async def _bg_fetch_playing_xi(match_id: str, team1: str, team2: str, venue: str):
+    """Background task to fetch Playing XI data."""
+    playing_xi_tasks[match_id] = {"status": "running", "progress": "Searching news for expected lineups..."}
+    try:
+        xi_data = await fetch_playing_xi(team1, team2, venue)
+        if not xi_data.get("team1_xi") and not xi_data.get("team2_xi"):
+            playing_xi_tasks[match_id] = {"status": "error", "error": "Could not parse Playing XI data. Try again."}
+            return
+        
+        xi_data = apply_buzz_and_luck(xi_data)
+        xi_data["matchId"] = match_id
+        xi_data["venue"] = venue
+        xi_data["fetched_at"] = datetime.now(timezone.utc).isoformat()
+        
+        # Cache in DB
+        await db.playing_xi.update_one(
+            {"matchId": match_id},
+            {"$set": {k: v for k, v in xi_data.items()}},
+            upsert=True,
+        )
+        
+        # Also update in cached prediction if exists
+        await db.pre_match_predictions.update_one(
+            {"matchId": match_id},
+            {"$set": {
+                "playing_xi.team1_xi": xi_data.get("team1_xi", []),
+                "playing_xi.team2_xi": xi_data.get("team2_xi", []),
+                "playing_xi.confidence": xi_data.get("confidence", "predicted"),
+            }}
+        )
+        
+        playing_xi_tasks[match_id] = {"status": "done", "data": xi_data}
+        logger.info(f"Playing XI fetched for {match_id}: {len(xi_data.get('team1_xi', []))}+{len(xi_data.get('team2_xi', []))} players")
+    except Exception as e:
+        logger.error(f"Playing XI bg fetch error for {match_id}: {e}")
+        playing_xi_tasks[match_id] = {"status": "error", "error": str(e)}
+
 @api_router.post("/matches/{match_id}/playing-xi")
-async def api_fetch_playing_xi(match_id: str):
-    """Fetch expected/confirmed Playing XI via GPT-5.4 web search with luck biasness."""
+async def api_fetch_playing_xi(match_id: str, background_tasks: BackgroundTasks = None):
+    """Start Playing XI fetch in background. Returns immediately. Poll /playing-xi/status for results."""
     match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
     if not match_info:
         return {"error": "Match not found"}
@@ -835,23 +875,36 @@ async def api_fetch_playing_xi(match_id: str):
     team2 = match_info.get("team2", "")
     venue = match_info.get("venue", "")
 
-    xi_data = await fetch_playing_xi(team1, team2, venue)
+    # Check if already running
+    task = playing_xi_tasks.get(match_id, {})
+    if task.get("status") == "running":
+        return {"status": "running", "message": "Playing XI fetch already in progress. Poll /playing-xi/status."}
 
-    # Apply buzz sentiment + luck biasness to expected performance
-    xi_data = apply_buzz_and_luck(xi_data)
+    # Start background task
+    asyncio.create_task(_bg_fetch_playing_xi(match_id, team1, team2, venue))
+    playing_xi_tasks[match_id] = {"status": "running", "progress": "Starting web search..."}
+    
+    return {"status": "started", "message": "Playing XI fetch started. Poll /playing-xi/status for results."}
 
-    xi_data["matchId"] = match_id
-    xi_data["venue"] = venue
-    xi_data["fetched_at"] = datetime.now(timezone.utc).isoformat()
-
-    # Cache in DB
-    await db.playing_xi.update_one(
-        {"matchId": match_id},
-        {"$set": {k: v for k, v in xi_data.items()}},
-        upsert=True,
-    )
-
-    return xi_data
+@api_router.get("/matches/{match_id}/playing-xi/status")
+async def api_playing_xi_status(match_id: str):
+    """Poll status of Playing XI background fetch."""
+    task = playing_xi_tasks.get(match_id, {})
+    status = task.get("status", "idle")
+    
+    if status == "done":
+        data = task.get("data", {})
+        # Clear after retrieval
+        playing_xi_tasks.pop(match_id, None)
+        return data
+    elif status == "error":
+        error = task.get("error", "Unknown error")
+        playing_xi_tasks.pop(match_id, None)
+        return {"error": error, "team1_xi": [], "team2_xi": []}
+    elif status == "running":
+        return {"status": "running", "progress": task.get("progress", "Fetching...")}
+    else:
+        return {"status": "idle"}
 
 
 

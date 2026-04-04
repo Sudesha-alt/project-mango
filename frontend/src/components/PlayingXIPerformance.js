@@ -27,16 +27,61 @@ export default function PlayingXIPerformance({ matchId, team1, team2 }) {
     setLoading(true);
     setError(null);
     try {
-      const res = await axios.post(`${API}/matches/${matchId}/playing-xi`);
-      if (res.data?.team1_xi?.length > 0) {
-        setData(res.data);
-      } else {
-        setError("No Playing XI data available yet.");
+      // Start background fetch
+      const startRes = await axios.post(`${API}/matches/${matchId}/playing-xi`);
+      if (startRes.data?.error) {
+        setError(startRes.data.error);
+        setLoading(false);
+        return;
       }
+      
+      // Poll for results
+      let attempts = 0;
+      const maxAttempts = 40; // 40 * 3s = 120s max
+      const poll = async () => {
+        attempts++;
+        try {
+          const statusRes = await axios.get(`${API}/matches/${matchId}/playing-xi/status`);
+          const d = statusRes.data;
+          
+          if (d.status === "running") {
+            if (attempts < maxAttempts) {
+              setTimeout(poll, 3000);
+            } else {
+              setError("Playing XI fetch timed out after 2 minutes. Try again.");
+              setLoading(false);
+            }
+            return;
+          }
+          
+          if (d.error) {
+            setError(d.error);
+            setLoading(false);
+            return;
+          }
+          
+          if (d.team1_xi?.length > 0) {
+            setData(d);
+          } else {
+            setError("No Playing XI data returned. Try again.");
+          }
+          setLoading(false);
+        } catch {
+          if (attempts < maxAttempts) {
+            setTimeout(poll, 3000);
+          } else {
+            setError("Lost connection during fetch. Check if data loaded.");
+            setLoading(false);
+          }
+        }
+      };
+      
+      // Start polling after 3s initial delay
+      setTimeout(poll, 3000);
     } catch (e) {
-      setError("Failed to fetch Playing XI. Try again.");
+      setError("Failed to start Playing XI fetch. Try again.");
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const roleColor = (role) => {
