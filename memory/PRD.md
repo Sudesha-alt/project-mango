@@ -1,77 +1,82 @@
-# Gamble Consultant v5.0 - IPL 2026 Odds Consultant
+# Gamble Consultant — Product Requirements Document
 
-## Problem Statement
-Production-grade IPL 2026 gambling consultant with calibrated win probability, fair odds, market edge, value-bet signals, player impact, confidence bands, GPT-powered advice, and pre-match predictions.
+## Overview
+AI-powered IPL 2026 betting consultant that combines 50K Negative Binomial match simulations, 5-factor prediction algorithms, GPT-5.4 web search, and CricketData.org live data to deliver clear betting verdicts with edge analysis.
 
 ## Architecture
-- Frontend: React + Tailwind + Recharts + Shadcn (Dark Mode)
-- Backend: FastAPI + MongoDB + WebSocket
-- Data: GPT-5.4 Web Search + CricketData.org API (100/day limit)
+- **Frontend**: React (Vite), Shadcn/UI, Phosphor Icons, Recharts
+- **Backend**: FastAPI, MongoDB, Scipy (NB/Poisson), OpenAI GPT-5.4
+- **Data**: CricketData.org API (100/day), GPT web scraping for Playing XI and venue data
 
-## Bold Winner Verdict (v5.0 - NEW)
-- Clear "CSK WINS" header in large bold text at top of results
-- Strength levels: DOMINANT (80%+), STRONG (65%+), SLIGHT (55%+), TOSS-UP
-- Plain English explanation of why the model picked this team
-- Signal badge (STRONG VALUE, VALUE, NEUTRAL, AVOID)
+## Core Features (All Implemented)
 
-## Visual Odds Comparison (v5.0 - NEW)
-- Side-by-side bars: Model probability vs Market probability for BOTH teams
-- Dashed line showing bookmaker position
-- Edge %, Fair Odds, and Overround displayed prominently
+### Match Management
+- 70-match IPL 2026 schedule (AI-parsed from GPT web search)
+- Upcoming/Live/Completed tabs with prediction cards
+- Venue resolution for all 70 matches (no TBD)
+- Playing XI scraping with venue-specific player stats + social buzz confidence
 
-## Betting Scenarios (v5.0 - NEW)
-- AI-generated betting windows: PRE_MATCH, IN_PLAY_POWERPLAY, PLAYER_OUTBURST, CHASE_DYNAMIC
-- Each scenario: title, description, confidence (HIGH/MEDIUM), timing
-- Example: "Watch Virat Kohli for big innings — Predicted 37.9r at SR 142"
+### 5-Factor Prediction Algorithm
+- Head-to-Head 5yr (25%), Venue Performance (20%), Recent Form (25%), Squad Strength (20%), Home Advantage (10%)
+- Logit-based model → sigmoid calibration for final probability
+- Player-level data integration (venue-specific batting/bowling stats)
+- Odds direction tracking (increasing/decreasing arrows)
 
-## 50K Simulations (v5.0 - UPGRADED)
-- Upgraded from 10K → 50K Negative Binomial match simulations
-- More accurate probability distributions and chase dynamics
+### 50K Negative Binomial Simulation Engine
+- 50,000 match simulations per consultation using Negative Binomial distribution
+- Predicted scores (mean, median, P10-P90 ranges) for both teams
+- Batting-first win percentage
+- Chase pressure adjustment for 2nd innings
+- Realistic score distributions (right-skewed like actual cricket)
 
-## Prediction Calculation (v4.4)
-- H2H (25%): 2021-2026 match-by-match detail
-- Venue (20%): Player-level venue stats (60%) + team level (40%)
-- Form (25%): Individual buzz confidence (50%) + team form (50%)
-- Squad (20%): Batting + bowling quality ratings
-- Home (10%): Home ground boost
+### Consultation & Verdict System
+- Market odds input (0-100 scale) with decimal odds conversion guide
+- Risk tolerance levels: Play Safe / Balanced / Risk Taker
+- Market momentum (odds rising/falling) manual toggle
+- Bold verdict: DOMINANT/STRONG/SLIGHT/TOSS-UP
+- Value signals: STRONG_VALUE / VALUE / SMALL_EDGE / NO_BET / AVOID
+- Edge explanation pointers ("WHY THIS SIGNAL?" with 3 reasoning bullets)
+- AI-generated betting scenarios (PRE_MATCH, IN_PLAY, PLAYER_OUTBURST, etc.)
 
-## Market Momentum (v4.4)
-- Toggle: which team's odds rising (0→100) vs falling (100→0)
-- 3% probability adjustment applied
+### Two-Sided Factor Breakdown (v5.1)
+- Each factor displayed as Team 1 (left) vs Team 2 (right) bar
+- Green bars = advantage, Red bars = disadvantage
+- Rounded stats (no long decimals)
+- Team-specific detail text under each factor
 
-## Playing XI (v4.3)
-- News-aware: excludes injured/unavailable players
-- Venue-specific stats + buzz confidence (0-100) + luck biasness
+### User Guide (In-App)
+- Floating ? button (bottom-left) opens full guide modal
+- 10 sections: Getting Started, Match Selector, Algorithm Prediction, Consultation Engine, Understanding the Verdict, 50K Simulations, Betting Scenarios, Playing XI & Players, Consultant Chat, Live Matches
+- Expandable sections and Q&A items
+- Covers decimal odds conversion, signal explanations, P10-P90 interpretation
 
-## CricAPI Live Panel
-- Shows only on Live tab (not Upcoming)
+### Live Match Features
+- CricketData.org real-time fetching (100/day API limit)
+- Match State display (CRR, RRR, Pressure Index, Batting Depth, Collapse Risk)
+- Match State hidden for upcoming matches (overs=0, score=0)
+- GPT-powered live analysis
 
-## Refresh/Re-Predict
-- Button in Algorithm Prediction header
-- Force re-predict with fresh data + Playing XI
+### Background Operations
+- Batch re-prediction for all upcoming matches
+- Progress tracking with polling
+- News-based player availability filtering
+- Luck biasness (±15%) for match-day variance
 
-## API Endpoints
-- GET /api/ — Health
-- GET /api/schedule — IPL 2026 schedule
-- POST /api/schedule/resolve-venues — Fix TBD venues
-- POST /api/matches/{id}/pre-match-predict?force=true — Predict match
-- POST /api/schedule/predict-upcoming — Batch predict
-- GET /api/predictions/upcoming — Cached predictions
-- POST /api/predictions/repredict-all — Background re-predict
-- GET /api/predictions/repredict-status — Progress
-- POST /api/matches/{id}/consult — Decision engine (verdict + scenarios + odds visual)
-- POST /api/matches/{id}/chat — GPT Q&A
-- POST /api/matches/{id}/playing-xi — Playing XI
-- GET /api/cricket-api/venue/{name} — Venue data
-- POST /api/cricket-api/fetch-live — CricAPI live
+## Key Bug Fixes (v5.1)
+- **50K Simulation Fix**: scipy `nbinom.rvs` was called with `1-p_param` instead of `p_param`, causing mean scores of ~1030 instead of ~165, clamped to 300, making every simulation 100%/0%. Fixed to use correct parameter.
+- **Edge Recommendation Text**: Improved signal reasoning with explicit pointers explaining WHY the signal was given
+- **Player Impact Restriction**: Now pulls only from cached Expected Playing XI, not random squad
 
-## Test Results
-- iteration_13.json: 100% (25/25 backend, all frontend)
+## Completed Milestones
+- v1.0: Basic match fetching and GPT prediction
+- v2.0: 5-factor algorithm, H2H, venue stats
+- v3.0: Playing XI scraping, squad management, venue resolution
+- v4.0: 10K→50K simulations, market momentum, batch re-prediction
+- v5.0: Bold verdict UI, visual odds, consultant dashboard rewrite
+- v5.1: Simulation bug fix, two-sided factor breakdown, edge reasons, user guide
 
-## Upcoming (P1)
-- Background workers for auto-fetching
-- WebSocket real-time push
-
-## Future (P2)
-- Shareable prediction card
-- Prediction accuracy leaderboard
+## Backlog
+- P2: Split ConsultantDashboard.js into sub-components (OddsComparison, SimulationSummary, DriversPanel)
+- P2: Background workers (Celery) for continuous auto-scraping
+- P2: Shareable prediction card functionality
+- P3: Prediction accuracy leaderboard
