@@ -1,81 +1,91 @@
 # Baatu - 11 — Product Requirements Document
 
 ## Overview
-AI-powered IPL 2026 betting consultant combining 50K Negative Binomial simulations, 11-factor prediction algorithms, GPT-5.4 web search, and CricketData.org live data.
+AI-powered IPL 2026 betting consultant combining 50K Negative Binomial simulations, 11-factor prediction algorithms, Claude Opus deep narrative analysis, web scraping, and CricketData.org live data.
 
 ## Architecture
 - **Frontend**: React (Vite), Shadcn/UI, Phosphor Icons
-- **Backend**: FastAPI, MongoDB, Scipy (NB/Poisson), OpenAI GPT-5.4, APScheduler
-- **Data**: CricketData.org API (100/day), GPT web scraping
+- **Backend**: FastAPI, MongoDB, Scipy (NB/Poisson), Claude Opus 4.5 (Anthropic), APScheduler
+- **Data Sources**: DuckDuckGo web scraping (real-time), CricketData.org API (100/day)
+- **AI Engine**: Claude Opus 4.5 via emergentintegrations LlmChat
 
 ## Core Features (All Implemented)
 
-### 11-Factor Prediction Model (v5.4)
-| # | Factor | Weight | Source |
-|---|--------|--------|--------|
-| 1 | Head-to-Head (5yr) | 12% | GPT web search: IPL 2021-2026 results |
-| 2 | Venue Performance | 10% | GPT: team avg scores + win % at ground |
-| 3 | Recent Form | 12% | GPT: last 5 IPL 2026 matches, sample-size damped |
-| 4 | Squad Strength | 10% | GPT: batting depth + bowling attack ratings |
-| 5 | Home Advantage | 6% | Ground ownership (+0.3 logit) |
-| 6 | Toss Impact | 8% | GPT: bat-first win %, toss-winner match-win % |
-| 7 | Pitch & Conditions | 10% | GPT: pitch type, pace/spin assist, dew factor |
-| 8 | Key Matchups | 10% | GPT: batter vs bowler T20 records |
-| 9 | Death Overs (16-20) | 8% | GPT: avg runs scored/conceded in death |
-| 10 | Powerplay (1-6) | 8% | GPT: avg PP score, wickets lost |
-| 11 | Momentum | 6% | GPT: win/loss streaks, last 10 matches |
+### Two-Section Pre-Match Prediction
+
+#### Section 1: Algorithm-Based (11-Factor Model)
+| # | Factor | Weight |
+|---|--------|--------|
+| 1 | Head-to-Head (5yr) | 12% |
+| 2 | Venue Performance | 10% |
+| 3 | Recent Form | 12% |
+| 4 | Squad Strength | 10% |
+| 5 | Home Advantage | 6% |
+| 6 | Toss Impact | 8% |
+| 7 | Pitch & Conditions | 10% |
+| 8 | Key Matchups | 10% |
+| 9 | Death Overs (16-20) | 8% |
+| 10 | Powerplay (1-6) | 8% |
+| 11 | Momentum | 6% |
+
+#### Section 2: Claude Opus Deep Narrative Analysis (NEW v5.0)
+- Web scrapes real-time data (H2H, form, injuries, conditions, player stats) via DuckDuckGo
+- Claude Opus generates rich pundit-style narrative with:
+  - Win probability (e.g., MI 47% vs DC 53%)
+  - Key headline factor
+  - 6-10 analysis factors with team tags (favors T1/T2/NEUTRAL)
+  - Injury & availability updates
+  - Toss scenarios (bat-first / bowl-first probabilities)
+  - Deciding logic paragraph
+  - Bold prediction summary with confidence level
+- Cached in DB for instant retrieval, refresh button for re-scrape
+
+### Claude Opus Live Match Analysis (NEW v5.0)
+- Real-time analysis during live matches
+- Combines scraped live data + algorithm outputs
+- Shows: state summary, momentum, batsman/bowler assessments (threat levels), phase analysis, projected outcome, betting advice, win probability, confidence
 
 ### Match Scheduler (v4.1)
-- APScheduler runs at **4:00 PM IST** and **7:00 PM IST** daily
-- Promotes today's upcoming matches to "live" status on the Live tab
+- APScheduler at 4PM & 7PM IST daily promotes today's matches to "live" status
 - Manual trigger: `POST /api/scheduler/promote-now`
-- Syncs live snapshot scores to schedule on startup + promote
+- Syncs live snapshot scores to schedule on startup
 
 ### Manual Live Fetch (v4.1)
-- Live scores fetched **on-demand only** (manual "Fetch Live Scores" button)
+- On-demand "Fetch Live Scores" button (saves API hits)
 - After fetch: runs 4 probability algorithms + live prediction
-- **Score saved to schedule** so match cards show live score (e.g., "MI 41/2 (6 ov)")
+- Score saved to schedule for match card display
 
-### Enriched Chat Context (v4.1)
-- Chat passes full live context to GPT: batsmen, bowler, probabilities, projected score, chase analysis, phase
-- GPT answers referencing specific player performances and algorithm outputs
+### Enriched Chat Context (v4.1 → v5.0)
+- Now powered by Claude Opus (was GPT-5.4)
+- Full live context: batsmen, bowler, probabilities, projected score, chase analysis, phase
+- Claude answers referencing specific player performances and algorithm outputs
 
-### ConsultantDashboard (v4.2 — Fixed Layout)
-- Single-column stacked layout (no more 3-column grid overflow)
-- Sections: Verdict → Win Gauge + Edge → Simulations → Drivers → Betting Scenarios → Player Impact → Chat
-- Removed OddsComparison visual (redundant with Edge meter)
+### ConsultantDashboard (v4.2)
+- Single-column stacked layout (fixed overflow)
+- Verdict → Win Gauge + Edge → Simulations → Drivers → Scenarios → Chat
 
-### Playing XI + Performance System
-- GPT-5.4 web search for expected lineups
-- Buzz Score (-100 to +100) with reasons
-- Performance Formula: `expected = base_stats * (1 + buzz_modifier) * luck_factor`
-- Background fetch with polling (no proxy timeout)
+### Playing XI + Buzz Scores
+- Web search for expected lineups, buzz sentiment (-100 to +100)
+- Background fetch with polling
 
 ### 50K Negative Binomial Simulation Engine
-- Predicted scores (mean, median, P10-P90) for both teams
-- Batting-first win %, chase pressure adjustment
+- Predicted scores, batting-first win %, chase pressure
 
-### Live Match Prediction (v5.4)
-- Real-time prediction: batsmen on field, bowler analysis, projected score, chase analysis, phase
+## Tech Stack Change Log
+- v5.0: GPT-5.4 → Claude Opus 4.5 (all AI calls)
+- v5.0: Added DuckDuckGo web scraping (web_scraper.py)
+- v5.0: New components: ClaudeAnalysis.js, ClaudeLiveAnalysis.js
+- v4.1: Added APScheduler, manual live fetch, enriched chat
+- v4.2: Fixed ConsultantDashboard layout overflow
 
-### User Guide (In-App)
-- 10-section FAQ modal covering all features
-
-## Key Bug Fixes
-- v5.1: scipy nbinom parameterization
-- v5.3: Form factor damping, Playing XI background fetch
-- v5.4: 11-factor consultation, skip double Platt calibration
-- v4.2: ConsultantDashboard layout overflow fix, match card score update
-
-## Completed Milestones
-- v1.0-v4.0: Core platform, algorithm, simulations
-- v5.0: Bold verdict UI rewrite
-- v5.1: Simulation fix, two-sided factor breakdown, edge reasons, user guide
-- v5.2: Buzz sentiment, performance formula
-- v5.3: Form damping, background Playing XI fetch
-- v5.4: 11-factor model, renamed Baatu-11, live match prediction
-- v4.1: Scheduler (4PM/7PM IST), manual-only live fetch, enriched chat context
-- v4.2: ConsultantDashboard layout fix, match card live score display, removed OddsComparison
+## Key API Endpoints
+- `GET /api/` - Health check (shows Claude Opus + Web Scraping)
+- `POST /api/matches/{id}/claude-analysis` - Deep narrative prediction (cached)
+- `DELETE /api/matches/{id}/claude-analysis` - Clear cached analysis
+- `POST /api/matches/{id}/claude-live` - Real-time live analysis
+- `POST /api/matches/{id}/chat` - Consultation chat (Claude Opus)
+- `POST /api/matches/{id}/fetch-live` - Manual live score fetch
+- `POST /api/scheduler/promote-now` - Manual match promotion
 
 ## Backlog
 - P2: Split ConsultantDashboard.js into sub-components
