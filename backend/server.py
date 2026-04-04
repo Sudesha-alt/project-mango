@@ -264,6 +264,110 @@ class ChatRequest(BaseModel):
 
 # ─── LIVE MATCH (on-demand via button) ───────────────────────
 
+def compute_weighted_prediction(sm_data: dict, claude_prediction: dict, match_info: dict) -> dict:
+    """
+    Weighted Probability Prediction using the formula:
+    P(win) = (balls_rem/120) × H + (1 - balls_rem/120) × L
+    
+    H = Historical (from Claude): 0.40×H2H + 0.25×venue + 0.20×form + 0.15×toss
+    L = Live: 0.40×run_rate_ratio + 0.35×wickets_in_hand + 0.25×phase_momentum
+    """
+    if not sm_data or not claude_prediction:
+        return None
+
+    current_score = sm_data.get("current_score", {})
+    runs = current_score.get("runs", 0)
+    wickets = current_score.get("wickets", 0)
+    overs = current_score.get("overs", 0)
+    innings = sm_data.get("current_innings", 1)
+    crr = sm_data.get("crr", 0) or 0
+    rrr = sm_data.get("rrr") or 0
+    recent_balls = sm_data.get("recent_balls", [])
+
+    # Step 1: Dynamic Weight α
+    balls_bowled = int(overs) * 6 + round((overs % 1) * 10)
+    if innings == 2:
+        balls_bowled += 120  # 1st innings already done
+    total_match_balls = 240  # Both innings
+    balls_remaining = max(0, total_match_balls - balls_bowled)
+    alpha = balls_remaining / total_match_balls
+
+    # Step 2: Historical Win Probability (H) from Claude
+    hf = claude_prediction.get("historical_factors", {})
+    h2h = float(hf.get("h2h_win_pct", 0.5))
+    venue_pct = float(hf.get("venue_win_pct", 0.5))
+    form_pct = float(hf.get("recent_form_pct", 0.5))
+    toss_pct = float(hf.get("toss_advantage_pct", 0.5))
+    H = 0.40 * h2h + 0.25 * venue_pct + 0.20 * form_pct + 0.15 * toss_pct
+
+    # Step 3: Live Win Probability (L)
+    if innings == 2 and rrr and rrr > 0:
+        run_rate_ratio = min(1.0, crr / rrr)
+    else:
+        # 1st innings: compare to par score
+        par_at_over = 8.0 * overs if overs > 0 else 1  # ~8 rpo par
+        run_rate_ratio = min(1.0, runs / max(1, par_at_over))
+
+    wickets_in_hand_ratio = max(0, (10 - wickets)) / 10
+
+    # Phase momentum: runs in last 6 balls vs par (8 runs per over)
+    last_6 = recent_balls[-6:] if recent_balls else []
+    recent_runs = 0
+    for b in last_6:
+        if isinstance(b, (int, float)):
+            recent_runs += b
+        elif isinstance(b, str) and b.isdigit():
+            recent_runs += int(b)
+    par_runs_6_balls = 8  # ~8 runs per over is par in T20
+    phase_momentum = min(1.0, recent_runs / max(1, par_runs_6_balls))
+
+    L = 0.40 * run_rate_ratio + 0.35 * wickets_in_hand_ratio + 0.25 * phase_momentum
+
+    # Step 4: Final Score
+    final_score = (alpha * H + (1 - alpha) * L) * 100
+    final_score = round(max(0, min(100, final_score)), 1)
+
+    team1 = match_info.get("team1", "Team A")
+    batting_team = sm_data.get("batting_team", team1)
+
+    # Determine which team the score favors
+    if innings == 2:
+        # In 2nd innings, high score = batting team (chasing) is winning
+        chasing_team_pct = final_score
+        bowling_team_pct = round(100 - final_score, 1)
+        if batting_team.lower() in team1.lower():
+            team1_pct = chasing_team_pct
+            team2_pct = bowling_team_pct
+        else:
+            team2_pct = chasing_team_pct
+            team1_pct = bowling_team_pct
+    else:
+        # In 1st innings, high score = batting team setting a good total
+        team1_pct = final_score
+        team2_pct = round(100 - final_score, 1)
+
+    return {
+        "team1_pct": team1_pct,
+        "team2_pct": team2_pct,
+        "alpha": round(alpha, 3),
+        "H": round(H, 4),
+        "L": round(L, 4),
+        "final_score": final_score,
+        "breakdown": {
+            "h2h_win_pct": round(h2h, 3),
+            "venue_win_pct": round(venue_pct, 3),
+            "recent_form_pct": round(form_pct, 3),
+            "toss_advantage_pct": round(toss_pct, 3),
+            "run_rate_ratio": round(run_rate_ratio, 3),
+            "wickets_in_hand_ratio": round(wickets_in_hand_ratio, 3),
+            "phase_momentum": round(phase_momentum, 3),
+        },
+        "balls_remaining": balls_remaining,
+        "innings": innings,
+    }
+
+
+
 @api_router.post("/matches/{match_id}/fetch-live")
 async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
     """Button-triggered: Fetch live data via SportMonks API + Claude win prediction."""
@@ -424,6 +528,9 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
         team1_odds = calculate_odds_from_probability(probs["ensemble"])
         team2_odds = calculate_odds_from_probability(1 - probs["ensemble"])
 
+    # ── Weighted Probability Prediction ──
+    weighted_pred = compute_weighted_prediction(sm_data, claude_prediction, match_info) if sm_data and claude_prediction else None
+
     result = {
         "matchId": match_id,
         "team1": team1, "team1Short": t1_short,
@@ -440,6 +547,7 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
             "confidence": body.betting_confidence,
         },
         "claudePrediction": claude_prediction,
+        "weightedPrediction": weighted_pred,
         "momentum": calculate_momentum(ball_objects),
         "ballHistory": ball_objects,
         "batsmen": [
@@ -537,9 +645,16 @@ async def refresh_claude_prediction(match_id: str):
                       "updatedAt": datetime.now(timezone.utc).isoformat()}}
         )
 
+    # Recompute weighted prediction with new Claude factors
+    weighted_pred = compute_weighted_prediction(sm_data, claude_prediction, match_info) if claude_prediction else None
+    if weighted_pred:
+        cached["weightedPrediction"] = weighted_pred
+        live_match_state[match_id] = cached
+
     return {
         "matchId": match_id,
         "claudePrediction": claude_prediction,
+        "weightedPrediction": weighted_pred,
         "probabilities": cached.get("probabilities", {}),
         "refreshedAt": datetime.now(timezone.utc).isoformat(),
     }

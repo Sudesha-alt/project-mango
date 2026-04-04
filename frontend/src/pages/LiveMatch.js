@@ -32,6 +32,7 @@ export default function LiveMatch() {
   const [claudeLive, setClaudeLive] = useState(null);
   const [claudeLiveLoading, setClaudeLiveLoading] = useState(false);
   const [refreshingClaude, setRefreshingClaude] = useState(false);
+  const [showFormula, setShowFormula] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -103,6 +104,7 @@ export default function LiveMatch() {
       setMatchState(prev => ({
         ...prev,
         claudePrediction: res.claudePrediction,
+        weightedPrediction: res.weightedPrediction,
         probabilities: res.probabilities,
       }));
     }
@@ -123,6 +125,7 @@ export default function LiveMatch() {
   const noLiveMatch = matchState?.noLiveMatch;
   const bettingEdge = matchState?.bettingEdge || null;
   const livePred = matchState?.live_prediction;
+  const weightedPred = matchState?.weightedPrediction;
 
   const rightTabs = [
     { key: "consult", label: "Consult" },
@@ -282,84 +285,215 @@ export default function LiveMatch() {
                   </div>
                 )}
 
-                {/* Claude Opus Live Win Prediction */}
-                {claudePred && !claudePred.error && (
-                  <div className="bg-[#141414] border border-purple-500/30 rounded-md p-4 space-y-3" data-testid="claude-live-prediction">
+                {/* ═══ TWO PREDICTION MODELS ═══ */}
+                {(weightedPred || (claudePred && !claudePred.error)) && (
+                  <div className="space-y-4" data-testid="dual-prediction-models">
+                    {/* Refresh bar */}
                     <div className="flex items-center justify-between">
-                      <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-purple-400" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
-                        Claude Opus Live Prediction
-                      </h4>
-                      <button onClick={handleRefreshClaude} disabled={refreshingClaude} data-testid="refresh-claude-btn"
-                        className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-purple-400 hover:text-purple-300 transition-colors disabled:opacity-50">
-                        {refreshingClaude ? <><Spinner className="w-3 h-3 animate-spin" /> Refreshing...</> : <><Lightning weight="fill" className="w-3 h-3" /> Refresh</>}
+                      <h3 className="text-xs uppercase tracking-[0.2em] font-bold text-[#A1A1AA]" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
+                        Live Prediction Models
+                      </h3>
+                      <button onClick={handleRefreshClaude} disabled={refreshingClaude} data-testid="refresh-predictions-btn"
+                        className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider bg-[#1E1E1E] hover:bg-[#2A2A2A] text-white px-3 py-1.5 rounded transition-colors disabled:opacity-50">
+                        {refreshingClaude ? <><Spinner className="w-3 h-3 animate-spin" /> Refreshing...</> : <><Lightning weight="fill" className="w-3 h-3 text-[#007AFF]" /> Refresh Both</>}
                       </button>
                     </div>
-                    <p className="text-base font-bold text-white leading-snug">{claudePred.headline}</p>
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                      <div className="bg-purple-500/10 border border-purple-500/20 rounded px-3 py-2 text-center">
-                        <p className="text-[9px] text-purple-300 uppercase">{t1Short}</p>
-                        <p className="text-xl font-black font-mono text-purple-400" style={{ fontFamily: "'Barlow Condensed'" }}>{claudePred.team1_win_pct ?? (claudePred.predicted_winner === t1Short ? claudePred.win_pct : 100 - (claudePred.win_pct || 50))}%</p>
-                      </div>
-                      <div className="bg-purple-500/10 border border-purple-500/20 rounded px-3 py-2 text-center">
-                        <p className="text-[9px] text-purple-300 uppercase">{t2Short}</p>
-                        <p className="text-xl font-black font-mono text-purple-400" style={{ fontFamily: "'Barlow Condensed'" }}>{claudePred.team2_win_pct ?? (claudePred.predicted_winner === t2Short ? claudePred.win_pct : 100 - (claudePred.win_pct || 50))}%</p>
-                      </div>
-                      <div className="bg-purple-500/10 border border-purple-500/20 rounded px-3 py-2 text-center">
-                        <p className="text-[9px] text-purple-300 uppercase">Momentum</p>
-                        <p className="text-sm font-bold text-purple-400 uppercase">{claudePred.momentum}</p>
-                      </div>
-                      <div className="bg-purple-500/10 border border-purple-500/20 rounded px-3 py-2 text-center">
-                        <p className="text-[9px] text-purple-300 uppercase">Confidence</p>
-                        <p className="text-sm font-bold text-purple-400">{claudePred.confidence}</p>
-                      </div>
-                    </div>
-                    <p className="text-sm text-[#D4D4D4] leading-relaxed">{claudePred.reasoning}</p>
 
-                    {/* Chase Analysis (merged from live_prediction) */}
-                    {livePred?.chase_analysis && (
-                      <div className="bg-[#0A0A0A] border border-[#262626] rounded p-3 space-y-1">
-                        <div className="flex items-center justify-between">
-                          <p className="text-[9px] text-[#737373] uppercase">Chase Analysis</p>
-                          <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${
-                            livePred.chase_analysis.difficulty === "easy" ? "bg-[#34C759]/15 text-[#34C759]" :
-                            livePred.chase_analysis.difficulty === "moderate" ? "bg-[#FFCC00]/15 text-[#FFCC00]" :
-                            "bg-[#FF3B30]/15 text-[#FF3B30]"
-                          }`}>{livePred.chase_analysis.difficulty}</span>
-                        </div>
-                        <div className="grid grid-cols-3 gap-2 text-[10px] font-mono">
-                          <div><span className="text-[#737373]">Need: </span><span className="text-white font-bold">{livePred.chase_analysis.runs_remaining} off {livePred.chase_analysis.balls_remaining}b</span></div>
-                          <div><span className="text-[#737373]">RRR: </span><span className="text-white font-bold">{livePred.chase_analysis.required_rate}</span></div>
-                          <div><span className="text-[#737373]">Wkts: </span><span className="text-white font-bold">{livePred.wickets_in_hand}</span></div>
-                        </div>
-                      </div>
-                    )}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                      {/* ── MODEL 1: Weighted Probability ── */}
+                      {weightedPred && (
+                        <div className="bg-[#141414] border border-[#007AFF]/30 rounded-md p-4 space-y-3" data-testid="weighted-prediction">
+                          <div className="flex items-center justify-between">
+                            <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-[#007AFF]" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
+                              Weighted Probability
+                            </h4>
+                            <button onClick={() => setShowFormula(!showFormula)} data-testid="formula-info-btn"
+                              className="w-5 h-5 rounded-full border border-[#007AFF]/40 text-[#007AFF] text-[10px] font-bold flex items-center justify-center hover:bg-[#007AFF]/10 transition-colors">
+                              i
+                            </button>
+                          </div>
 
-                    {/* Projected Score (1st innings) */}
-                    {livePred?.projected_score && !livePred?.chase_analysis && (
-                      <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2 text-center">
-                        <p className="text-[9px] text-[#737373] uppercase">Projected Score</p>
-                        <p className="text-2xl font-black font-mono text-[#34C759]" style={{ fontFamily: "'Barlow Condensed'" }}>~{livePred.projected_score}</p>
-                      </div>
-                    )}
+                          {/* Win probabilities */}
+                          <div className="grid grid-cols-2 gap-2">
+                            <div className="bg-[#007AFF]/5 border border-[#007AFF]/20 rounded px-3 py-2.5 text-center">
+                              <p className="text-[9px] text-[#007AFF]/70 uppercase">{t1Short}</p>
+                              <p className="text-2xl font-black font-mono text-[#007AFF]" style={{ fontFamily: "'Barlow Condensed'" }}>{weightedPred.team1_pct}%</p>
+                            </div>
+                            <div className="bg-[#007AFF]/5 border border-[#007AFF]/20 rounded px-3 py-2.5 text-center">
+                              <p className="text-[9px] text-[#007AFF]/70 uppercase">{t2Short}</p>
+                              <p className="text-2xl font-black font-mono text-[#007AFF]" style={{ fontFamily: "'Barlow Condensed'" }}>{weightedPred.team2_pct}%</p>
+                            </div>
+                          </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      {claudePred.batting_depth_assessment && (
-                        <div className="bg-[#0A0A0A] border border-white/5 rounded p-2.5">
-                          <p className="text-[9px] text-[#737373] uppercase mb-1">Batting Depth</p>
-                          <p className="text-[11px] text-[#A3A3A3] leading-relaxed">{claudePred.batting_depth_assessment}</p>
+                          {/* Breakdown */}
+                          <div className="space-y-1.5">
+                            <div className="flex items-center justify-between text-[10px]">
+                              <span className="text-[#737373]">Dynamic Weight (α)</span>
+                              <span className="font-mono text-white">{weightedPred.alpha}</span>
+                            </div>
+                            <div className="flex items-center justify-between text-[10px]">
+                              <span className="text-[#737373]">Historical (H)</span>
+                              <span className="font-mono text-[#FFCC00]">{(weightedPred.H * 100).toFixed(1)}%</span>
+                            </div>
+                            <div className="flex items-center justify-between text-[10px]">
+                              <span className="text-[#737373]">Live (L)</span>
+                              <span className="font-mono text-[#34C759]">{(weightedPred.L * 100).toFixed(1)}%</span>
+                            </div>
+                          </div>
+
+                          {/* Historical factors breakdown */}
+                          <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2.5 space-y-1">
+                            <p className="text-[9px] text-[#525252] uppercase mb-1">Historical Factors (H)</p>
+                            {[
+                              { label: "H2H Win %", val: weightedPred.breakdown?.h2h_win_pct, w: "0.40" },
+                              { label: "Venue Win %", val: weightedPred.breakdown?.venue_win_pct, w: "0.25" },
+                              { label: "Recent Form", val: weightedPred.breakdown?.recent_form_pct, w: "0.20" },
+                              { label: "Toss Adv.", val: weightedPred.breakdown?.toss_advantage_pct, w: "0.15" },
+                            ].map(f => (
+                              <div key={f.label} className="flex items-center justify-between text-[10px]">
+                                <span className="text-[#737373]">{f.label} <span className="text-[#525252]">({f.w})</span></span>
+                                <div className="flex items-center gap-2">
+                                  <div className="w-16 h-1 bg-[#1E1E1E] rounded-full overflow-hidden">
+                                    <div className="h-full bg-[#FFCC00] rounded-full" style={{ width: `${(f.val || 0) * 100}%` }} />
+                                  </div>
+                                  <span className="font-mono text-[#A3A3A3] w-10 text-right">{((f.val || 0) * 100).toFixed(0)}%</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+
+                          {/* Live factors breakdown */}
+                          <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2.5 space-y-1">
+                            <p className="text-[9px] text-[#525252] uppercase mb-1">Live Factors (L)</p>
+                            {[
+                              { label: "Run Rate Ratio", val: weightedPred.breakdown?.run_rate_ratio, w: "0.40" },
+                              { label: "Wickets in Hand", val: weightedPred.breakdown?.wickets_in_hand_ratio, w: "0.35" },
+                              { label: "Phase Momentum", val: weightedPred.breakdown?.phase_momentum, w: "0.25" },
+                            ].map(f => (
+                              <div key={f.label} className="flex items-center justify-between text-[10px]">
+                                <span className="text-[#737373]">{f.label} <span className="text-[#525252]">({f.w})</span></span>
+                                <div className="flex items-center gap-2">
+                                  <div className="w-16 h-1 bg-[#1E1E1E] rounded-full overflow-hidden">
+                                    <div className="h-full bg-[#34C759] rounded-full" style={{ width: `${(f.val || 0) * 100}%` }} />
+                                  </div>
+                                  <span className="font-mono text-[#A3A3A3] w-10 text-right">{((f.val || 0) * 100).toFixed(0)}%</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+
+                          {/* Chase Analysis */}
+                          {livePred?.chase_analysis && (
+                            <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2.5">
+                              <div className="flex items-center justify-between mb-1">
+                                <p className="text-[9px] text-[#737373] uppercase">Chase</p>
+                                <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${
+                                  livePred.chase_analysis.difficulty === "easy" ? "bg-[#34C759]/15 text-[#34C759]" :
+                                  livePred.chase_analysis.difficulty === "moderate" ? "bg-[#FFCC00]/15 text-[#FFCC00]" :
+                                  "bg-[#FF3B30]/15 text-[#FF3B30]"
+                                }`}>{livePred.chase_analysis.difficulty}</span>
+                              </div>
+                              <div className="grid grid-cols-3 gap-2 text-[10px] font-mono">
+                                <div><span className="text-[#737373]">Need </span><span className="text-white font-bold">{livePred.chase_analysis.runs_remaining}/{livePred.chase_analysis.balls_remaining}b</span></div>
+                                <div><span className="text-[#737373]">RRR </span><span className="text-white font-bold">{livePred.chase_analysis.required_rate}</span></div>
+                                <div><span className="text-[#737373]">Wkts </span><span className="text-white font-bold">{livePred.wickets_in_hand}</span></div>
+                              </div>
+                            </div>
+                          )}
+
+                          {livePred?.projected_score && !livePred?.chase_analysis && (
+                            <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2 text-center">
+                              <p className="text-[9px] text-[#737373] uppercase">Projected</p>
+                              <p className="text-xl font-black font-mono text-[#34C759]" style={{ fontFamily: "'Barlow Condensed'" }}>~{livePred.projected_score}</p>
+                            </div>
+                          )}
                         </div>
                       )}
-                      {claudePred.bowling_assessment && (
-                        <div className="bg-[#0A0A0A] border border-white/5 rounded p-2.5">
-                          <p className="text-[9px] text-[#737373] uppercase mb-1">Bowling Options</p>
-                          <p className="text-[11px] text-[#A3A3A3] leading-relaxed">{claudePred.bowling_assessment}</p>
+
+                      {/* ── MODEL 2: Claude Opus Prediction ── */}
+                      {claudePred && !claudePred.error && (
+                        <div className="bg-[#141414] border border-purple-500/30 rounded-md p-4 space-y-3" data-testid="claude-live-prediction">
+                          <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-purple-400" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
+                            Claude Opus Prediction
+                          </h4>
+                          <p className="text-sm font-bold text-white leading-snug">{claudePred.headline}</p>
+
+                          {/* Win probabilities */}
+                          <div className="grid grid-cols-2 gap-2">
+                            <div className="bg-purple-500/10 border border-purple-500/20 rounded px-3 py-2.5 text-center">
+                              <p className="text-[9px] text-purple-300 uppercase">{t1Short}</p>
+                              <p className="text-2xl font-black font-mono text-purple-400" style={{ fontFamily: "'Barlow Condensed'" }}>{claudePred.team1_win_pct ?? 50}%</p>
+                            </div>
+                            <div className="bg-purple-500/10 border border-purple-500/20 rounded px-3 py-2.5 text-center">
+                              <p className="text-[9px] text-purple-300 uppercase">{t2Short}</p>
+                              <p className="text-2xl font-black font-mono text-purple-400" style={{ fontFamily: "'Barlow Condensed'" }}>{claudePred.team2_win_pct ?? 50}%</p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <span className={`text-[9px] px-2 py-0.5 rounded font-bold uppercase ${
+                              claudePred.momentum === "BATTING" ? "bg-[#34C759]/15 text-[#34C759]" :
+                              claudePred.momentum === "BOWLING" ? "bg-[#FF3B30]/15 text-[#FF3B30]" :
+                              "bg-[#525252]/15 text-[#A1A1AA]"
+                            }`}>Momentum: {claudePred.momentum}</span>
+                            <span className="text-[9px] px-2 py-0.5 rounded font-bold bg-purple-500/10 text-purple-400">
+                              Confidence: {claudePred.confidence}
+                            </span>
+                          </div>
+
+                          <p className="text-[11px] text-[#D4D4D4] leading-relaxed">{claudePred.reasoning}</p>
+
+                          <div className="grid grid-cols-1 gap-2">
+                            {claudePred.batting_depth_assessment && (
+                              <div className="bg-[#0A0A0A] border border-white/5 rounded p-2.5">
+                                <p className="text-[9px] text-[#737373] uppercase mb-1">Batting Depth</p>
+                                <p className="text-[10px] text-[#A3A3A3] leading-relaxed">{claudePred.batting_depth_assessment}</p>
+                              </div>
+                            )}
+                            {claudePred.bowling_assessment && (
+                              <div className="bg-[#0A0A0A] border border-white/5 rounded p-2.5">
+                                <p className="text-[9px] text-[#737373] uppercase mb-1">Bowling Options</p>
+                                <p className="text-[10px] text-[#A3A3A3] leading-relaxed">{claudePred.bowling_assessment}</p>
+                              </div>
+                            )}
+                            {claudePred.key_matchup && (
+                              <div className="bg-[#0A0A0A] border border-purple-500/10 rounded p-2.5">
+                                <p className="text-[9px] text-purple-300 uppercase mb-1">Key Matchup</p>
+                                <p className="text-[10px] text-[#D4D4D4]">{claudePred.key_matchup}</p>
+                              </div>
+                            )}
+                          </div>
                         </div>
                       )}
                     </div>
-                    {claudePred.key_matchup && (
-                      <div className="bg-[#0A0A0A] border border-purple-500/10 rounded p-2.5">
-                        <p className="text-[9px] text-purple-300 uppercase mb-1">Key Matchup</p>
-                        <p className="text-[11px] text-[#D4D4D4]">{claudePred.key_matchup}</p>
+
+                    {/* Formula Methodology Modal */}
+                    {showFormula && (
+                      <div className="bg-[#0A0A0A] border border-[#007AFF]/20 rounded-md p-5 space-y-3 relative" data-testid="formula-modal">
+                        <button onClick={() => setShowFormula(false)} className="absolute top-3 right-3 text-[#737373] hover:text-white text-sm">x</button>
+                        <h4 className="text-sm font-bold text-[#007AFF] uppercase tracking-wider" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>Weighted Probability Methodology</h4>
+                        <div className="space-y-2 text-[11px] text-[#A3A3A3] leading-relaxed font-mono">
+                          <p className="text-white font-bold">P(win) = (balls_rem / total_balls) x H + (1 - balls_rem / total_balls) x L</p>
+                          <div>
+                            <p className="text-[#FFCC00] font-bold mb-1">Step 1 - Dynamic Weight (alpha)</p>
+                            <p>alpha = Balls Remaining / Total Match Balls</p>
+                            <p className="text-[#525252]">Early in match: historical data matters more. Late: live performance dominates.</p>
+                          </div>
+                          <div>
+                            <p className="text-[#FFCC00] font-bold mb-1">Step 2 - Historical (H)</p>
+                            <p>H = 0.40 x H2H_Win% + 0.25 x Venue_Win% + 0.20 x Recent_Form% + 0.15 x Toss_Adv%</p>
+                            <p className="text-[#525252]">Head-to-head is weighted highest. All values 0-1.</p>
+                          </div>
+                          <div>
+                            <p className="text-[#34C759] font-bold mb-1">Step 3 - Live (L)</p>
+                            <p>L = 0.40 x (CRR/RRR) + 0.35 x (Wickets_Left/10) + 0.25 x (Phase_Momentum)</p>
+                            <p className="text-[#525252]">Run rate ratio capped at 1. Phase momentum = last 6 balls runs vs par.</p>
+                          </div>
+                          <div>
+                            <p className="text-white font-bold mb-1">Step 4 - Final Score</p>
+                            <p>Final = [alpha x H + (1-alpha) x L] x 100</p>
+                          </div>
+                        </div>
                       </div>
                     )}
                   </div>

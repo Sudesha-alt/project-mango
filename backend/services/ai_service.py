@@ -902,6 +902,8 @@ CRR: {sm_data.get('crr', 0)} | RRR: {sm_data.get('rrr', 'N/A')}
 
 IMPORTANT: Give realistic win probabilities for BOTH teams. Consider each player's known IPL form and career record.
 
+Also provide HISTORICAL FACTORS for {t1_short} (all values 0 to 1, based on your IPL knowledge):
+
 Return JSON:
 {{
   "{t1_short}_win_pct": number (0-100),
@@ -913,7 +915,13 @@ Return JSON:
   "bowling_assessment": "Remaining bowling options and their death overs record",
   "key_matchup": "The single most critical player or matchup right now",
   "momentum": "BATTING" or "BOWLING" or "EVEN",
-  "confidence": "Low" or "Medium" or "High"
+  "confidence": "Low" or "Medium" or "High",
+  "historical_factors": {{
+    "h2h_win_pct": number (0-1, {t1_short}'s head-to-head win rate vs {t2_short} in IPL history),
+    "venue_win_pct": number (0-1, {t1_short}'s win rate at {venue} or similar venues),
+    "recent_form_pct": number (0-1, {t1_short}'s win rate in last 5-8 IPL matches),
+    "toss_advantage_pct": number (0-1, toss winner's advantage at this venue type)
+  }}
 }}"""
 
     try:
