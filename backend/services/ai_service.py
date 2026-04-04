@@ -579,85 +579,133 @@ Answer their question directly. Be honest. Factor in their {risk_tolerance} risk
 
 async def fetch_pre_match_stats(team1: str, team2: str, venue: str) -> Dict:
     """
-    GPT-5.4 Web Search: Fetch real head-to-head (last 5 years),
-    venue stats, recent form, and squad strength for two IPL teams.
-    Expanded: requests match-by-match H2H detail, deeper form data.
+    GPT-5.4 Web Search: Fetch comprehensive match stats for 11-factor prediction model.
     """
     raw_text = await _web_search(
-        f"Search ESPNcricinfo and Cricbuzz for detailed IPL cricket stats for {team1} vs {team2}. "
-        f"I need COMPREHENSIVE data: "
+        f"Search ESPNcricinfo and Cricbuzz for detailed IPL cricket stats for {team1} vs {team2} at {venue}. "
+        f"I need COMPREHENSIVE data across MULTIPLE dimensions: "
         f"1) COMPLETE head-to-head record between {team1} and {team2} in IPL from 2021 to 2026. "
-        f"List every single match with date, venue, winner, and margin of victory. "
-        f"How many matches each team won? Any dominant pattern? "
-        f"2) Detailed performance at {venue} — average first innings score, average second innings score, "
-        f"highest and lowest totals, win percentage batting first vs chasing, toss decision trends, "
-        f"and each team's individual record at this ground. "
-        f"3) Recent form — LAST 5 IPL 2026 match results for both teams with opponents and scores. "
-        f"Include Net Run Rate if available. "
-        f"4) Full squad strength — key batsmen averages, strike rates; key bowlers economy, wickets; "
-        f"batting depth rating, bowling attack quality, overseas player impact for both teams."
+        f"Every match with date, venue, winner, and margin. "
+        f"2) Detailed performance at {venue} — avg 1st/2nd innings scores, highest/lowest totals, "
+        f"win % batting first vs chasing, toss decisions and outcomes at this ground, "
+        f"each team's individual win record at this ground. "
+        f"3) Recent form — LAST 5 IPL 2026 match results for both teams with opponents, scores, and margins. "
+        f"Include win/loss streaks, NRR if available. "
+        f"4) Squad strength — batting depth, bowling attack quality, overseas player impact for both teams. "
+        f"5) TOSS IMPACT at {venue} — what % of toss winners chose to bat vs bowl, "
+        f"and what % of toss winners went on to WIN the match. "
+        f"6) PITCH CONDITIONS at {venue} — is it a batting paradise, bowling-friendly, or balanced? "
+        f"Does dew play a role in night matches? Spin vs pace assistance? "
+        f"7) KEY PLAYER MATCHUPS — top batsmen from each team vs key bowlers from the other. "
+        f"For example: Virat Kohli vs Jasprit Bumrah career T20 record. "
+        f"8) DEATH OVERS (16-20) performance — each team's avg runs scored and conceded in death overs this season. "
+        f"9) POWERPLAY (1-6) performance — each team's avg powerplay score and wickets lost/taken this season. "
+        f"10) MOMENTUM — current winning/losing streak for each team, any comeback patterns."
     )
     logger.info(f"Pre-match stats web search for {team1} vs {team2}: {len(raw_text)} chars")
 
     parse_instruction = f"""Parse the cricket statistics into this exact JSON format:
 {{
   "h2h": {{
-    "team1_wins": number (wins for {team1} vs {team2} in IPL in last 5 years),
-    "team2_wins": number (wins for {team2} vs {team1} in IPL in last 5 years),
-    "no_result": number (ties or no results),
+    "team1_wins": number,
+    "team2_wins": number,
+    "no_result": number,
     "total_matches": number,
-    "last_5_results": ["W", "L", "W", "W", "L"] (from {team1}'s perspective, most recent first),
-    "match_details": [
-      {{"date": "YYYY-MM-DD", "venue": "Ground", "winner": "Team", "margin": "5 wkts"}}
-    ]
+    "last_5_results": ["W", "L", "W", "W", "L"],
+    "match_details": [{{"date": "YYYY-MM-DD", "venue": "Ground", "winner": "Team", "margin": "5 wkts"}}]
   }},
   "venue_stats": {{
     "venue_name": "{venue}",
-    "team1_avg_score": number (average score for {team1} at this venue),
-    "team2_avg_score": number (average score for {team2} at this venue),
-    "avg_first_innings_score": number (overall average 1st innings score at venue),
-    "avg_second_innings_score": number (overall average 2nd innings score at venue),
+    "team1_avg_score": number,
+    "team2_avg_score": number,
+    "avg_first_innings_score": number,
+    "avg_second_innings_score": number,
     "highest_total": number,
     "lowest_total": number,
-    "bat_first_win_pct": number (win % batting first at this venue, 0-100),
-    "team1_win_pct": number (win % for {team1} at this venue, 0-100),
-    "team2_win_pct": number (win % for {team2} at this venue, 0-100),
+    "bat_first_win_pct": number (0-100),
+    "team1_win_pct": number (0-100),
+    "team2_win_pct": number (0-100),
     "team1_matches_at_venue": number,
     "team2_matches_at_venue": number,
-    "is_team1_home": boolean (is this {team1}'s home ground?),
-    "is_team2_home": boolean (is this {team2}'s home ground?)
+    "is_team1_home": boolean,
+    "is_team2_home": boolean
   }},
   "form": {{
     "team1_last5_wins": number,
     "team1_last5_losses": number,
     "team1_last5_win_pct": number (0-100),
-    "team1_recent_results": ["W vs CSK", "L vs MI", "W vs RR", "W vs DC", "L vs SRH"],
+    "team1_recent_results": ["W vs CSK by 20 runs", "L vs MI by 5 wkts"],
     "team1_nrr": number or null,
     "team2_last5_wins": number,
     "team2_last5_losses": number,
     "team2_last5_win_pct": number (0-100),
-    "team2_recent_results": ["W vs KKR", "W vs GT", "L vs RCB", "W vs PBKS", "L vs LSG"],
+    "team2_recent_results": ["W vs KKR by 8 wkts", "L vs GT by 15 runs"],
     "team2_nrr": number or null
   }},
   "squad_strength": {{
-    "team1_batting_rating": number (0-100, based on batting lineup quality),
-    "team1_bowling_rating": number (0-100, based on bowling attack quality),
+    "team1_batting_rating": number (0-100),
+    "team1_bowling_rating": number (0-100),
     "team1_key_players": ["Player1", "Player2", "Player3"],
     "team2_batting_rating": number (0-100),
     "team2_bowling_rating": number (0-100),
     "team2_key_players": ["Player1", "Player2", "Player3"]
+  }},
+  "toss": {{
+    "toss_bat_pct": number (0-100, % of toss winners choosing to bat at this venue),
+    "toss_bowl_pct": number (0-100, % choosing to bowl),
+    "toss_winner_match_win_pct": number (0-100, how often toss winner wins the match),
+    "venue_chase_friendly": boolean (true if chasing is historically easier here)
+  }},
+  "pitch_conditions": {{
+    "pitch_type": "batting" or "bowling" or "balanced",
+    "pace_assistance": number (1-10, how much pace bowlers are helped),
+    "spin_assistance": number (1-10, how much spinners are helped),
+    "dew_factor": number (1-10, how much dew affects 2nd innings, 1=no dew, 10=heavy dew),
+    "avg_first_innings_score": number,
+    "description": "Brief pitch description"
+  }},
+  "key_matchups": {{
+    "team1_batters_vs_team2_bowlers": [
+      {{"batter": "Name", "bowler": "Name", "runs": number, "balls": number, "dismissals": number, "sr": number}}
+    ],
+    "team2_batters_vs_team1_bowlers": [
+      {{"batter": "Name", "bowler": "Name", "runs": number, "balls": number, "dismissals": number, "sr": number}}
+    ]
+  }},
+  "death_overs": {{
+    "team1_avg_death_score": number (avg runs scored in overs 16-20),
+    "team1_avg_death_conceded": number (avg runs conceded in overs 16-20),
+    "team2_avg_death_score": number,
+    "team2_avg_death_conceded": number
+  }},
+  "powerplay": {{
+    "team1_avg_pp_score": number (avg runs in overs 1-6),
+    "team1_avg_pp_wickets_lost": number,
+    "team2_avg_pp_score": number,
+    "team2_avg_pp_wickets_lost": number
+  }},
+  "momentum": {{
+    "team1_current_streak": number (positive = wins, negative = losses, e.g. 3 = 3 consecutive wins, -2 = 2 consecutive losses),
+    "team2_current_streak": number,
+    "team1_last10_wins": number (wins in last 10 IPL matches overall),
+    "team2_last10_wins": number
   }}
 }}
 
 RULES:
-- Use ONLY real data from the source text. 
-- For stats not found in source, use reasonable IPL defaults:
+- Use ONLY real data from the source text.
+- For stats not found, use reasonable IPL defaults:
   * H2H: if unknown, use 5-5 split
   * Venue avg: if unknown, use 165
   * Form: if unknown, use 50% win rate
   * Squad rating: estimate from known player quality (60-80 range)
-- team1 is always {team1}, team2 is always {team2}
-- match_details should contain as many matches as found in source (up to 20)"""
+  * Toss: default 55% bowl, toss_winner_match_win_pct=52%
+  * Pitch: default balanced, pace=5, spin=5, dew=3
+  * Death overs: default 45 scored, 48 conceded per team
+  * Powerplay: default 48 scored, 1.2 wickets lost
+  * Momentum: default 0 streak
+  * Key matchups: include top 3-5 most impactful matchups per side if found
+- team1 is always {team1}, team2 is always {team2}"""
 
     try:
         data = await _parse_to_json(raw_text, parse_instruction)
@@ -676,6 +724,7 @@ def _default_pre_match_stats():
             "team1_win_pct": 50, "team2_win_pct": 50,
             "team1_matches_at_venue": 5, "team2_matches_at_venue": 5,
             "is_team1_home": False, "is_team2_home": False,
+            "bat_first_win_pct": 48,
         },
         "form": {
             "team1_last5_wins": 3, "team1_last5_losses": 2, "team1_last5_win_pct": 60,
@@ -686,6 +735,12 @@ def _default_pre_match_stats():
             "team2_batting_rating": 68, "team2_bowling_rating": 67,
             "team1_key_players": [], "team2_key_players": [],
         },
+        "toss": {"toss_bat_pct": 45, "toss_bowl_pct": 55, "toss_winner_match_win_pct": 52, "venue_chase_friendly": True},
+        "pitch_conditions": {"pitch_type": "balanced", "pace_assistance": 5, "spin_assistance": 5, "dew_factor": 3, "description": "Balanced surface"},
+        "key_matchups": {"team1_batters_vs_team2_bowlers": [], "team2_batters_vs_team1_bowlers": []},
+        "death_overs": {"team1_avg_death_score": 45, "team1_avg_death_conceded": 48, "team2_avg_death_score": 45, "team2_avg_death_conceded": 48},
+        "powerplay": {"team1_avg_pp_score": 48, "team1_avg_pp_wickets_lost": 1.2, "team2_avg_pp_score": 48, "team2_avg_pp_wickets_lost": 1.2},
+        "momentum": {"team1_current_streak": 0, "team2_current_streak": 0, "team1_last10_wins": 5, "team2_last10_wins": 5},
     }
 
 

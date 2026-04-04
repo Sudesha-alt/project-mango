@@ -1,9 +1,8 @@
 """
-Pre-Match Predictor — Gamble Consultant
-========================================
-Fetches real H2H (5 years), venue stats, recent form, and squad strength via GPT-5.4.
-Now also incorporates player-level venue performance and individual form from Playing XI.
-Combines via logistic model → calibrated probability → confidence %.
+Pre-Match Predictor — Baatu - 11
+==================================
+11-factor prediction model using web-scraped real stats.
+Factors: H2H, Venue, Form, Squad, Home, Toss, Pitch, Matchups, Death Overs, Powerplay, Momentum.
 """
 import math
 import logging
@@ -14,83 +13,82 @@ logger = logging.getLogger(__name__)
 
 def compute_prediction(stats: Dict, playing_xi: Dict = None) -> Dict:
     """
-    Algorithm stack to compute win confidence from fetched stats.
-    
-    Factors:
-      H2H (0.25) — Head-to-head win ratio 2021-2026
-      Venue (0.20) — Player-level venue performance + team venue win %
-      Form (0.25) — Individual player form + team form
-      Squad (0.20) — Squad strength (batting + bowling quality)
-      Home (0.10) — Home advantage
-    
-    If playing_xi is provided, venue and form factors use player-level data.
+    11-factor algorithm to compute win probability.
+
+    Weights:
+      H2H         (0.12) — Head-to-head record 2021-2026
+      Venue        (0.10) — Team venue performance + player-level venue stats
+      Form         (0.12) — Recent team + player form (sample-size damped)
+      Squad        (0.10) — Batting depth + bowling attack quality
+      Home         (0.06) — Home ground advantage
+      Toss Impact  (0.08) — Historical toss-win correlation at venue
+      Pitch/Conds  (0.10) — Pitch type, dew, pace/spin assistance
+      Key Matchups (0.10) — Batter vs bowler head-to-head records
+      Death Overs  (0.08) — Performance in overs 16-20
+      Powerplay    (0.08) — Performance in overs 1-6
+      Momentum     (0.06) — Win/loss streaks and extended form
     """
     h2h = stats.get("h2h", {})
     venue = stats.get("venue_stats", {})
     form = stats.get("form", {})
     squad = stats.get("squad_strength", {})
+    toss = stats.get("toss", {})
+    pitch = stats.get("pitch_conditions", {})
+    matchups = stats.get("key_matchups", {})
+    death = stats.get("death_overs", {})
+    pp = stats.get("powerplay", {})
+    momentum = stats.get("momentum", {})
 
-    # ── Factor 1: Head-to-Head (2021-2026) ──
+    # ── Factor 1: Head-to-Head (0.12) ──
     t1_h2h_wins = h2h.get("team1_wins", 0)
     t2_h2h_wins = h2h.get("team2_wins", 0)
     total_h2h = t1_h2h_wins + t2_h2h_wins
     h2h_ratio = t1_h2h_wins / total_h2h if total_h2h > 0 else 0.5
     h2h_logit = 2.0 * (h2h_ratio - 0.5)
 
-    # ── Factor 2: Venue Performance ──
-    # Start with team-level venue stats
+    # ── Factor 2: Venue Performance (0.10) ──
     t1_venue_avg = venue.get("team1_avg_score", 160)
     t2_venue_avg = venue.get("team2_avg_score", 160)
     venue_diff = (t1_venue_avg - t2_venue_avg) / max(t1_venue_avg, t2_venue_avg, 1)
     venue_logit = 2.5 * venue_diff
-
     t1_venue_win_pct = venue.get("team1_win_pct", 50) / 100
     t2_venue_win_pct = venue.get("team2_win_pct", 50) / 100
     venue_win_logit = 1.5 * (t1_venue_win_pct - t2_venue_win_pct)
-
-    # Player-level venue overlay: if we have Playing XI venue stats, blend them in
+    # Player-level venue overlay
     player_venue_logit = 0.0
     if playing_xi:
         t1_xi = playing_xi.get("team1_xi", [])
         t2_xi = playing_xi.get("team2_xi", [])
-        t1_venue_score = _calc_player_venue_score(t1_xi)
-        t2_venue_score = _calc_player_venue_score(t2_xi)
-        if t1_venue_score > 0 or t2_venue_score > 0:
-            total_vs = max(t1_venue_score + t2_venue_score, 1)
-            player_venue_logit = 2.0 * ((t1_venue_score / total_vs) - 0.5)
-            # Blend: 60% player-level, 40% team-level venue
+        t1_vs = _calc_player_venue_score(t1_xi)
+        t2_vs = _calc_player_venue_score(t2_xi)
+        if t1_vs > 0 or t2_vs > 0:
+            total_vs = max(t1_vs + t2_vs, 1)
+            player_venue_logit = 2.0 * ((t1_vs / total_vs) - 0.5)
             venue_logit = 0.4 * venue_logit + 0.6 * player_venue_logit
             venue_win_logit = 0.4 * venue_win_logit + 0.6 * player_venue_logit
+    final_venue_logit = (venue_logit + venue_win_logit) / 2
 
-    # ── Factor 3: Form (Individual + Team) ──
+    # ── Factor 3: Form (0.12, sample-size damped) ──
     t1_form_pct = form.get("team1_last5_win_pct", 50) / 100
     t2_form_pct = form.get("team2_last5_win_pct", 50) / 100
-    # Sample-size damping: with fewer games, regress toward 50%
     t1_games = form.get("team1_last5_wins", 0) + form.get("team1_last5_losses", 0)
     t2_games = form.get("team2_last5_wins", 0) + form.get("team2_last5_losses", 0)
     min_games = min(t1_games, t2_games)
-    # Damping factor: 0 games→0.0, 1→0.25, 2→0.45, 3→0.60, 4→0.75, 5+→1.0
     damping = min(1.0, min_games / 5.0) if min_games > 0 else 0.0
-    # Regress to 50% based on sample size
     t1_form_adj = 0.5 + (t1_form_pct - 0.5) * damping
     t2_form_adj = 0.5 + (t2_form_pct - 0.5) * damping
     team_form_logit = 2.0 * (t1_form_adj - t2_form_adj)
-
-    # Player-level individual form: use buzz confidence as a proxy for form
+    # Player buzz overlay
     player_form_logit = 0.0
     if playing_xi:
-        t1_xi = playing_xi.get("team1_xi", [])
-        t2_xi = playing_xi.get("team2_xi", [])
-        t1_avg_buzz = _calc_avg_buzz(t1_xi)
-        t2_avg_buzz = _calc_avg_buzz(t2_xi)
+        t1_avg_buzz = _calc_avg_buzz(playing_xi.get("team1_xi", []))
+        t2_avg_buzz = _calc_avg_buzz(playing_xi.get("team2_xi", []))
         if t1_avg_buzz > 0 or t2_avg_buzz > 0:
             player_form_logit = 1.5 * ((t1_avg_buzz - t2_avg_buzz) / 100)
-            # Blend: 50% player form, 50% team form
             team_form_logit = 0.5 * team_form_logit + 0.5 * player_form_logit
-
     form_logit = team_form_logit
 
-    # ── Factor 4: Squad Strength ──
+    # ── Factor 4: Squad Strength (0.10) ──
     t1_bat = squad.get("team1_batting_rating", 50) / 100
     t2_bat = squad.get("team2_batting_rating", 50) / 100
     t1_bowl = squad.get("team1_bowling_rating", 50) / 100
@@ -99,20 +97,78 @@ def compute_prediction(stats: Dict, playing_xi: Dict = None) -> Dict:
     t2_strength = 0.55 * t2_bat + 0.45 * t2_bowl
     squad_logit = 3.0 * (t1_strength - t2_strength)
 
-    # ── Factor 5: Home Advantage ──
+    # ── Factor 5: Home Advantage (0.06) ──
     home_logit = 0
     if venue.get("is_team1_home"):
-        home_logit = 0.25
+        home_logit = 0.3
     elif venue.get("is_team2_home"):
-        home_logit = -0.25
+        home_logit = -0.3
+
+    # ── Factor 6: Toss Impact (0.08) ──
+    chase_friendly = toss.get("venue_chase_friendly", False)
+    bat_first_win_pct = venue.get("bat_first_win_pct", 48) / 100
+    toss_logit = 1.0 * (bat_first_win_pct - 0.5)
+
+    # ── Factor 7: Pitch & Conditions (0.10) ──
+    pitch_type = pitch.get("pitch_type", "balanced")
+    dew_factor = pitch.get("dew_factor", 3) / 10
+    # Calculate which team benefits more from pitch conditions based on squad composition
+    t1_pace_strength = squad.get("team1_bowling_rating", 50) / 100
+    t2_pace_strength = squad.get("team2_bowling_rating", 50) / 100
+    # Higher pace/spin assist helps the better bowling side
+    pitch_logit = 0.0
+    if pitch_type == "bowling":
+        pitch_logit = 1.5 * (t1_pace_strength - t2_pace_strength)
+    elif pitch_type == "batting":
+        pitch_logit = 1.0 * (t1_bat - t2_bat)
+    else:
+        pitch_logit = 0.5 * ((t1_strength - t2_strength))
+    # Dew: high dew benefits chasing team → slight general neutralizer
+    dew_logit = -0.2 * dew_factor if dew_factor > 0.4 else 0.0
+
+    # ── Factor 8: Key Matchups (0.10) ──
+    t1_matchup_score = _calc_matchup_score(matchups.get("team1_batters_vs_team2_bowlers", []))
+    t2_matchup_score = _calc_matchup_score(matchups.get("team2_batters_vs_team1_bowlers", []))
+    total_matchup = max(t1_matchup_score + t2_matchup_score, 1)
+    matchup_logit = 2.0 * ((t1_matchup_score / total_matchup) - 0.5) if total_matchup > 1 else 0.0
+
+    # ── Factor 9: Death Overs (0.08) ──
+    t1_death_net = (death.get("team1_avg_death_score", 45) - death.get("team1_avg_death_conceded", 48))
+    t2_death_net = (death.get("team2_avg_death_score", 45) - death.get("team2_avg_death_conceded", 48))
+    death_logit = 1.5 * ((t1_death_net - t2_death_net) / max(abs(t1_death_net) + abs(t2_death_net), 1))
+
+    # ── Factor 10: Powerplay (0.08) ──
+    t1_pp_score = pp.get("team1_avg_pp_score", 48)
+    t2_pp_score = pp.get("team2_avg_pp_score", 48)
+    t1_pp_wkts = pp.get("team1_avg_pp_wickets_lost", 1.2)
+    t2_pp_wkts = pp.get("team2_avg_pp_wickets_lost", 1.2)
+    # Higher score + fewer wickets = better powerplay
+    t1_pp_quality = t1_pp_score / max(t1_pp_wkts, 0.5)
+    t2_pp_quality = t2_pp_score / max(t2_pp_wkts, 0.5)
+    pp_logit = 1.0 * ((t1_pp_quality - t2_pp_quality) / max(t1_pp_quality + t2_pp_quality, 1))
+
+    # ── Factor 11: Momentum (0.06) ──
+    t1_streak = momentum.get("team1_current_streak", 0)
+    t2_streak = momentum.get("team2_current_streak", 0)
+    t1_l10 = momentum.get("team1_last10_wins", 5)
+    t2_l10 = momentum.get("team2_last10_wins", 5)
+    streak_logit = 0.3 * (t1_streak - t2_streak) / max(abs(t1_streak) + abs(t2_streak), 1)
+    long_form_logit = 1.0 * ((t1_l10 - t2_l10) / 10)
+    momentum_logit = 0.5 * streak_logit + 0.5 * long_form_logit
 
     # ── Weighted Combination ──
     combined_logit = (
-        0.25 * h2h_logit +
-        0.20 * (venue_logit + venue_win_logit) / 2 +
-        0.25 * form_logit +
-        0.20 * squad_logit +
-        0.10 * home_logit
+        0.12 * h2h_logit +
+        0.10 * final_venue_logit +
+        0.12 * form_logit +
+        0.10 * squad_logit +
+        0.06 * home_logit +
+        0.08 * toss_logit +
+        0.10 * (pitch_logit + dew_logit) +
+        0.10 * matchup_logit +
+        0.08 * death_logit +
+        0.08 * pp_logit +
+        0.06 * momentum_logit
     )
 
     # Sigmoid
@@ -123,22 +179,20 @@ def compute_prediction(stats: Dict, playing_xi: Dict = None) -> Dict:
     cal_prob = 1 / (1 + math.exp(-1.2 * (raw_prob - 0.5) * 4))
     cal_prob = max(0.05, min(0.95, cal_prob))
 
-    # Confidence
     model_confidence = round(50 + abs(cal_prob - 0.5) * 100, 1)
 
-    # Factor breakdown
     factors = {
         "h2h": {
-            "weight": 0.25,
+            "weight": 0.12,
             "team1_wins": t1_h2h_wins,
             "team2_wins": t2_h2h_wins,
             "total_matches": total_h2h,
             "no_result": h2h.get("no_result", 0),
             "ratio": round(h2h_ratio, 3),
-            "logit_contribution": round(0.25 * h2h_logit, 4),
+            "logit_contribution": round(0.12 * h2h_logit, 4),
         },
         "venue": {
-            "weight": 0.20,
+            "weight": 0.10,
             "team1_avg_score": t1_venue_avg,
             "team2_avg_score": t2_venue_avg,
             "team1_win_pct": venue.get("team1_win_pct", 50),
@@ -148,30 +202,83 @@ def compute_prediction(stats: Dict, playing_xi: Dict = None) -> Dict:
             "is_team1_home": venue.get("is_team1_home", False),
             "is_team2_home": venue.get("is_team2_home", False),
             "player_venue_logit": round(player_venue_logit, 4),
-            "logit_contribution": round(0.20 * (venue_logit + venue_win_logit) / 2, 4),
+            "logit_contribution": round(0.10 * final_venue_logit, 4),
         },
         "form": {
-            "weight": 0.25,
+            "weight": 0.12,
             "team1_last5_wins": form.get("team1_last5_wins", 0),
             "team1_last5_losses": form.get("team1_last5_losses", 0),
             "team1_last5_win_pct": form.get("team1_last5_win_pct", 50),
             "team2_last5_wins": form.get("team2_last5_wins", 0),
             "team2_last5_losses": form.get("team2_last5_losses", 0),
             "team2_last5_win_pct": form.get("team2_last5_win_pct", 50),
+            "damping": round(damping, 2),
             "player_form_logit": round(player_form_logit, 4),
-            "logit_contribution": round(0.25 * form_logit, 4),
+            "logit_contribution": round(0.12 * form_logit, 4),
         },
         "squad": {
-            "weight": 0.20,
+            "weight": 0.10,
             "team1_batting_rating": squad.get("team1_batting_rating", 50),
             "team1_bowling_rating": squad.get("team1_bowling_rating", 50),
             "team2_batting_rating": squad.get("team2_batting_rating", 50),
             "team2_bowling_rating": squad.get("team2_bowling_rating", 50),
-            "logit_contribution": round(0.20 * squad_logit, 4),
+            "logit_contribution": round(0.10 * squad_logit, 4),
         },
         "home_advantage": {
+            "weight": 0.06,
+            "logit_contribution": round(0.06 * home_logit, 4),
+        },
+        "toss_impact": {
+            "weight": 0.08,
+            "toss_winner_win_pct": toss.get("toss_winner_match_win_pct", 52),
+            "bat_first_win_pct": venue.get("bat_first_win_pct", 48),
+            "chase_friendly": chase_friendly,
+            "logit_contribution": round(0.08 * toss_logit, 4),
+        },
+        "pitch_conditions": {
             "weight": 0.10,
-            "logit_contribution": round(0.10 * home_logit, 4),
+            "pitch_type": pitch_type,
+            "pace_assistance": pitch.get("pace_assistance", 5),
+            "spin_assistance": pitch.get("spin_assistance", 5),
+            "dew_factor": pitch.get("dew_factor", 3),
+            "description": pitch.get("description", ""),
+            "logit_contribution": round(0.10 * (pitch_logit + dew_logit), 4),
+        },
+        "key_matchups": {
+            "weight": 0.10,
+            "team1_matchup_score": round(t1_matchup_score, 2),
+            "team2_matchup_score": round(t2_matchup_score, 2),
+            "matchups_data": {
+                "team1_vs_team2": matchups.get("team1_batters_vs_team2_bowlers", [])[:3],
+                "team2_vs_team1": matchups.get("team2_batters_vs_team1_bowlers", [])[:3],
+            },
+            "logit_contribution": round(0.10 * matchup_logit, 4),
+        },
+        "death_overs": {
+            "weight": 0.08,
+            "team1_avg_score": death.get("team1_avg_death_score", 45),
+            "team1_avg_conceded": death.get("team1_avg_death_conceded", 48),
+            "team2_avg_score": death.get("team2_avg_death_score", 45),
+            "team2_avg_conceded": death.get("team2_avg_death_conceded", 48),
+            "team1_net": round(t1_death_net, 1),
+            "team2_net": round(t2_death_net, 1),
+            "logit_contribution": round(0.08 * death_logit, 4),
+        },
+        "powerplay": {
+            "weight": 0.08,
+            "team1_avg_score": pp.get("team1_avg_pp_score", 48),
+            "team1_avg_wkts_lost": pp.get("team1_avg_pp_wickets_lost", 1.2),
+            "team2_avg_score": pp.get("team2_avg_pp_score", 48),
+            "team2_avg_wkts_lost": pp.get("team2_avg_pp_wickets_lost", 1.2),
+            "logit_contribution": round(0.08 * pp_logit, 4),
+        },
+        "momentum": {
+            "weight": 0.06,
+            "team1_streak": t1_streak,
+            "team2_streak": t2_streak,
+            "team1_last10_wins": t1_l10,
+            "team2_last10_wins": t2_l10,
+            "logit_contribution": round(0.06 * momentum_logit, 4),
         },
     }
 
@@ -187,11 +294,24 @@ def compute_prediction(stats: Dict, playing_xi: Dict = None) -> Dict:
     }
 
 
+def _calc_matchup_score(matchups_list: list) -> float:
+    """Calculate aggregate matchup advantage score from batter-vs-bowler records."""
+    if not matchups_list:
+        return 0.5  # neutral
+    total_score = 0
+    for m in matchups_list:
+        runs = m.get("runs", 0)
+        balls = m.get("balls", 1)
+        dismissals = m.get("dismissals", 0)
+        sr = m.get("sr", runs / max(balls, 1) * 100)
+        # High SR with few dismissals = good for batter
+        batter_advantage = (sr / 150) * (1 / max(dismissals + 0.5, 0.5))
+        total_score += min(batter_advantage, 3.0)
+    return total_score / max(len(matchups_list), 1)
+
+
 def _calc_player_venue_score(players: list) -> float:
-    """
-    Calculate aggregate venue performance score for a team's Playing XI.
-    Weights: runs_at_venue (60%) + avg_at_venue (25%) + sr_at_venue (15%)
-    """
+    """Aggregate venue performance score for a team's Playing XI."""
     if not players:
         return 0
     total = 0
@@ -203,12 +323,10 @@ def _calc_player_venue_score(players: list) -> float:
             runs = vs.get("runs_at_venue", 0)
             avg = vs.get("avg_at_venue", 15)
             sr = vs.get("sr_at_venue", 120)
-            # Normalize: runs/100, avg/50, sr/150
             score = 0.60 * min(runs / 100, 2.0) + 0.25 * min(avg / 50, 2.0) + 0.15 * min(sr / 150, 2.0)
             total += score
             counted += 1
         else:
-            # No venue data: use expected performance as proxy
             exp_runs = p.get("expected_runs", 15)
             total += 0.3 * min(exp_runs / 30, 1.5)
             counted += 1
@@ -216,14 +334,13 @@ def _calc_player_venue_score(players: list) -> float:
 
 
 def _calc_avg_buzz(players: list) -> float:
-    """Calculate average buzz for a team's Playing XI. Supports both buzz_score (-100 to +100) and legacy buzz_confidence (0-100)."""
+    """Average buzz for a team's Playing XI."""
     if not players:
         return 50
     buzzes = []
     for p in players:
         bs = p.get("buzz_score")
         if bs is not None:
-            # New format: -100 to +100 → map to 0-100 for backward compat
             buzzes.append((bs + 100) / 2)
         else:
             buzzes.append(p.get("buzz_confidence", 50))

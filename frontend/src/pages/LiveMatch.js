@@ -212,6 +212,90 @@ export default function LiveMatch() {
                   </div>
                 )}
 
+                {/* Live Prediction Panel */}
+                {matchState?.live_prediction && (
+                  <div className="bg-[#141414] border border-[#007AFF]/30 rounded-md p-4 space-y-3" data-testid="live-prediction-panel">
+                    <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-[#007AFF] flex items-center gap-1.5" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
+                      <Lightning weight="fill" className="w-4 h-4" /> Live Match Prediction
+                    </h4>
+                    <p className="text-sm text-[#D4D4D4] leading-relaxed">{matchState.live_prediction.summary}</p>
+                    
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="bg-[#0A0A0A] rounded p-2 text-center">
+                        <p className="text-[9px] text-[#737373] uppercase">Win Prob</p>
+                        <p className="text-xl font-black font-mono text-[#007AFF]" style={{ fontFamily: "'Barlow Condensed'" }}>{matchState.live_prediction.win_probability}%</p>
+                        <p className="text-[8px] text-[#525252]">{matchState.live_prediction.batting_team}</p>
+                      </div>
+                      <div className="bg-[#0A0A0A] rounded p-2 text-center">
+                        <p className="text-[9px] text-[#737373] uppercase">Phase</p>
+                        <p className="text-sm font-bold text-white uppercase">{matchState.live_prediction.phase}</p>
+                        <p className="text-[8px] text-[#525252]">CRR: {matchState.live_prediction.crr}</p>
+                      </div>
+                      <div className="bg-[#0A0A0A] rounded p-2 text-center">
+                        <p className="text-[9px] text-[#737373] uppercase">Wkts in Hand</p>
+                        <p className="text-xl font-black font-mono text-white" style={{ fontFamily: "'Barlow Condensed'" }}>{matchState.live_prediction.wickets_in_hand}</p>
+                      </div>
+                    </div>
+
+                    {matchState.live_prediction.projected_score && (
+                      <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2 text-center">
+                        <p className="text-[9px] text-[#737373] uppercase">Projected Score</p>
+                        <p className="text-2xl font-black font-mono text-[#34C759]" style={{ fontFamily: "'Barlow Condensed'" }}>~{matchState.live_prediction.projected_score}</p>
+                      </div>
+                    )}
+
+                    {matchState.live_prediction.chase_analysis && (
+                      <div className="bg-[#0A0A0A] border border-[#262626] rounded p-3 space-y-1">
+                        <div className="flex items-center justify-between">
+                          <p className="text-[9px] text-[#737373] uppercase">Chase Analysis</p>
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${
+                            matchState.live_prediction.chase_analysis.difficulty === "easy" ? "bg-[#34C759]/15 text-[#34C759]" :
+                            matchState.live_prediction.chase_analysis.difficulty === "moderate" ? "bg-[#FFCC00]/15 text-[#FFCC00]" :
+                            "bg-[#FF3B30]/15 text-[#FF3B30]"
+                          }`}>{matchState.live_prediction.chase_analysis.difficulty}</span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 text-[10px] font-mono">
+                          <div><span className="text-[#737373]">Need: </span><span className="text-white font-bold">{matchState.live_prediction.chase_analysis.runs_remaining} off {matchState.live_prediction.chase_analysis.balls_remaining}b</span></div>
+                          <div><span className="text-[#737373]">RRR: </span><span className="text-white font-bold">{matchState.live_prediction.chase_analysis.required_rate}</span></div>
+                        </div>
+                      </div>
+                    )}
+
+                    {matchState.live_prediction.batsmen_on_field?.length > 0 && (
+                      <div className="space-y-1">
+                        <p className="text-[9px] text-[#737373] uppercase">Batsmen Impact</p>
+                        {matchState.live_prediction.batsmen_on_field.map((b, i) => (
+                          <div key={i} className="flex items-center justify-between text-[10px]">
+                            <span className="text-white">{b.name} {b.is_set && <span className="text-[#34C759]">(SET)</span>}</span>
+                            <div className="flex items-center gap-2 font-mono">
+                              <span className="text-[#A3A3A3]">{b.runs}({b.balls}) SR:{b.sr}</span>
+                              <span className={`px-1 py-0 rounded text-[8px] font-bold uppercase ${
+                                b.impact === "high" ? "bg-[#34C759]/15 text-[#34C759]" :
+                                b.impact === "medium" ? "bg-[#FFCC00]/15 text-[#FFCC00]" :
+                                "bg-[#525252]/15 text-[#525252]"
+                              }`}>{b.impact}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {matchState.live_prediction.current_bowler && (
+                      <div className="flex items-center justify-between text-[10px] bg-[#0A0A0A] rounded p-2">
+                        <span className="text-[#FF3B30]">{matchState.live_prediction.current_bowler.name} (bowling)</span>
+                        <div className="flex items-center gap-2 font-mono text-[#A3A3A3]">
+                          <span>{matchState.live_prediction.current_bowler.wickets}/{matchState.live_prediction.current_bowler.runs} ({matchState.live_prediction.current_bowler.overs}ov)</span>
+                          <span className={`px-1 py-0 rounded text-[8px] font-bold uppercase ${
+                            matchState.live_prediction.current_bowler.impact === "high" ? "bg-[#FF3B30]/15 text-[#FF3B30]" :
+                            matchState.live_prediction.current_bowler.impact === "medium" ? "bg-[#FFCC00]/15 text-[#FFCC00]" :
+                            "bg-[#525252]/15 text-[#525252]"
+                          }`}>{matchState.live_prediction.current_bowler.impact}</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* Betting Edge Display */}
                 {bettingEdge && (bettingEdge.team1 || bettingEdge.team2) && (
                   <div className="bg-[#141414] border border-white/10 rounded-md p-4" data-testid="edge-panel">

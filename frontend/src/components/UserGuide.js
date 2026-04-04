@@ -13,7 +13,7 @@ const SECTIONS = [
     content: [
       {
         q: "What does this app do?",
-        a: "Gamble Consultant is an AI-powered IPL 2026 betting advisor. It runs 50,000 match simulations, analyzes H2H records, venue stats, team form, and player data to give you clear win probabilities and betting signals. It tells you WHERE the value is and WHY."
+        a: "Baatu - 11 is an AI-powered IPL 2026 betting advisor. It runs 50,000 match simulations, analyzes H2H records, venue stats, team form, and player data to give you clear win probabilities and betting signals. It tells you WHERE the value is and WHY."
       },
       {
         q: "How do I start?",
@@ -232,7 +232,7 @@ export default function UserGuide() {
         <div className="flex items-center justify-between px-5 py-4 border-b border-[#262626]">
           <div>
             <h2 className="text-lg font-black uppercase tracking-tight" style={{ fontFamily: "'Barlow Condensed'" }}>
-              How to Use Gamble Consultant
+              How to Use Baatu - 11
             </h2>
             <p className="text-[10px] text-[#737373] mt-0.5">Your guide to making smarter IPL betting decisions</p>
           </div>

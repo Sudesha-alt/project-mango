@@ -579,6 +579,7 @@ def run_consultation(
     risk_tolerance: str = "balanced",
     odds_trend_increasing: str = None,
     odds_trend_decreasing: str = None,
+    cached_prediction: Dict = None,
 ) -> Dict:
     """
     Master function: runs the full layered decision engine.
@@ -593,20 +594,24 @@ def run_consultation(
 
     # Layer 2 + 3: Probability
     if features["overs"] == 0 and features["score"] == 0:
-        # Pre-match
-        factors = compute_team_factors(
-            team1_data or {}, team2_data or {},
-            snapshot.get("venue", ""), snapshot.get("toss_winner")
-        )
-        # Map factor keys to pre_match_probability parameter names
-        raw_prob = pre_match_probability(
-            team_strength=factors.get("T", 0),
-            venue_advantage=factors.get("V", 0),
-            toss_effect=factors.get("X", 0),
-            lineup_depth=factors.get("L", 0),
-            bowling_strength=factors.get("B", 0),
-        )
-        model_source = "pre_match_logistic"
+        # Pre-match: use cached 11-factor prediction if available
+        if cached_prediction and cached_prediction.get("calibrated_probability"):
+            raw_prob = cached_prediction["calibrated_probability"]
+            factors = cached_prediction.get("factors", {})
+            model_source = "11_factor_algorithm"
+        else:
+            factors = compute_team_factors(
+                team1_data or {}, team2_data or {},
+                snapshot.get("venue", ""), snapshot.get("toss_winner")
+            )
+            raw_prob = pre_match_probability(
+                team_strength=factors.get("T", 0),
+                venue_advantage=factors.get("V", 0),
+                toss_effect=factors.get("X", 0),
+                lineup_depth=factors.get("L", 0),
+                bowling_strength=factors.get("B", 0),
+            )
+            model_source = "pre_match_logistic"
     else:
         raw_prob = live_win_probability(features)
         factors = None
@@ -800,7 +805,7 @@ def run_consultation(
         betting_scenarios.append({
             "type": "BET_AGAINST_ODDS",
             "title": f"Contrarian: Back {und_short} if early wickets fall",
-            "description": f"The market is overvaluing the favorite. If the favorite loses 2+ wickets in powerplay, the underdog's odds will improve rapidly. Cash in on the panic.",
+            "description": "The market is overvaluing the favorite. If the favorite loses 2+ wickets in powerplay, the underdog's odds will improve rapidly. Cash in on the panic.",
             "confidence": "MEDIUM",
             "timing": "If favorite struggles in first 6 overs",
             "depends_on": "This depends on powerplay performance. If favorite bats well in PP, abandon this scenario.",
@@ -818,7 +823,7 @@ def run_consultation(
         und_s = snapshot.get("team2Short", team2[:3].upper())
         betting_scenarios.append({
             "type": "KEY_DEPENDENCE",
-            "title": f"Result hinges on key players",
+            "title": "Result hinges on key players",
             "description": f"{fav_s} depends on {t1_names}. {und_s} depends on {t2_names}. If either team's key players fail, the match flips. Monitor their performance closely for live betting windows.",
             "confidence": "HIGH",
             "timing": "Throughout the match",

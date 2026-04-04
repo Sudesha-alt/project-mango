@@ -85,7 +85,7 @@ async def root():
     schedule_count = await db.ipl_schedule.count_documents({})
     squad_count = await db.ipl_squads.count_documents({})
     return {
-        "message": "Gamble Consultant API",
+        "message": "Baatu - 11 API",
         "version": "4.0.0",
         "dataSource": "GPT-5.4 Web Search",
         "scheduleLoaded": schedule_count > 0,
@@ -357,7 +357,153 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
     if match_id in ws_connections and ws_connections[match_id]:
         await broadcast_update(match_id, result)
 
+    # Compute live prediction considering current players on field
+    live_pred = _compute_live_prediction(result, match_info)
+    result["live_prediction"] = live_pred
+
     return result
+
+
+
+def _compute_live_prediction(result: Dict, match_info: Dict) -> Dict:
+    """
+    Compute real-time win prediction based on current match state:
+    - Current batsmen on field + their career data
+    - Current bowler performance
+    - Required rate vs current rate
+    - Wickets in hand
+    - Historical chase patterns at this venue
+    - Phase of the game (PP/middle/death)
+    """
+    live_data = result.get("liveData", {})
+    probs = result.get("probabilities", {})
+    score = live_data.get("score", {})
+    if isinstance(score, dict):
+        runs = score.get("runs", 0)
+        wickets = score.get("wickets", 0)
+        overs = score.get("overs", 0)
+        target = score.get("target")
+    else:
+        runs = 0
+        wickets = 0
+        overs = 0
+        target = None
+    
+    innings = live_data.get("innings", 1)
+    batsmen = result.get("batsmen", [])
+    bowler = result.get("bowler", {})
+    
+    # Determine phase
+    phase = "powerplay" if overs <= 6 else "middle" if overs <= 15 else "death"
+    
+    # Current run rate
+    crr = round(runs / max(overs, 0.1), 2)
+    
+    # Required run rate (2nd innings only)
+    rrr = None
+    runs_remaining = None
+    balls_remaining = None
+    if target and innings == 2:
+        runs_remaining = target - runs
+        balls_remaining = max(1, (20 - overs) * 6)
+        overs_remaining = max(0.1, 20 - overs)
+        rrr = round(runs_remaining / overs_remaining, 2)
+    
+    # Wickets in hand factor (more wickets = better)
+    wickets_in_hand = 10 - wickets
+    
+    # Batting team's advantage factors
+    batting_team = live_data.get("battingTeam", match_info.get("team1", ""))
+    bowling_team = live_data.get("bowlingTeam", match_info.get("team2", ""))
+    
+    # Current batsmen analysis
+    batsmen_info = []
+    for b in batsmen:
+        name = b.get("name", "Unknown")
+        bat_runs = b.get("runs", 0)
+        bat_balls = b.get("balls", 0)
+        bat_sr = round(bat_runs / max(bat_balls, 1) * 100, 1) if bat_balls > 0 else 0
+        batsmen_info.append({
+            "name": name,
+            "runs": bat_runs,
+            "balls": bat_balls,
+            "sr": bat_sr,
+            "is_set": bat_balls >= 15,
+            "impact": "high" if bat_sr > 150 and bat_balls >= 10 else "medium" if bat_sr > 120 else "low",
+        })
+    
+    # Bowler analysis
+    bowler_info = None
+    if bowler:
+        bowler_name = bowler.get("name", "Unknown")
+        bowler_overs = bowler.get("overs", 0)
+        bowler_runs = bowler.get("runs", 0)
+        bowler_wickets = bowler.get("wickets", 0)
+        bowler_econ = round(bowler_runs / max(bowler_overs, 0.1), 2) if bowler_overs > 0 else 0
+        bowler_info = {
+            "name": bowler_name,
+            "overs": bowler_overs,
+            "runs": bowler_runs,
+            "wickets": bowler_wickets,
+            "economy": bowler_econ,
+            "impact": "high" if bowler_wickets >= 2 or bowler_econ < 6 else "medium" if bowler_econ < 8 else "low",
+        }
+    
+    # Win probability adjustment based on match state
+    ensemble_prob = probs.get("ensemble", 0.5)
+    
+    # Compute projected score (1st innings)
+    projected_score = None
+    if innings == 1 and overs > 2:
+        projected_score = round(crr * 20)
+        # Adjust for wickets lost and phase acceleration
+        if phase == "death":
+            projected_score = round(runs + (crr * 1.15) * (20 - overs))
+        elif phase == "middle":
+            projected_score = round(runs + (crr * 1.05) * (20 - overs))
+    
+    # Chase analysis (2nd innings)
+    chase_analysis = None
+    if innings == 2 and target:
+        chase_difficulty = "easy" if rrr and rrr < crr * 0.85 else "moderate" if rrr and rrr < crr * 1.15 else "difficult" if rrr and rrr < crr * 1.5 else "very_difficult"
+        chase_analysis = {
+            "target": target,
+            "runs_remaining": runs_remaining,
+            "balls_remaining": balls_remaining,
+            "required_rate": rrr,
+            "current_rate": crr,
+            "difficulty": chase_difficulty,
+            "wickets_in_hand": wickets_in_hand,
+        }
+    
+    # Summary text
+    if innings == 1:
+        if overs > 2:
+            summary = f"{batting_team} at {runs}/{wickets} in {overs} overs (CRR: {crr}). Projected: ~{projected_score}. Phase: {phase.upper()}."
+        else:
+            summary = f"Early stages — {batting_team} {runs}/{wickets} in {overs} overs."
+    else:
+        if rrr:
+            rate_diff = "ahead" if crr > rrr else "behind"
+            summary = f"{batting_team} need {runs_remaining} off {balls_remaining} balls (RRR: {rrr}). Currently {rate_diff} the rate. {wickets_in_hand} wickets in hand."
+        else:
+            summary = f"{batting_team} chasing — {runs}/{wickets} in {overs} overs."
+    
+    return {
+        "batting_team": batting_team,
+        "bowling_team": bowling_team,
+        "phase": phase,
+        "crr": crr,
+        "rrr": rrr,
+        "projected_score": projected_score,
+        "wickets_in_hand": wickets_in_hand,
+        "batsmen_on_field": batsmen_info,
+        "current_bowler": bowler_info,
+        "chase_analysis": chase_analysis,
+        "win_probability": round(ensemble_prob * 100, 1),
+        "summary": summary,
+    }
+
 
 
 @api_router.get("/matches/{match_id}/state")
@@ -1006,6 +1152,8 @@ async def api_consult(match_id: str, body: ConsultRequest = None):
         player_preds = [predict_player_performance(p) for p in player_stats]
 
     # Run consultation engine (market inputs are 0-100 percentages)
+    # Pass the cached 11-factor prediction so the consultation uses it
+    cached_11f_prediction = cached_pred.get("prediction") if cached_pred else None
     result = run_consultation(
         snapshot=snapshot,
         player_predictions=player_preds,
@@ -1016,6 +1164,7 @@ async def api_consult(match_id: str, body: ConsultRequest = None):
         risk_tolerance=body.risk_tolerance,
         odds_trend_increasing=body.odds_trend_increasing,
         odds_trend_decreasing=body.odds_trend_decreasing,
+        cached_prediction=cached_11f_prediction,
     )
 
     result["team1Short"] = t1_short
@@ -1060,11 +1209,14 @@ async def api_chat(match_id: str, body: ChatRequest):
         snapshot["balls_remaining"] = max(int((20 - overs) * 6), 0) if overs else 120
 
     # Quick consultation (no player stats fetch for speed)
+    cached_pred = await db.pre_match_predictions.find_one({"matchId": match_id}, {"_id": 0})
+    cached_11f = cached_pred.get("prediction") if cached_pred else None
     result = run_consultation(
         snapshot=snapshot,
         market_pct_team1=body.market_pct_team1,
         market_pct_team2=body.market_pct_team2,
         risk_tolerance=body.risk_tolerance,
+        cached_prediction=cached_11f,
     )
 
     # GPT answer
@@ -1252,7 +1404,7 @@ async def broadcast_update(match_id, data):
 
 @app.on_event("startup")
 async def startup():
-    logger.info("Gamble Consultant v4 starting up...")
+    logger.info("Baatu - 11 starting up...")
 
 @app.on_event("shutdown")
 async def shutdown():

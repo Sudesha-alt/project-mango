@@ -23,7 +23,7 @@ export default function Header({ selectedMatch }) {
             className="text-lg font-black uppercase tracking-tight"
             style={{ fontFamily: "'Barlow Condensed', sans-serif" }}
           >
-            Gamble Consultant
+            Baatu - 11
           </span>
         </Link>
 
