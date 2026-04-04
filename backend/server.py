@@ -175,6 +175,8 @@ class ConsultRequest(BaseModel):
     market_pct_team1: Optional[float] = None   # 0-100 probability %
     market_pct_team2: Optional[float] = None   # 0-100 probability %
     risk_tolerance: Optional[str] = "balanced"  # "safe", "balanced", "aggressive"
+    odds_trend_increasing: Optional[str] = None  # team name whose odds are rising
+    odds_trend_decreasing: Optional[str] = None  # team name whose odds are falling
 
 class ChatRequest(BaseModel):
     question: str
@@ -407,10 +409,7 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
     logger.info(f"Pre-match predict: {team1} vs {team2} at {venue}")
     stats = await fetch_pre_match_stats(team1, team2, venue)
 
-    # Run algorithm stack
-    prediction = compute_prediction(stats)
-
-    # Fetch Playing XI with expected performance + luck biasness
+    # Fetch Playing XI with expected performance + luck biasness FIRST (needed for prediction)
     import random
     xi_data = await fetch_playing_xi(team1, team2, venue)
     for team_key in ["team1_xi", "team2_xi"]:
@@ -419,6 +418,9 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
             player["expected_runs"] = round(player.get("expected_runs", 15) * luck_factor, 1)
             player["expected_wickets"] = round(player.get("expected_wickets", 0) * random.uniform(0.80, 1.20), 1)
             player["luck_factor"] = round(luck_factor, 3)
+
+    # Run algorithm stack with player-level data
+    prediction = compute_prediction(stats, playing_xi=xi_data)
 
     # Compute odds direction vs previous prediction
     odds_direction = {"team1": "new", "team2": "new"}
@@ -518,9 +520,8 @@ async def api_predict_upcoming(force: bool = False):
             cached = await db.pre_match_predictions.find_one({"matchId": mid}, {"_id": 0})
 
             stats = await fetch_pre_match_stats(team1, team2, venue)
-            prediction = compute_prediction(stats)
 
-            # Fetch Playing XI
+            # Fetch Playing XI first (needed for prediction)
             xi_data = await fetch_playing_xi(team1, team2, venue)
             for team_key in ["team1_xi", "team2_xi"]:
                 for player in xi_data.get(team_key, []):
@@ -528,6 +529,8 @@ async def api_predict_upcoming(force: bool = False):
                     player["expected_runs"] = round(player.get("expected_runs", 15) * luck_factor, 1)
                     player["expected_wickets"] = round(player.get("expected_wickets", 0) * random.uniform(0.80, 1.20), 1)
                     player["luck_factor"] = round(luck_factor, 3)
+
+            prediction = compute_prediction(stats, playing_xi=xi_data)
 
             # Odds direction
             odds_direction = {"team1": "new", "team2": "new"}
@@ -623,9 +626,8 @@ async def _background_repredict_all():
             cached = await db.pre_match_predictions.find_one({"matchId": mid}, {"_id": 0})
 
             stats = await fetch_pre_match_stats(team1, team2, venue)
-            prediction = compute_prediction(stats)
 
-            # Fetch Playing XI
+            # Fetch Playing XI first (needed for player-level prediction)
             xi_data = await fetch_playing_xi(team1, team2, venue)
             for team_key in ["team1_xi", "team2_xi"]:
                 for player in xi_data.get(team_key, []):
@@ -633,6 +635,8 @@ async def _background_repredict_all():
                     player["expected_runs"] = round(player.get("expected_runs", 15) * luck_factor, 1)
                     player["expected_wickets"] = round(player.get("expected_wickets", 0) * random.uniform(0.80, 1.20), 1)
                     player["luck_factor"] = round(luck_factor, 3)
+
+            prediction = compute_prediction(stats, playing_xi=xi_data)
 
             # Odds direction
             odds_direction = {"team1": "new", "team2": "new"}
@@ -928,6 +932,8 @@ async def api_consult(match_id: str, body: ConsultRequest = None):
         market_pct_team1=body.market_pct_team1,
         market_pct_team2=body.market_pct_team2,
         risk_tolerance=body.risk_tolerance,
+        odds_trend_increasing=body.odds_trend_increasing,
+        odds_trend_decreasing=body.odds_trend_decreasing,
     )
 
     result["team1Short"] = t1_short

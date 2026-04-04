@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import axios from "axios";
-import { Spinner, Scales, MapPin, TrendUp, UsersThree, House, TrendDown, Minus } from "@phosphor-icons/react";
+import { Spinner, Scales, MapPin, TrendUp, UsersThree, House, TrendDown, Minus, ArrowsClockwise } from "@phosphor-icons/react";
 import InfoTooltip from "./InfoTooltip";
 
 const API = process.env.REACT_APP_BACKEND_URL + "/api";
@@ -55,6 +55,15 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2 }) {
     setLoading(false);
   };
 
+  const handleRefresh = async () => {
+    setLoading(true);
+    try {
+      const res = await axios.post(`${API}/matches/${matchId}/pre-match-predict?force=true`);
+      if (res.data && !res.data.error) setData(res.data);
+    } catch (e) { console.error(e); }
+    setLoading(false);
+  };
+
   if (!data) {
     return (
       <div className="bg-[#141414] border border-[#262626] rounded-lg p-5" data-testid="prematch-predict-trigger">
@@ -83,7 +92,13 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2 }) {
     <div className="bg-[#141414] border border-[#262626] rounded-lg p-5 space-y-4" data-testid="prematch-prediction-breakdown">
       {/* Main probability */}
       <div>
-        <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold mb-3 flex items-center gap-1">Algorithm Prediction <InfoTooltip text="Pre-match win confidence using 5 weighted factors combined via logistic model with Platt calibration. Data from ESPNcricinfo/Cricbuzz via GPT-5.4 web search." /></p>
+        <div className="flex items-center justify-between mb-3">
+          <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold flex items-center gap-1">Algorithm Prediction <InfoTooltip text="Pre-match win confidence using 5 weighted factors combined via logistic model with Platt calibration. Data from ESPNcricinfo/Cricbuzz via GPT-5.4 web search." /></p>
+          <button onClick={handleRefresh} disabled={loading} data-testid="refresh-prediction-btn"
+            className="flex items-center gap-1 text-[10px] text-[#737373] hover:text-[#007AFF] transition-colors disabled:opacity-50 font-bold uppercase tracking-wider">
+            {loading ? <Spinner className="w-3 h-3 animate-spin" /> : <ArrowsClockwise weight="bold" className="w-3 h-3" />} Re-Predict
+          </button>
+        </div>
         <div className="flex items-center justify-between mb-1.5">
           <span className="text-lg font-black font-mono" style={{ color: t1Color, fontFamily: "'Barlow Condensed'" }}>{t1} {t1Prob}%</span>
           <span className="text-lg font-black font-mono" style={{ color: t2Color, fontFamily: "'Barlow Condensed'" }}>{t2Prob}% {t2}</span>
@@ -120,7 +135,12 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2 }) {
 
       {/* Factor Breakdown */}
       <div>
-        <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold mb-2 flex items-center gap-1">Factor Breakdown <InfoTooltip text="Each factor is converted to a logit score. Positive (green bar right) favors Team 1, negative (red bar left) favors Team 2. The combined logit passes through a sigmoid for final probability." /></p>
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold flex items-center gap-1">Factor Breakdown <InfoTooltip text="Each factor is converted to a logit score. Positive (green bar right) favors Team 1, negative (red bar left) favors Team 2. The combined logit passes through a sigmoid for final probability." /></p>
+          {pred.uses_player_data && (
+            <span className="text-[8px] px-1.5 py-0.5 bg-[#7C3AED]/15 text-[#7C3AED] rounded font-bold uppercase tracking-wider" data-testid="uses-player-data-badge">Player-Level Data</span>
+          )}
+        </div>
         <FactorBar label="Head-to-Head (5yr)" weight={factors.h2h?.weight || 0.25} logit={factors.h2h?.logit_contribution || 0} icon={Scales}
           tooltip="Win ratio from all IPL matches between these two teams over the last 5 years (2021-2026). More wins = higher logit contribution.">
           {t1} {factors.h2h?.team1_wins || 0} – {factors.h2h?.team2_wins || 0} {t2} ({factors.h2h?.total_matches || 0} matches)

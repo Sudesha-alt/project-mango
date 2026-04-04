@@ -699,7 +699,10 @@ async def fetch_playing_xi(team1: str, team2: str, venue: str) -> Dict:
         f"Search for the expected or confirmed Playing XI for {team1} vs {team2} "
         f"IPL 2026 match at {venue}. "
         f"Search Cricbuzz, ESPNcricinfo, social media (Twitter/X), fantasy cricket sites for predicted or announced lineups. "
-        f"For EACH player, I need: "
+        f"IMPORTANT: Also search for INJURY NEWS, team announcements, squad changes, "
+        f"and players who are UNAVAILABLE (injured, rested, dropped, banned) for this match. "
+        f"EXCLUDE unavailable players and replace them with likely replacements from the squad. "
+        f"For EACH player in the expected XI, I need: "
         f"1) Their stats specifically at {venue} in the last 5 matches they played there — "
         f"runs scored, batting average, strike rate at this venue; wickets taken and economy at this venue. "
         f"2) Their overall IPL 2026 form — total season runs, wickets, avg, SR, economy. "
@@ -742,7 +745,8 @@ async def fetch_playing_xi(team1: str, team2: str, venue: str) -> Dict:
 }}
 
 RULES:
-- Include exactly 11 players per team if available
+- Include exactly 11 AVAILABLE players per team. EXCLUDE injured, rested, dropped, or banned players.
+- If a key player is unavailable, replace them with the most likely replacement from the squad.
 - venue_stats: Use the player's stats specifically at {venue}. If no venue data, use overall IPL average with venue_matches=0.
 - buzz_confidence: 
   * 80-100: Star player, great form, trending positively, experts' top pick

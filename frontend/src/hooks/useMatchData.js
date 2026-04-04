@@ -99,6 +99,8 @@ export function useMatchData() {
         market_pct_team1: opts.marketPctTeam1 || null,
         market_pct_team2: opts.marketPctTeam2 || null,
         risk_tolerance: opts.riskTolerance || "balanced",
+        odds_trend_increasing: opts.oddsTrendIncreasing || null,
+        odds_trend_decreasing: opts.oddsTrendDecreasing || null,
       });
       return res.data;
     } catch (e) {

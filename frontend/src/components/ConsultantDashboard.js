@@ -283,6 +283,7 @@ export default function ConsultantDashboard({ matchId, team1, team2, fetchConsul
   const [loading, setLoading] = useState(false);
   const [risk, setRisk] = useState("balanced");
   const [marketOdds, setMarketOdds] = useState({ team1: "", team2: "" });
+  const [oddsTrend, setOddsTrend] = useState({ increasing: "", decreasing: "" }); // which team's odds are rising/falling
 
   const handleConsult = async () => {
     setLoading(true);
@@ -290,10 +291,21 @@ export default function ConsultantDashboard({ matchId, team1, team2, fetchConsul
       riskTolerance: risk,
       marketPctTeam1: marketOdds.team1 ? parseFloat(marketOdds.team1) : null,
       marketPctTeam2: marketOdds.team2 ? parseFloat(marketOdds.team2) : null,
+      oddsTrendIncreasing: oddsTrend.increasing || null,
+      oddsTrendDecreasing: oddsTrend.decreasing || null,
     };
     const res = await fetchConsultation(matchId, opts);
     if (res && !res.error) setData(res);
     setLoading(false);
+  };
+
+  // Auto-set the opposite team when one trend is selected
+  const handleTrendChange = (direction, team) => {
+    if (direction === "increasing") {
+      setOddsTrend({ increasing: team, decreasing: team === team1 ? team2 : team1 });
+    } else {
+      setOddsTrend({ decreasing: team, increasing: team === team1 ? team2 : team1 });
+    }
   };
 
   const riskOptions = [
@@ -339,6 +351,47 @@ export default function ConsultantDashboard({ matchId, team1, team2, fetchConsul
                 onChange={(e) => setMarketOdds(p => ({ ...p, team2: e.target.value }))}
                 data-testid="market-odds-input-team2"
                 className="w-full bg-[#0A0A0A] border border-[#262626] rounded-md px-3 py-2 text-xs font-mono text-white placeholder:text-[#333] focus:border-[#007AFF] focus:outline-none" />
+            </div>
+          </div>
+        </div>
+
+        {/* Odds Trend Direction */}
+        <div>
+          <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold mb-2 flex items-center gap-1">
+            Market Momentum <InfoTooltip text="Which team's odds are increasing (0→100) vs decreasing (100→0)? Rising odds = market confidence growing. Falling odds = market losing faith. This trend is factored into edge calculation." />
+          </p>
+          <div className="grid grid-cols-2 gap-2" data-testid="odds-trend-selector">
+            <div>
+              <label className="text-[9px] text-[#34C759] block mb-1 font-bold uppercase tracking-wider flex items-center gap-1">
+                <CaretUp weight="bold" className="w-2.5 h-2.5" /> Odds Rising (0→100)
+              </label>
+              <div className="flex gap-1 bg-[#0A0A0A] rounded-md p-0.5">
+                {[team1, team2].map(t => (
+                  <button key={t} onClick={() => handleTrendChange("increasing", t)}
+                    data-testid={`trend-increasing-${t}`}
+                    className={`flex-1 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded transition-colors ${
+                      oddsTrend.increasing === t ? "bg-[#34C759]/20 text-[#34C759] border border-[#34C759]/40" : "text-[#525252] hover:text-[#737373]"
+                    }`}>
+                    {t}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="text-[9px] text-[#FF3B30] block mb-1 font-bold uppercase tracking-wider flex items-center gap-1">
+                <CaretDown weight="bold" className="w-2.5 h-2.5" /> Odds Falling (100→0)
+              </label>
+              <div className="flex gap-1 bg-[#0A0A0A] rounded-md p-0.5">
+                {[team1, team2].map(t => (
+                  <button key={t} onClick={() => handleTrendChange("decreasing", t)}
+                    data-testid={`trend-decreasing-${t}`}
+                    className={`flex-1 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded transition-colors ${
+                      oddsTrend.decreasing === t ? "bg-[#FF3B30]/20 text-[#FF3B30] border border-[#FF3B30]/40" : "text-[#525252] hover:text-[#737373]"
+                    }`}>
+                    {t}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         </div>

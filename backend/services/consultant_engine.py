@@ -537,7 +537,9 @@ def run_consultation(
     team2_data: Dict = None,
     market_pct_team1: float = None,
     market_pct_team2: float = None,
-    risk_tolerance: str = "balanced",  # "safe", "balanced", "aggressive"
+    risk_tolerance: str = "balanced",
+    odds_trend_increasing: str = None,
+    odds_trend_decreasing: str = None,
 ) -> Dict:
     """
     Master function: runs the full layered decision engine.
@@ -588,6 +590,28 @@ def run_consultation(
     # Blend simulation probability with feature model
     sim_prob = sim["team1_win_prob"]
     blended_raw = raw_prob * 0.6 + sim_prob * 0.4
+
+    # Market momentum adjustment: odds trend shifts edge calculation
+    market_momentum = None
+    if odds_trend_increasing:
+        if odds_trend_increasing == team1:
+            # Team 1 odds rising = market gaining confidence in team 1
+            momentum_boost = 0.03  # ~3% adjustment
+            blended_raw = min(0.95, blended_raw + momentum_boost)
+            market_momentum = {
+                "increasing": team1, "decreasing": team2,
+                "direction": "favors_team1",
+                "adjustment_pct": round(momentum_boost * 100, 1),
+            }
+        else:
+            # Team 2 odds rising = market gaining confidence in team 2
+            momentum_boost = 0.03
+            blended_raw = max(0.05, blended_raw - momentum_boost)
+            market_momentum = {
+                "increasing": team2, "decreasing": team1,
+                "direction": "favors_team2",
+                "adjustment_pct": round(momentum_boost * 100, 1),
+            }
 
     # Layer 5: Calibration
     cal = calibrate_probability(blended_raw)
@@ -651,6 +675,7 @@ def run_consultation(
         "model_source": model_source,
         "pre_match_factors": factors,
         "odds_detail": odds_edge,
+        "market_momentum": market_momentum,
     }
 
 
