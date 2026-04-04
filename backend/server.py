@@ -264,7 +264,7 @@ class ChatRequest(BaseModel):
 
 @api_router.post("/matches/{match_id}/fetch-live")
 async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
-    """Button-triggered: Fetch live data via GPT-5.4 web search."""
+    """Button-triggered: Fetch live data via CricketData.org API + Claude analysis."""
     if body is None:
         body = FetchLiveRequest()
 
@@ -275,31 +275,99 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
     team1 = match_info.get("team1", "")
     team2 = match_info.get("team2", "")
     venue = match_info.get("venue", "")
+    t1_short = get_short_name(team1)
+    t2_short = get_short_name(team2)
 
-    logger.info(f"Fetching live data via web search: {team1} vs {team2}")
-    gpt_data = await fetch_live_match_update(match_info)
+    logger.info(f"Fetching live data for {team1} vs {team2}")
 
-    if not gpt_data:
-        return {"error": "Could not fetch live data from web search"}
+    # ── Step 1: Try CricketData.org API (structured, reliable) ──
+    live_data = None
+    source = "cricketdata.org"
+    cricapi_result = await fetch_live_ipl_details()
+
+    if cricapi_result.get("matches"):
+        # Find matching match by team names
+        for m in cricapi_result["matches"]:
+            m_t1 = (m.get("team1", "") or "").lower()
+            m_t2 = (m.get("team2", "") or "").lower()
+            t1_lower = team1.lower()
+            t2_lower = team2.lower()
+            if (t1_lower in m_t1 or m_t1 in t1_lower or t2_lower in m_t1 or m_t1 in t2_lower) and \
+               (t1_lower in m_t2 or m_t2 in t1_lower or t2_lower in m_t2 or m_t2 in t2_lower):
+                cs = m.get("current_score", {})
+                live_data = {
+                    "matchId": match_id,
+                    "team1": team1,
+                    "team2": team2,
+                    "venue": m.get("venue", venue),
+                    "isLive": m.get("matchStarted", False) and not m.get("matchEnded", False),
+                    "noLiveMatch": not m.get("matchStarted", False),
+                    "innings": m.get("current_innings", 1),
+                    "battingTeam": team1,  # Will be updated below
+                    "bowlingTeam": team2,
+                    "score": {
+                        "runs": cs.get("runs", 0),
+                        "wickets": cs.get("wickets", 0),
+                        "overs": cs.get("overs", 0),
+                        "target": m.get("target"),
+                    },
+                    "currentRunRate": round(cs.get("runs", 0) / max(cs.get("overs", 0.1), 0.1), 2),
+                    "batsmen": [],
+                    "bowler": {},
+                    "fallOfWickets": [],
+                    "recentBalls": [],
+                    "status": m.get("status", "Live"),
+                    "lastBallCommentary": m.get("status", ""),
+                    "innings_data": m.get("innings", []),
+                    "team_info": m.get("team_info", {}),
+                    "source": "cricketdata.org",
+                    "api_info": cricapi_result.get("api_info", {}),
+                }
+                # Determine batting team from innings label
+                for inn in m.get("innings", []):
+                    label = inn.get("inning_label", "").lower()
+                    if "inning 1" in label or (inn == m.get("innings", [{}])[-1]):
+                        if team1.lower() in label or t1_short.lower() in label:
+                            live_data["battingTeam"] = team1
+                            live_data["bowlingTeam"] = team2
+                        elif team2.lower() in label or t2_short.lower() in label:
+                            live_data["battingTeam"] = team2
+                            live_data["bowlingTeam"] = team1
+                logger.info(f"CricAPI live data: {cs.get('runs', 0)}/{cs.get('wickets', 0)} ({cs.get('overs', 0)} ov)")
+                break
+
+    # ── Step 2: Fallback to Claude web scraping if CricAPI has no data ──
+    if not live_data:
+        logger.info(f"CricAPI has no live data, falling back to Claude web scraping")
+        source = "claude_web_search"
+        claude_data = await fetch_live_match_update(match_info)
+        if claude_data:
+            live_data = claude_data
+            live_data["source"] = source
+        else:
+            return {
+                "matchId": match_id,
+                "team1": team1, "team1Short": t1_short,
+                "team2": team2, "team2Short": t2_short,
+                "venue": venue,
+                "noLiveMatch": True, "isLive": False,
+                "status": "No live data available from CricAPI or web search",
+                "liveData": {}, "source": "none",
+                "fetchedAt": datetime.now(timezone.utc).isoformat(),
+            }
 
     # Handle "no live match" scenario
-    if gpt_data.get("noLiveMatch"):
+    if live_data.get("noLiveMatch"):
         return {
             "matchId": match_id,
-            "team1": team1, "team1Short": get_short_name(team1),
-            "team2": team2, "team2Short": get_short_name(team2),
+            "team1": team1, "team1Short": t1_short,
+            "team2": team2, "team2Short": t2_short,
             "venue": venue,
-            "noLiveMatch": True,
-            "isLive": False,
-            "status": gpt_data.get("status", "This match is not live right now"),
-            "liveData": gpt_data,
-            "source": "web_search",
+            "noLiveMatch": True, "isLive": False,
+            "status": live_data.get("status", "This match is not live right now"),
+            "liveData": live_data, "source": source,
             "fetchedAt": datetime.now(timezone.utc).isoformat(),
         }
-
-    live_data = gpt_data
-    live_data["source"] = "web_search"
-    source = "web_search"
 
     # Parse score
     score = live_data.get("score", {})
@@ -616,6 +684,16 @@ async def api_predict(match_id: str):
 
 
 # ─── PRE-MATCH PREDICTION ───────────────────────────────────
+
+
+@api_router.get("/predictions/{match_id}/pre-match")
+async def get_pre_match_prediction(match_id: str):
+    """Get cached pre-match prediction (does not trigger new prediction)."""
+    cached = await db.pre_match_predictions.find_one({"matchId": match_id}, {"_id": 0})
+    if cached:
+        return cached
+    return {"matchId": match_id, "prediction": None}
+
 
 @api_router.post("/matches/{match_id}/pre-match-predict")
 async def api_pre_match_predict(match_id: str, force: bool = False):
@@ -1228,6 +1306,16 @@ async def api_consult(match_id: str, body: ConsultRequest = None):
     return result
 
 
+
+@api_router.get("/matches/{match_id}/claude-analysis")
+async def get_claude_analysis(match_id: str):
+    """Get cached Claude analysis (does not trigger new generation)."""
+    cached = await db.claude_analysis.find_one({"matchId": match_id}, {"_id": 0})
+    if cached and cached.get("analysis"):
+        return cached
+    return {"matchId": match_id, "analysis": None}
+
+
 # ─── CLAUDE DEEP ANALYSIS ENDPOINT ───────────────────────────
 
 @api_router.post("/matches/{match_id}/claude-analysis")
@@ -1680,6 +1768,58 @@ async def promote_matches_to_live():
         logger.info(f"[Scheduler] Promoted {promoted} match(es) to LIVE")
 
 
+async def auto_scrape_live_matches():
+    """Background job: Auto-scrape live match scores from CricketData.org API every 5 minutes."""
+    logger.info("[Auto-Scrape] Running background live match scrape...")
+    live_matches = await db.ipl_schedule.find(
+        {"status": "live"},
+        {"_id": 0}
+    ).to_list(20)
+
+    if not live_matches:
+        logger.info("[Auto-Scrape] No live matches to scrape")
+        return
+
+    cricapi_result = await fetch_live_ipl_details()
+    if not cricapi_result.get("matches"):
+        logger.info("[Auto-Scrape] CricAPI returned no live matches")
+        return
+
+    updated = 0
+    for match in live_matches:
+        mid = match.get("matchId")
+        team1 = match.get("team1", "")
+        team2 = match.get("team2", "")
+        t1_short = match.get("team1Short", get_short_name(team1))
+
+        for api_match in cricapi_result["matches"]:
+            m_t1 = (api_match.get("team1", "") or "").lower()
+            m_t2 = (api_match.get("team2", "") or "").lower()
+            t1_low = team1.lower()
+            t2_low = team2.lower()
+            if (t1_low in m_t1 or m_t1 in t1_low or t2_low in m_t1) and \
+               (t1_low in m_t2 or m_t2 in t1_low or t2_low in m_t2 or m_t2 in t2_low):
+                cs = api_match.get("current_score", {})
+                runs = cs.get("runs", 0)
+                wickets = cs.get("wickets", 0)
+                overs_val = cs.get("overs", 0)
+
+                score_text = f"{t1_short} {runs}/{wickets} ({overs_val} ov)"
+                await db.ipl_schedule.update_one(
+                    {"matchId": mid},
+                    {"$set": {
+                        "score": score_text,
+                        "liveScore": {"runs": runs, "wickets": wickets, "overs": overs_val},
+                        "lastAutoScrapedAt": datetime.now(timezone.utc).isoformat(),
+                    }}
+                )
+                updated += 1
+                logger.info(f"[Auto-Scrape] Updated {team1} vs {team2}: {score_text}")
+                break
+
+    logger.info(f"[Auto-Scrape] Updated {updated} of {len(live_matches)} live matches")
+
+
 # ─── STARTUP ─────────────────────────────────────────────────
 
 @app.on_event("startup")
@@ -1688,8 +1828,10 @@ async def startup():
     # Schedule match promotion at 4:00 PM and 7:00 PM IST daily
     scheduler.add_job(promote_matches_to_live, CronTrigger(hour=16, minute=0), id="promote_4pm", replace_existing=True)
     scheduler.add_job(promote_matches_to_live, CronTrigger(hour=19, minute=0), id="promote_7pm", replace_existing=True)
+    # Auto-scrape live matches every 5 minutes during match hours (2PM-11PM IST)
+    scheduler.add_job(auto_scrape_live_matches, "interval", minutes=5, id="auto_scrape", replace_existing=True)
     scheduler.start()
-    logger.info("[Scheduler] Started — will promote matches to LIVE at 4:00 PM and 7:00 PM IST daily")
+    logger.info("[Scheduler] Started — promote at 4PM/7PM, auto-scrape every 5 min")
     # Sync any existing live scores to schedule on startup
     await sync_live_scores_to_schedule()
 

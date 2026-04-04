@@ -8,6 +8,7 @@ import PreMatch from "@/pages/PreMatch";
 import LiveMatch from "@/pages/LiveMatch";
 import PostMatch from "@/pages/PostMatch";
 import Analysis from "@/pages/Analysis";
+import ComparisonDashboard from "@/pages/ComparisonDashboard";
 
 function App() {
   const [selectedMatch, setSelectedMatch] = useState(null);
@@ -25,6 +26,7 @@ function App() {
             <Route path="/live" element={<MatchSelector />} />
             <Route path="/post-match/:matchId" element={<PostMatch />} />
             <Route path="/analysis" element={<Analysis />} />
+            <Route path="/compare" element={<ComparisonDashboard />} />
           </Routes>
         </main>
       </BrowserRouter>

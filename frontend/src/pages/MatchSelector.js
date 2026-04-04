@@ -126,7 +126,7 @@ export default function MatchSelector() {
             Baatu - 11
           </h1>
           <p className="text-sm text-[#A1A1AA] mt-2" style={{ fontFamily: "'IBM Plex Sans'" }}>
-            IPL 2026 &middot; {schedule.total || 0} matches &middot; Powered by GPT-5.4 Web Search
+            IPL 2026 &middot; {schedule.total || 0} matches &middot; Powered by Claude Opus
           </p>
           {!schedule.loaded && (
             <button onClick={() => handleLoadSchedule(true)} disabled={scheduleLoading} data-testid="load-schedule-btn"

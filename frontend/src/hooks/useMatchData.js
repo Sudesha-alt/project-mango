@@ -124,10 +124,17 @@ export function useMatchData() {
     }
   }, []);
 
-  const fetchClaudeAnalysis = useCallback(async (matchId) => {
+  const fetchClaudeAnalysis = useCallback(async (matchId, forceRefresh = false) => {
     try {
-      const res = await axios.post(`${API}/matches/${matchId}/claude-analysis`);
-      return res.data;
+      if (forceRefresh) {
+        // POST triggers generation (with web scraping)
+        const res = await axios.post(`${API}/matches/${matchId}/claude-analysis`);
+        return res.data;
+      } else {
+        // GET retrieves cached only
+        const res = await axios.get(`${API}/matches/${matchId}/claude-analysis`);
+        return res.data;
+      }
     } catch (e) {
       console.error("Claude analysis error:", e);
       return null;

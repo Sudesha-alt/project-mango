@@ -1,5 +1,5 @@
 import { Link, useLocation } from "react-router-dom";
-import { Pulse, ChartLine, Target, Crosshair } from "@phosphor-icons/react";
+import { Pulse, ChartLine, Target, Crosshair, Scales } from "@phosphor-icons/react";
 
 export default function Header({ selectedMatch }) {
   const location = useLocation();
@@ -8,6 +8,7 @@ export default function Header({ selectedMatch }) {
   const navItems = [
     { path: "/", label: "MATCHES", icon: Target },
     { path: "/live", label: "LIVE", icon: Pulse },
+    { path: "/compare", label: "COMPARE", icon: Scales },
     { path: "/analysis", label: "ANALYSIS", icon: ChartLine },
   ];
 

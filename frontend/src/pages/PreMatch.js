@@ -44,15 +44,15 @@ export default function PreMatch() {
     setClaudeLoading(true);
     // Clear cache to force fresh analysis
     await clearClaudeAnalysis(matchId);
-    const res = await fetchClaudeAnalysis(matchId);
+    const res = await fetchClaudeAnalysis(matchId, true);
     if (res) setClaudeData(res);
     setClaudeLoading(false);
   };
 
-  // Load cached claude analysis on mount
+  // Load cached claude analysis on mount (GET, no generation)
   useEffect(() => {
     const loadCached = async () => {
-      const res = await fetchClaudeAnalysis(matchId);
+      const res = await fetchClaudeAnalysis(matchId, false);
       if (res && res.analysis) setClaudeData(res);
     };
     if (matchId && matchInfo) loadCached();
