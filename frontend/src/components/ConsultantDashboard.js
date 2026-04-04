@@ -93,27 +93,6 @@ function EdgeReasons({ reasons, signal }) {
 }
 
 
-function OddsComparison({ data }) {
-  if (!data) return null;
-  return (
-    <div data-testid="odds-comparison" className="space-y-2">
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <p className="text-[10px] text-[#737373] uppercase tracking-wider font-semibold mb-0.5 flex items-center gap-1">Fair Odds <InfoTooltip text="Decimal odds calculated from the model's calibrated win probability. If the bookmaker offers higher odds, it's a value bet." /></p>
-          <p className="text-2xl font-black font-mono tabular-nums text-white" style={{ fontFamily: "'Barlow Condensed'" }}>{data.fair_decimal_odds}</p>
-          <p className="text-[10px] text-[#A3A3A3] font-mono">{data.fair_probability}% implied</p>
-        </div>
-        <div>
-          <p className="text-[10px] text-[#737373] uppercase tracking-wider font-semibold mb-0.5">Market Odds</p>
-          <p className="text-2xl font-black font-mono tabular-nums text-white" style={{ fontFamily: "'Barlow Condensed'" }}>{data.market_decimal_odds || "—"}</p>
-          {data.normalized_market_probability && <p className="text-[10px] text-[#A3A3A3] font-mono">{data.normalized_market_probability}% normalized</p>}
-          {data.overround && <p className="text-[10px] text-[#FFCC00] font-mono">Overround: {data.overround}%</p>}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function DriversPanel({ drivers }) {
   if (!drivers || drivers.length === 0) return null;
   return (
@@ -457,17 +436,17 @@ export default function ConsultantDashboard({ matchId, team1, team2, fetchConsul
       </div>
 
       {data && (
-        <div className="space-y-4">
+        <div className="space-y-3">
           {/* ── BOLD VERDICT ── */}
           {data.verdict && (
-            <div className={`rounded-lg p-5 border ${
+            <div className={`rounded-lg p-4 border ${
               data.verdict.strength === "DOMINANT" ? "bg-[#34C759]/10 border-[#34C759]/30" :
               data.verdict.strength === "STRONG" ? "bg-[#007AFF]/10 border-[#007AFF]/30" :
               data.verdict.strength === "SLIGHT" ? "bg-[#FFCC00]/10 border-[#FFCC00]/30" :
               "bg-[#262626]/50 border-[#525252]/30"
             }`} data-testid="verdict-section">
-              <div className="flex items-center gap-3 mb-2">
-                <span className={`text-4xl font-black tracking-tight ${
+              <div className="flex items-center gap-2 flex-wrap mb-2">
+                <span className={`text-2xl font-black tracking-tight ${
                   data.verdict.strength === "DOMINANT" ? "text-[#34C759]" :
                   data.verdict.strength === "STRONG" ? "text-[#007AFF]" :
                   data.verdict.strength === "SLIGHT" ? "text-[#FFCC00]" :
@@ -475,165 +454,75 @@ export default function ConsultantDashboard({ matchId, team1, team2, fetchConsul
                 }`} style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
                   {data.verdict.winner_short} WINS
                 </span>
-                <span className="text-[10px] px-2 py-1 rounded font-bold uppercase tracking-widest bg-white/5 text-[#A3A3A3]">
+                <span className="text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-widest bg-white/5 text-[#A3A3A3]">
                   {data.verdict.strength}
                 </span>
                 <SignalBadge signal={data.value_signal} />
               </div>
-              <p className="text-sm text-[#D4D4D4] leading-relaxed">{data.verdict.text}</p>
-              <p className="text-xs text-[#737373] mt-2 font-mono">{data.bet_recommendation}</p>
-              {/* Edge Explanation Pointers */}
-              <div className="mt-3">
+              <p className="text-xs text-[#D4D4D4] leading-relaxed">{data.verdict.text}</p>
+              <p className="text-[10px] text-[#737373] mt-1.5 font-mono">{data.bet_recommendation}</p>
+              <div className="mt-2">
                 <EdgeReasons reasons={data.edge_reasons} signal={data.value_signal} />
               </div>
             </div>
           )}
 
-          {/* ── ODDS VISUAL ── */}
-          {data.odds_visual && (
-            <div className="bg-[#141414] border border-[#262626] rounded-lg p-5" data-testid="odds-visual-section">
-              <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold mb-4 flex items-center gap-1">
-                Odds Comparison <InfoTooltip text="Visual comparison of model probability vs bookmaker probability. Green bar = model, Gray bar = market. If model > market, there's a value bet." />
+          {/* ── WIN PROBABILITY + EDGE ── */}
+          <div className="bg-[#141414] border border-[#262626] rounded-lg p-4">
+            <WinGauge probability={data.win_probability} />
+            <UncertaintyBand band={data.uncertainty_band} confidence={data.confidence} />
+            <div className="mt-3">
+              <EdgeMeter edge={data.edge_pct} />
+            </div>
+          </div>
+
+          {/* ── 50K SIMULATIONS ── */}
+          <div className="bg-[#141414] border border-[#262626] rounded-lg p-4">
+            <SimulationSummary sim={data.simulation} team1={data.team1Short || team1} team2={data.team2Short || team2} />
+          </div>
+
+          {/* ── TOP DRIVERS ── */}
+          <div className="bg-[#141414] border border-[#262626] rounded-lg p-4">
+            <DriversPanel drivers={data.top_drivers} />
+          </div>
+
+          {/* ── BETTING SCENARIOS ── */}
+          {data.betting_scenarios?.length > 0 && (
+            <div className="bg-[#141414] border border-[#262626] rounded-lg p-4" data-testid="betting-scenarios">
+              <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold mb-2 flex items-center gap-1">
+                Betting Scenarios <InfoTooltip text="AI-generated betting windows based on 50K simulations, player form, and match dynamics." />
               </p>
-              <div className="space-y-3">
-                {/* Team 1 */}
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-white">{data.odds_visual.team1_short}</span>
-                    <span className="text-xs font-mono font-bold text-white">{data.odds_visual.team1_model_pct}%</span>
-                  </div>
-                  <div className="h-6 bg-[#0A0A0A] rounded-md relative overflow-hidden">
-                    <div className="absolute inset-y-0 left-0 bg-[#007AFF]/30 rounded-md transition-all" style={{ width: `${data.odds_visual.team1_model_pct}%` }} />
-                    {data.odds_visual.team1_market_pct && (
-                      <div className="absolute inset-y-0 left-0 border-r-2 border-dashed border-[#737373]" style={{ width: `${data.odds_visual.team1_market_pct}%` }} title={`Market: ${data.odds_visual.team1_market_pct}%`} />
-                    )}
-                    <div className="absolute inset-0 flex items-center px-2">
-                      <span className="text-[10px] font-mono text-white/70">Model: {data.odds_visual.team1_model_pct}% {data.odds_visual.team1_market_pct ? `| Market: ${data.odds_visual.team1_market_pct}%` : ""}</span>
+              <div className="space-y-2">
+                {data.betting_scenarios.map((sc, i) => (
+                  <div key={i} className={`p-2.5 rounded-md border ${
+                    sc.confidence === "HIGH" ? "border-[#34C759]/30 bg-[#34C759]/5" : "border-[#FFCC00]/30 bg-[#FFCC00]/5"
+                  }`}>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[11px] font-bold text-white">{sc.title}</span>
+                      <span className={`text-[8px] px-1.5 py-0.5 rounded font-bold uppercase ${
+                        sc.confidence === "HIGH" ? "bg-[#34C759]/20 text-[#34C759]" : "bg-[#FFCC00]/20 text-[#FFCC00]"
+                      }`}>{sc.confidence}</span>
                     </div>
+                    <p className="text-[10px] text-[#A3A3A3] leading-relaxed">{sc.description}</p>
+                    <p className="text-[8px] text-[#525252] font-mono mt-1">{sc.timing}</p>
                   </div>
-                </div>
-                {/* Team 2 */}
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-white">{data.odds_visual.team2_short}</span>
-                    <span className="text-xs font-mono font-bold text-white">{data.odds_visual.team2_model_pct}%</span>
-                  </div>
-                  <div className="h-6 bg-[#0A0A0A] rounded-md relative overflow-hidden">
-                    <div className="absolute inset-y-0 left-0 bg-[#FF3B30]/30 rounded-md transition-all" style={{ width: `${data.odds_visual.team2_model_pct}%` }} />
-                    {data.odds_visual.team2_market_pct && (
-                      <div className="absolute inset-y-0 left-0 border-r-2 border-dashed border-[#737373]" style={{ width: `${data.odds_visual.team2_market_pct}%` }} />
-                    )}
-                    <div className="absolute inset-0 flex items-center px-2">
-                      <span className="text-[10px] font-mono text-white/70">Model: {data.odds_visual.team2_model_pct}% {data.odds_visual.team2_market_pct ? `| Market: ${data.odds_visual.team2_market_pct}%` : ""}</span>
-                    </div>
-                  </div>
-                </div>
-                {/* Edge and Fair Odds */}
-                <div className="grid grid-cols-3 gap-2 mt-2 pt-2 border-t border-[#262626]">
-                  <div className="text-center">
-                    <p className="text-[9px] text-[#737373] uppercase">Edge</p>
-                    <p className={`text-lg font-black font-mono ${(data.odds_visual.edge_team1 || 0) > 0 ? "text-[#34C759]" : "text-[#FF3B30]"}`}>
-                      {(data.odds_visual.edge_team1 || 0) > 0 ? "+" : ""}{data.odds_visual.edge_team1 || 0}%
-                    </p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-[9px] text-[#737373] uppercase">Fair Odds</p>
-                    <p className="text-lg font-black font-mono text-white">{data.odds_visual.team1_fair_odds}</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-[9px] text-[#737373] uppercase">Overround</p>
-                    <p className="text-lg font-black font-mono text-[#FFCC00]">{data.odds_visual.overround || "—"}%</p>
-                  </div>
-                </div>
+                ))}
               </div>
             </div>
           )}
 
-          {/* ── MAIN GRID ── */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-            {/* Left: Win gauge + Edge + Sim */}
-            <div className="lg:col-span-4 space-y-4">
-              <div className="bg-[#141414] border border-[#262626] rounded-lg p-5">
-                <WinGauge probability={data.win_probability} />
-                <UncertaintyBand band={data.uncertainty_band} confidence={data.confidence} />
-              </div>
-
-              <div className="bg-[#141414] border border-[#262626] rounded-lg p-5">
-                <EdgeMeter edge={data.edge_pct} />
-              </div>
-
-              <div className="bg-[#141414] border border-[#262626] rounded-lg p-5">
-                <SimulationSummary sim={data.simulation} team1={data.team1Short || team1} team2={data.team2Short || team2} />
-              </div>
-
-              {/* Match State — hidden for upcoming matches */}
-              {data.features && (data.features.overs > 0 || data.features.score > 0) && (
-              <div className="bg-[#141414] border border-[#262626] rounded-lg p-5 space-y-2" data-testid="match-state-section">
-                <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold flex items-center gap-1">Match State <InfoTooltip text="Current match features — CRR (current run rate), RRR (required run rate), Pressure Index, Batting Depth remaining, and Collapse Risk." /></p>
-                <div className="grid grid-cols-3 gap-2">
-                  {[
-                    { label: "Phase", value: data.features?.phase?.toUpperCase() },
-                    { label: "CRR", value: data.features?.current_run_rate },
-                    { label: "RRR", value: data.features?.required_run_rate || "—" },
-                    { label: "Pressure", value: data.features?.pressure_index },
-                    { label: "Depth", value: data.features?.batting_depth_index },
-                    { label: "Collapse", value: data.features?.collapse_risk },
-                  ].map((f, i) => (
-                    <div key={i} className="text-center">
-                      <p className="text-[9px] text-[#737373] uppercase">{f.label}</p>
-                      <p className="text-sm font-mono font-bold text-white">{f.value}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              )}
+          {/* ── PLAYER IMPACT ── */}
+          {data.player_impact?.length > 0 && (
+            <div className="bg-[#141414] border border-[#262626] rounded-lg p-4">
+              <PlayerImpact players={data.player_impact} />
             </div>
+          )}
 
-            {/* Middle: Drivers + Betting Scenarios + Players */}
-            <div className="lg:col-span-5 space-y-4">
-              <div className="bg-[#141414] border border-[#262626] rounded-lg p-5">
-                <DriversPanel drivers={data.top_drivers} />
-              </div>
-
-              {/* Betting Scenarios */}
-              {data.betting_scenarios?.length > 0 && (
-                <div className="bg-[#141414] border border-[#262626] rounded-lg p-5" data-testid="betting-scenarios">
-                  <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold mb-3 flex items-center gap-1">
-                    Betting Scenarios <InfoTooltip text="AI-generated betting windows based on 50K simulations, player form, and match dynamics. Each scenario tells you WHEN to bet and WHY, with a confidence level." />
-                  </p>
-                  <div className="space-y-3">
-                    {data.betting_scenarios.map((sc, i) => (
-                      <div key={i} className={`p-3 rounded-md border ${
-                        sc.confidence === "HIGH" ? "border-[#34C759]/30 bg-[#34C759]/5" :
-                        "border-[#FFCC00]/30 bg-[#FFCC00]/5"
-                      }`}>
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-xs font-bold text-white">{sc.title}</span>
-                          <span className={`text-[8px] px-1.5 py-0.5 rounded font-bold uppercase ${
-                            sc.confidence === "HIGH" ? "bg-[#34C759]/20 text-[#34C759]" : "bg-[#FFCC00]/20 text-[#FFCC00]"
-                          }`}>{sc.confidence}</span>
-                        </div>
-                        <p className="text-[11px] text-[#A3A3A3] leading-relaxed">{sc.description}</p>
-                        <p className="text-[9px] text-[#525252] font-mono mt-1">{sc.timing}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              <div className="bg-[#141414] border border-[#262626] rounded-lg p-5">
-                <PlayerImpact players={data.player_impact} />
-              </div>
-            </div>
-
-            {/* Right: Chat */}
-            <div className="lg:col-span-3">
-              <ChatBox matchId={matchId} sendChat={sendChat} riskTolerance={risk} marketOdds={{
-                team1: marketOdds.team1 ? parseFloat(marketOdds.team1) : null,
-                team2: marketOdds.team2 ? parseFloat(marketOdds.team2) : null,
-              }} />
-            </div>
-          </div>
+          {/* ── CHAT ── */}
+          <ChatBox matchId={matchId} sendChat={sendChat} riskTolerance={risk} marketOdds={{
+            team1: marketOdds.team1 ? parseFloat(marketOdds.team1) : null,
+            team2: marketOdds.team2 ? parseFloat(marketOdds.team2) : null,
+          }} />
         </div>
       )}
 

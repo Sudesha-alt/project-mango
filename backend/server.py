@@ -105,8 +105,36 @@ async def root():
 async def manual_promote():
     """Manually trigger match promotion to LIVE (same as scheduled 4PM/7PM)."""
     await promote_matches_to_live()
+    await sync_live_scores_to_schedule()
     live_count = await db.ipl_schedule.count_documents({"status": "live"})
     return {"status": "done", "live_matches": live_count}
+
+
+async def sync_live_scores_to_schedule():
+    """Sync any existing live snapshot scores to the schedule collection for match cards."""
+    snapshots = await db.live_snapshots.find({}, {"_id": 0, "matchId": 1, "liveData": 1, "team1Short": 1}).to_list(100)
+    for snap in snapshots:
+        mid = snap.get("matchId")
+        ld = snap.get("liveData", {})
+        score = ld.get("score", {})
+        if not mid or not isinstance(score, dict) or score.get("runs") is None:
+            continue
+        t1_short = snap.get("team1Short", "")
+        runs = score.get("runs", 0)
+        wickets = score.get("wickets", 0)
+        overs = score.get("overs", 0)
+        target = score.get("target")
+        innings = ld.get("innings", 1)
+        score_text = f"{t1_short} {runs}/{wickets} ({overs} ov)"
+        if target:
+            score_text += f" | Target: {target}"
+        await db.ipl_schedule.update_one(
+            {"matchId": mid},
+            {"$set": {
+                "score": score_text,
+                "liveScore": {"runs": runs, "wickets": wickets, "overs": overs, "target": target, "innings": innings},
+            }}
+        )
 
 
 # ─── IPL SCHEDULE (AI-powered + cached in MongoDB) ──────────
@@ -368,6 +396,19 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
         {"$set": {**{k: v for k, v in result.items()}, "updatedAt": datetime.now(timezone.utc).isoformat()}},
         upsert=True
     )
+
+    # Update match card score on schedule so it shows on the matches list
+    score_text = f"{get_short_name(team1)} {runs}/{wickets} ({overs} ov)"
+    if target:
+        score_text += f" | Target: {target}"
+    schedule_update = {
+        "score": score_text,
+        "status": "live",
+        "liveScore": {"runs": runs, "wickets": wickets, "overs": overs, "target": target, "innings": innings},
+        "lastFetchedAt": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.ipl_schedule.update_one({"matchId": match_id}, {"$set": schedule_update})
+
     if match_id in ws_connections and ws_connections[match_id]:
         await broadcast_update(match_id, result)
 
@@ -1568,6 +1609,8 @@ async def startup():
     scheduler.add_job(promote_matches_to_live, CronTrigger(hour=19, minute=0), id="promote_7pm", replace_existing=True)
     scheduler.start()
     logger.info("[Scheduler] Started — will promote matches to LIVE at 4:00 PM and 7:00 PM IST daily")
+    # Sync any existing live scores to schedule on startup
+    await sync_live_scores_to_schedule()
 
 @app.on_event("shutdown")
 async def shutdown():

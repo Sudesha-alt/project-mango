@@ -1,0 +1,87 @@
+{
+  "summary": "Completed testing of Iteration 20 features: Score on Match Cards and ConsultantDashboard Layout Fix. All features verified working. Backend: 8/8 tests passed. Frontend: All UI components verified via Playwright.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "passed_tests": [
+    "Backend: GET /api/schedule returns 'score' field for matches with live data",
+    "Backend: Match ipl2026_008 has score 'MI 41/2 (6 ov)' in schedule",
+    "Backend: Match ipl2026_009 (RR vs GT) has no score yet (as expected)",
+    "Backend: POST /api/scheduler/promote-now returns status='done'",
+    "Backend: POST /api/scheduler/promote-now syncs live scores to schedule",
+    "Backend: GET /api/matches/{matchId}/state returns cached live data with score",
+    "Backend: 2 live matches correctly identified (ipl2026_008, ipl2026_009)",
+    "Backend: GET /api/ shows scheduler active with next_runs=['4:00 PM IST', '7:00 PM IST']",
+    "Frontend: Score 'MI 41/2 (6 ov)' displayed on match card for MI vs DC",
+    "Frontend: ConsultantDashboard renders without horizontal overflow (dashboardWidth=453px, parentWidth=453px)",
+    "Frontend: No 3-column grid (lg:grid-cols-12) found in ConsultantDashboard",
+    "Frontend: OddsComparison component removed (unwanted block)",
+    "Frontend: ConsultantDashboard uses single-column stacked layout",
+    "Frontend: Risk tolerance toggle, market odds inputs, market momentum all visible",
+    "Frontend: Run Consultation button visible and clickable"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_iteration20_score_layout.py",
+    "/app/test_reports/pytest/iteration20_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "ConsultantDashboard.js correctly uses single-column stacked layout with space-y-4 for vertical spacing",
+    "Only grid-cols-2 used for appropriate 2-column layouts (market odds inputs, simulation scores, odds trend buttons)",
+    "No lg:grid-cols-12 or 3-column grid that caused overflow",
+    "OddsComparison component removed as requested",
+    "server.py fetch_live_data() correctly updates ipl_schedule with score field (line 401-410)",
+    "server.py sync_live_scores_to_schedule() correctly syncs existing live snapshot scores to schedule (line 113-137)",
+    "MatchSelector.js line 272 correctly renders match.score on card with data-testid='match-score-{i}'"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration20_score_layout.py"
+  ],
+  "success_rate": {
+    "backend": "100% (8/8 tests passed)",
+    "frontend": "100% (all UI components working correctly)"
+  },
+  "test_credentials": "No authentication required - open access app",
+  "seed_data_creation": "None - used existing matches ipl2026_008 (MI vs DC with live data) and ipl2026_009 (RR vs GT)",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration 20 features fully working. Key changes: (1) Score now shows on match cards on main page after live data is fetched - 'MI 41/2 (6 ov)' visible for ipl2026_008. (2) ConsultantDashboard layout fixed - no more 3-column grid causing overflow, now uses single-column stacked layout. (3) OddsComparison component removed. (4) sync_live_scores_to_schedule() runs on startup and after promote-now to sync scores. (5) Live matches: ipl2026_008 (MI vs DC, has score), ipl2026_009 (RR vs GT, no score yet).",
+  "feature_verification": {
+    "score_on_match_cards": {
+      "status": "WORKING",
+      "description": "Score 'MI 41/2 (6 ov)' displayed on match card for MI vs DC on main page",
+      "verification": "data-testid='match-score-0' contains 'MI 41/2 (6 ov)'"
+    },
+    "consultant_dashboard_layout": {
+      "status": "WORKING",
+      "description": "ConsultantDashboard renders in single-column stacked layout without horizontal overflow",
+      "verification": "dashboardWidth=453px equals parentWidth=453px, no overflow detected"
+    },
+    "no_3_column_grid": {
+      "status": "WORKING",
+      "description": "No lg:grid-cols-12 or 3-column grid in ConsultantDashboard",
+      "verification": "grep found no lg:grid-cols-12 in ConsultantDashboard.js"
+    },
+    "odds_comparison_removed": {
+      "status": "WORKING",
+      "description": "OddsComparison component removed as unwanted block",
+      "verification": "grep found no OddsComparison in ConsultantDashboard.js"
+    },
+    "schedule_api_score_field": {
+      "status": "WORKING",
+      "description": "GET /api/schedule returns 'score' field for matches with live data",
+      "verification": "ipl2026_008 has score='MI 41/2 (6 ov)' in API response"
+    },
+    "promote_now_syncs_scores": {
+      "status": "WORKING",
+      "description": "POST /api/scheduler/promote-now syncs live scores to schedule",
+      "verification": "After promote-now, schedule shows synced scores"
+    }
+  }
+}
