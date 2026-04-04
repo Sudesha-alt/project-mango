@@ -1,0 +1,128 @@
+{
+  "summary": "Completed testing of Iteration 15 features: All 13 backend tests passed, all frontend features verified. Key features working: (1) 50K NB simulation returns realistic probabilities (77.8% vs 22.3%, not 100/0), (2) Predicted scores displayed (152 vs 134), (3) Edge reasons panel with 'WHY THIS SIGNAL?' heading and 3 explanation pointers, (4) Match State hidden for upcoming matches (overs=0, score=0), (5) Two-sided Factor Breakdown with team names on left/right headers, (6) User Guide floating button (? icon, bottom-left) opens modal with 10 sections, (7) P10-P90 ranges with tooltips, (8) Venue Performance numbers rounded (no long decimals).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Console", "issues": ["React warning: textTransform prop on DOM element - minor, doesn't affect functionality"]}
+    ]
+  },
+  "passed_tests": [
+    "Backend: POST /api/consult returns realistic simulation probabilities (77.8% vs 22.3%, not 100/0)",
+    "Backend: team1_win_prob + team2_win_prob sums to ~1.0",
+    "Backend: mean_team1_score (152) and mean_team2_score (134) populated",
+    "Backend: edge_reasons array non-empty when market odds provided (3 reasons)",
+    "Backend: Player impact players have team names matching match teams (Mumbai Indians, Delhi Capitals)",
+    "Backend: Simulation runs 50,000 iterations",
+    "Backend: P10-P90 score ranges exist and P90 > P10",
+    "Backend: Verdict section has winner, winner_short, strength, winner_probability",
+    "Backend: value_signal exists with valid signal type (STRONG_VALUE)",
+    "Backend: Features show overs=0, score=0 for upcoming matches",
+    "Backend: Schedule loads with 70 matches",
+    "Backend: Match ipl2026_008 (MI vs DC) exists",
+    "Backend: Pre-match prediction exists for ipl2026_008",
+    "Frontend: Home page loads with LIVE/UPCOMING/COMPLETED tabs",
+    "Frontend: Match cards render with predictions (MI 62%, DC 38%)",
+    "Frontend: Pre-match page loads with Algorithm Prediction Breakdown",
+    "Frontend: Factor Breakdown shows two-sided bars with MI on left, DC on right headers",
+    "Frontend: All 5 factor bars present (H2H, Venue, Form, Squad, Home)",
+    "Frontend: Consultant Dashboard with risk tolerance toggle and market odds inputs",
+    "Frontend: Running consultation shows loading state 'Running 50K Simulations...'",
+    "Frontend: Verdict section displays 'MI WINS' with 'STRONG' badge and 'STRONG VALUE' signal",
+    "Frontend: Edge Reasons panel shows 'WHY THIS SIGNAL?' with 3 explanation pointers",
+    "Frontend: SimulationSummary shows predicted scores (152 vs 134) and 50,000 simulations",
+    "Frontend: P10-P90 range displayed in Simulation Summary",
+    "Frontend: Match State section correctly hidden for upcoming match (overs=0, score=0)",
+    "Frontend: User Guide floating button (? icon, bottom-left) visible",
+    "Frontend: User Guide modal opens with 10 sections",
+    "Frontend: User Guide sections expand/collapse, Q&A items expand to show answers",
+    "Frontend: Venue Performance numbers are rounded (no long decimal strings)",
+    "Frontend: Betting Scenarios display with HIGH/MEDIUM confidence badges",
+    "Frontend: Odds Visual section shows Model vs Market probabilities"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_iteration15_features.py",
+    "/app/test_reports/pytest/iteration15_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/backend/tests/test_iteration15_features.py"
+  ],
+  "success_rate": {
+    "backend": "100% (13/13 tests passed)",
+    "frontend": "100% (all UI components working correctly)"
+  },
+  "test_credentials": "No authentication required - open access app",
+  "seed_data_creation": "None - used existing match ipl2026_008 (MI vs DC)",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration 15 features fully working. All requested features verified: (1) 50K NB simulation fix confirmed - realistic probabilities (77.8% vs 22.3%) and scores (152 vs 134). (2) Two-sided Factor Breakdown with green/red bars and team headers on left/right. (3) Edge Reasons panel with 'WHY THIS SIGNAL?' heading and 3 explanation pointers. (4) SimulationSummary shows predicted scores and P10-P90 ranges with tooltips. (5) Match State hidden for upcoming matches (conditional render on overs=0 && score=0). (6) User Guide floating button (? icon, bottom-left, z-50) opens modal with 10 sections covering all app features. (7) Venue Performance numbers rounded. Test match ipl2026_008 (MI vs DC) used with market_pct_team1=55, market_pct_team2=45.",
+  "feature_verification": {
+    "simulation_fix": {
+      "status": "WORKING",
+      "team1_win_prob": "77.8%",
+      "team2_win_prob": "22.3%",
+      "mean_team1_score": 152,
+      "mean_team2_score": 134,
+      "simulations": 50000
+    },
+    "edge_reasons": {
+      "status": "WORKING",
+      "heading": "WHY THIS SIGNAL?",
+      "example_reasons": [
+        "Model rates Mumbai Indians at 66.1%, market only gives 55.0% — 11.2% undervalued.",
+        "High model confidence (66.1%) backed by H2H, venue form, and squad quality.",
+        "Edge of 11.2% is significant — this is a clear market mispricing."
+      ]
+    },
+    "two_sided_factor_breakdown": {
+      "status": "WORKING",
+      "team1_header": "MI (left)",
+      "team2_header": "DC (right)",
+      "green_bar": "extends toward favored team",
+      "red_bar": "extends toward disadvantaged team"
+    },
+    "predicted_scores": {
+      "status": "WORKING",
+      "display": "152 vs 134",
+      "location": "SimulationSummary component"
+    },
+    "p10_p90_tooltips": {
+      "status": "WORKING",
+      "tooltip_text": "P10-P90 range: In 80% of simulations, this team scores between these two numbers."
+    },
+    "match_state_hidden": {
+      "status": "WORKING",
+      "condition": "features.overs > 0 || features.score > 0",
+      "for_upcoming": "overs=0, score=0 → section NOT rendered"
+    },
+    "user_guide": {
+      "status": "WORKING",
+      "trigger": "? button, bottom-left, fixed position, z-50",
+      "sections": 10,
+      "section_names": [
+        "Getting Started",
+        "Match Selector",
+        "Algorithm Prediction",
+        "Consultation Engine",
+        "Understanding the Verdict",
+        "50K Simulations",
+        "Betting Scenarios",
+        "Playing XI & Players",
+        "Consultant Chat",
+        "Live Matches"
+      ],
+      "expand_collapse": "WORKING",
+      "qa_expand": "WORKING"
+    },
+    "venue_performance_rounded": {
+      "status": "WORKING",
+      "example": "Avg 208, Win 67% (no long decimals)"
+    }
+  }
+}

@@ -2,6 +2,7 @@ import { useState } from "react";
 import "@/App.css";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Header from "@/components/Header";
+import UserGuide from "@/components/UserGuide";
 import MatchSelector from "@/pages/MatchSelector";
 import PreMatch from "@/pages/PreMatch";
 import LiveMatch from "@/pages/LiveMatch";
@@ -15,6 +16,7 @@ function App() {
     <div className="min-h-screen bg-[#0A0A0A] text-white" style={{ fontFamily: "'DM Sans', sans-serif" }}>
       <BrowserRouter>
         <Header selectedMatch={selectedMatch} />
+        <UserGuide />
         <main>
           <Routes>
             <Route path="/" element={<MatchSelector />} />

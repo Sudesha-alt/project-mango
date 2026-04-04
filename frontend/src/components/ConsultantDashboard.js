@@ -290,7 +290,7 @@ function SimulationSummary({ sim, team1, team2 }) {
             <p className="text-[10px] text-[#737373] mb-1">{label}</p>
             <p className={`text-lg font-black font-mono ${isWinner ? "text-[#34C759]" : "text-[#FF3B30]"}`} style={{ fontFamily: "'Barlow Condensed'" }}>{(prob * 100).toFixed(1)}%</p>
             <p className="text-[9px] text-[#737373] font-mono">Mean: {data?.mean} | Med: {data?.median}</p>
-            <p className="text-[9px] text-[#737373] font-mono">P10–P90: {data?.p10}–{data?.p90}</p>
+            <p className="text-[9px] text-[#737373] font-mono">Range: {data?.p10}–{data?.p90} <InfoTooltip text="P10-P90 range: In 80% of simulations, this team scores between these two numbers. The wider the range, the more volatile the outcome." /></p>
           </div>
         ))}
       </div>
@@ -438,7 +438,7 @@ export default function ConsultantDashboard({ matchId, team1, team2, fetchConsul
 
         <button onClick={handleConsult} disabled={loading} data-testid="run-consultation-btn"
           className="w-full flex items-center justify-center gap-2 bg-[#007AFF] text-white py-3 rounded-md text-xs font-bold uppercase tracking-wider hover:bg-blue-600 transition-colors disabled:opacity-50">
-          {loading ? <><Spinner className="w-4 h-4 animate-spin" /> Running Analysis...</>
+          {loading ? <><Spinner className="w-4 h-4 animate-spin" /> Running 50K Simulations...</>
             : <><Crosshair weight="fill" className="w-4 h-4" /> Run Consultation</>}
         </button>
       </div>
