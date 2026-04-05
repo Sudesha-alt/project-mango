@@ -428,25 +428,22 @@ def compute_weighted_prediction(sm_data: dict, claude_prediction: dict, match_in
          + 0.15 * phase_momentum)
 
     # Step 4: Final Score
-    final_score = (alpha * H + (1 - alpha) * L) * 100
-    final_score = round(max(0, min(100, final_score)), 1)
-
+    # L is computed from the BATTING team's perspective.
+    # H is from TEAM1's perspective (Claude historical factors).
+    # Normalize L to team1's perspective before combining.
     team1 = match_info.get("team1", "Team A")
     batting_team = sm_data.get("batting_team", team1)
 
-    # Determine which team the score favors
-    if innings == 2:
-        chasing_team_pct = final_score
-        bowling_team_pct = round(100 - final_score, 1)
-        if batting_team.lower() in team1.lower():
-            team1_pct = chasing_team_pct
-            team2_pct = bowling_team_pct
-        else:
-            team2_pct = chasing_team_pct
-            team1_pct = bowling_team_pct
+    if batting_team.lower() in team1.lower():
+        L_team1 = L  # team1 is batting, L already from their perspective
     else:
-        team1_pct = final_score
-        team2_pct = round(100 - final_score, 1)
+        L_team1 = 1.0 - L  # team1 is bowling, invert L
+
+    final_score = (alpha * H + (1 - alpha) * L_team1) * 100
+    final_score = round(max(0, min(100, final_score)), 1)
+
+    team1_pct = final_score
+    team2_pct = round(100 - final_score, 1)
 
     # Build context strings for UI tooltips
     active_bat_names = [b.get("name", "?") for b in active_batsmen] if active_batsmen else []
