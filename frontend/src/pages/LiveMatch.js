@@ -446,7 +446,7 @@ export default function LiveMatch() {
                             ))}
                           </div>
 
-                          {/* Live factors breakdown — 7 granular factors */}
+                          {/* Live factors breakdown — 8 granular factors */}
                           <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2.5 space-y-1" data-testid="live-factors-breakdown">
                             <div className="flex items-center justify-between mb-1">
                               <p className="text-[9px] text-[#525252] uppercase">Live Factors (L)</p>
@@ -457,13 +457,19 @@ export default function LiveMatch() {
                               )}
                             </div>
                             {[
-                              { label: "CRR/RRR Pressure", val: weightedPred.breakdown?.crr_pressure, w: "0.20", color: "#34C759" },
-                              { label: "Wickets in Hand", val: weightedPred.breakdown?.wickets_in_hand_ratio, w: "0.15", color: "#34C759" },
-                              { label: "Recent Wkt Penalty", val: weightedPred.breakdown?.recent_wicket_penalty, w: "0.15", color: (weightedPred.breakdown?.recent_wicket_penalty || 1) < 0.5 ? "#FF3B30" : "#34C759" },
-                              { label: "Batter Confidence", val: weightedPred.breakdown?.batter_confidence, w: "0.15", color: "#007AFF" },
-                              { label: "New Batsman", val: weightedPred.breakdown?.new_batsman_factor, w: "0.10", color: (weightedPred.breakdown?.new_batsman_factor || 1) < 0.5 ? "#FF9500" : "#34C759" },
-                              { label: "Bowler Threat", val: weightedPred.breakdown?.bowler_threat, w: "0.10", color: (weightedPred.breakdown?.bowler_threat || 1) < 0.4 ? "#FF3B30" : "#34C759" },
-                              { label: "Phase Momentum", val: weightedPred.breakdown?.phase_momentum, w: "0.15", color: "#FFCC00" },
+                              ...(weightedPred.innings === 2 ? [
+                                { label: "Chase Feasibility", val: weightedPred.breakdown?.chase_feasibility, w: "0.48", color: (weightedPred.breakdown?.chase_feasibility || 0) < 0.3 ? "#FF3B30" : (weightedPred.breakdown?.chase_feasibility || 0) < 0.6 ? "#FF9500" : "#34C759" },
+                              ] : []),
+                              { label: "CRR/RRR Pressure", val: weightedPred.breakdown?.crr_pressure, w: weightedPred.innings === 2 ? "0.12" : "0.20", color: (weightedPred.breakdown?.crr_pressure || 0) < 0.3 ? "#FF3B30" : "#34C759" },
+                              { label: "Wickets in Hand", val: weightedPred.breakdown?.wickets_in_hand_ratio, w: weightedPred.innings === 2 ? "0.08" : "0.15", color: (weightedPred.breakdown?.wickets_in_hand_ratio || 0) < 0.4 ? "#FF3B30" : "#34C759" },
+                              { label: "Recent Wkt Penalty", val: weightedPred.breakdown?.recent_wicket_penalty, w: weightedPred.innings === 2 ? "0.08" : "0.10", color: (weightedPred.breakdown?.recent_wicket_penalty || 1) < 0.5 ? "#FF3B30" : "#34C759" },
+                              { label: "Batter Confidence", val: weightedPred.breakdown?.batter_confidence, w: weightedPred.innings === 2 ? "0.08" : "0.15", color: "#007AFF" },
+                              { label: "New Batsman", val: weightedPred.breakdown?.new_batsman_factor, w: weightedPred.innings === 2 ? "0.04" : "0.10", color: (weightedPred.breakdown?.new_batsman_factor || 1) < 0.5 ? "#FF9500" : "#34C759" },
+                              { label: "Bowler Threat", val: weightedPred.breakdown?.bowler_threat, w: weightedPred.innings === 2 ? "0.04" : "0.10", color: (weightedPred.breakdown?.bowler_threat || 1) < 0.4 ? "#FF3B30" : "#34C759" },
+                              { label: "Phase Momentum", val: weightedPred.breakdown?.phase_momentum, w: weightedPred.innings === 2 ? "0.08" : "0.10", color: "#FFCC00" },
+                              ...(weightedPred.innings !== 2 ? [
+                                { label: "Score Trajectory", val: weightedPred.breakdown?.chase_feasibility, w: "0.10", color: "#34C759" },
+                              ] : []),
                             ].map(f => (
                               <div key={f.label} className="flex items-center justify-between text-[10px]">
                                 <span className="text-[#737373]">{f.label} <span className="text-[#525252]">({f.w})</span></span>
@@ -492,6 +498,9 @@ export default function LiveMatch() {
                                   <span className="text-[#34C759]">CRR {weightedPred.live_context.crr}</span>
                                   {weightedPred.live_context.rrr && (
                                     <span className="text-[#FF9500]">RRR {weightedPred.live_context.rrr}</span>
+                                  )}
+                                  {weightedPred.live_context.runs_needed && (
+                                    <span className="text-[#FF3B30]">Need {weightedPred.live_context.runs_needed} off {weightedPred.live_context.balls_left_innings}b</span>
                                   )}
                                 </div>
                               </div>
