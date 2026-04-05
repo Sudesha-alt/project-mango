@@ -1,5 +1,5 @@
 import { Link, useLocation } from "react-router-dom";
-import { Pulse, ChartLine, Target, Crosshair, Scales } from "@phosphor-icons/react";
+import { Pulse, ChartLine, Target, Crosshair } from "@phosphor-icons/react";
 
 export default function Header({ selectedMatch }) {
   const location = useLocation();
