@@ -72,6 +72,7 @@ Live Context returned: active batsmen names, bowler name, CRR, RRR, recent wicke
 - [x] **Fixed team perspective bug in weighted prediction** — L now normalized to team1's perspective before combining with H (Apr 5, 2026)
 - [x] **Updated IPL 2026 squads** — seeded all 10 teams with official post-auction rosters from NDTV/BCCI (Apr 5, 2026)
 - [x] **Major weighted model overhaul** — added Chase Feasibility factor (48% weight in 2nd inn), non-linear CRR/RRR sigmoid, RRR×wicket interaction. Model now correctly predicts losing chases (Apr 5, 2026)
+- [x] **Fixed batter confidence calculation** — added sample-size discount, batting position factor (#1-4 vs #8+), and pressure discount when RRR > 12 (Apr 5, 2026)
 
 ## Backlog
 - P2: Shareable prediction card

@@ -371,20 +371,48 @@ def compute_weighted_prediction(sm_data: dict, claude_prediction: dict, match_in
         recent_wicket_penalty = 0.05
 
     # Factor 4: Batter Confidence (weight 0.10)
+    # Considers: strike rate (sample-size adjusted), batting position, boundaries, match pressure
     active_batsmen = sm_data.get("active_batsmen", [])
     if active_batsmen:
-        total_sr = 0
-        total_boundaries = 0
+        total_confidence = 0
         for bat in active_batsmen:
             sr = bat.get("strike_rate", 0) or 0
-            total_sr += sr
-            total_boundaries += (bat.get("fours", 0) or 0) + (bat.get("sixes", 0) or 0)
-        avg_sr = total_sr / len(active_batsmen)
-        sr_factor = min(1.0, max(0, (avg_sr - 60) / 120))
-        boundary_factor = min(1.0, total_boundaries / max(1, 8))
-        batter_confidence = 0.65 * sr_factor + 0.35 * boundary_factor
+            balls_faced = bat.get("balls", 0) or 0
+            fours = bat.get("fours", 0) or 0
+            sixes = bat.get("sixes", 0) or 0
+            bat_sort = bat.get("sort", 5)  # batting position
+
+            # SR factor with sample-size discount: SR is less reliable on fewer balls
+            raw_sr_factor = min(1.0, max(0, (sr - 60) / 120))
+            # Discount: full weight only after 20+ balls
+            sample_discount = min(1.0, balls_faced / 20)
+            sr_factor = raw_sr_factor * (0.3 + 0.7 * sample_discount)
+
+            # Batting position factor: top order (1-4) = higher base, lower order = lower
+            if bat_sort <= 3:
+                position_factor = 1.0
+            elif bat_sort <= 5:
+                position_factor = 0.85
+            elif bat_sort <= 7:
+                position_factor = 0.65
+            else:
+                position_factor = 0.45  # tailenders
+
+            # Boundary quality: sixes weighted more
+            boundary_score = min(1.0, (fours + sixes * 1.5) / 8)
+
+            bat_conf = 0.45 * sr_factor + 0.30 * position_factor + 0.25 * boundary_score
+            total_confidence += bat_conf
+
+        batter_confidence = total_confidence / len(active_batsmen)
+
+        # Pressure discount: when RRR is extreme, "confidence" from slogging is unreliable
+        if innings == 2 and rrr and rrr > 12:
+            pressure_discount = max(0.3, 1.0 - (rrr - 12) / 15)
+            batter_confidence *= pressure_discount
+        batter_confidence = min(1.0, max(0, batter_confidence))
     else:
-        batter_confidence = 0.35  # fallback low when no data
+        batter_confidence = 0.25  # fallback low when no data
 
     # Factor 5: New Batsman Factor (weight 0.05)
     if active_batsmen:
