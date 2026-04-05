@@ -75,6 +75,7 @@ Live Context returned: active batsmen names, bowler name, CRR, RRR, recent wicke
 - [x] **Fixed batter confidence calculation** — added sample-size discount, batting position factor (#1-4 vs #8+), and pressure discount when RRR > 12 (Apr 5, 2026)
 - [x] **Chase severity multiplier** — when chase feasibility < 25%, suppress all other live factors (they're noise in decided games). Gap between models dropped from 36% to ~3% in extreme scenarios (Apr 5, 2026)
 - [x] **Squad-constrained Playing XI & Analysis** — All `fetch_playing_xi` and `claude_deep_match_analysis` callers now pass DB squads. Claude is forced to pick only from official IPL 2026 rosters (Apr 5, 2026)
+- [x] **Pre-match prediction overhaul for post-auction era** — Added squad strength ratings from actual 2026 rosters (STAR_PLAYERS db), filtered key matchups to current players only, reweighted factors so squad (35%) dominates over stale historical data (h2h 3%, form 3%, death 3%) (Apr 5, 2026)
 
 ## Backlog
 - P2: Shareable prediction card

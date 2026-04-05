@@ -1377,8 +1377,7 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
     xi_data = apply_buzz_and_luck(xi_data)
 
     # Run algorithm stack with player-level data
-    prediction = compute_prediction(stats, playing_xi=xi_data)
-
+    prediction = compute_prediction(stats, playing_xi=xi_data, squad_data=match_squads)
     # Compute odds direction vs previous prediction
     odds_direction = {"team1": "new", "team2": "new"}
     if cached:
@@ -1483,8 +1482,7 @@ async def api_predict_upcoming(force: bool = False):
             xi_data = await fetch_playing_xi(team1, team2, venue, squads=match_squads)
             xi_data = apply_buzz_and_luck(xi_data)
 
-            prediction = compute_prediction(stats, playing_xi=xi_data)
-
+            prediction = compute_prediction(stats, playing_xi=xi_data, squad_data=match_squads)
             # Odds direction
             odds_direction = {"team1": "new", "team2": "new"}
             if cached:
@@ -1585,8 +1583,7 @@ async def _background_repredict_all():
             xi_data = await fetch_playing_xi(team1, team2, venue, squads=_squads)
             xi_data = apply_buzz_and_luck(xi_data)
 
-            prediction = compute_prediction(stats, playing_xi=xi_data)
-
+            prediction = compute_prediction(stats, playing_xi=xi_data, squad_data=_squads)
             # Odds direction
             odds_direction = {"team1": "new", "team2": "new"}
             if cached and cached.get("prediction"):

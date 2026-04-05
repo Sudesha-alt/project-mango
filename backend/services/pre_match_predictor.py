@@ -11,7 +11,7 @@ from typing import Dict
 logger = logging.getLogger(__name__)
 
 
-def compute_prediction(stats: Dict, playing_xi: Dict = None) -> Dict:
+def compute_prediction(stats: Dict, playing_xi: Dict = None, squad_data: Dict = None) -> Dict:
     """
     11-factor algorithm to compute win probability.
 
@@ -38,6 +38,20 @@ def compute_prediction(stats: Dict, playing_xi: Dict = None) -> Dict:
     death = stats.get("death_overs", {})
     pp = stats.get("powerplay", {})
     momentum = stats.get("momentum", {})
+
+    # ── Squad strength override from actual 2026 roster ──
+    if squad_data:
+        # squad_data is {team_name: [players]} — remap to {team1: [...], team2: [...]}
+        squad_names = list(squad_data.keys())
+        remapped_squads = {
+            "team1": squad_data.get(squad_names[0], []) if len(squad_names) > 0 else [],
+            "team2": squad_data.get(squad_names[1], []) if len(squad_names) > 1 else [],
+        }
+        t1_rating, t2_rating = _compute_squad_ratings(remapped_squads, playing_xi)
+        squad["team1_batting_rating"] = t1_rating["batting"]
+        squad["team1_bowling_rating"] = t1_rating["bowling"]
+        squad["team2_batting_rating"] = t2_rating["batting"]
+        squad["team2_bowling_rating"] = t2_rating["bowling"]
 
     # ── Factor 1: Head-to-Head (0.12) ──
     t1_h2h_wins = h2h.get("team1_wins", 0)
@@ -95,7 +109,7 @@ def compute_prediction(stats: Dict, playing_xi: Dict = None) -> Dict:
     t2_bowl = squad.get("team2_bowling_rating", 50) / 100
     t1_strength = 0.55 * t1_bat + 0.45 * t1_bowl
     t2_strength = 0.55 * t2_bat + 0.45 * t2_bowl
-    squad_logit = 3.0 * (t1_strength - t2_strength)
+    squad_logit = 5.0 * (t1_strength - t2_strength)
 
     # ── Factor 5: Home Advantage (0.06) ──
     home_logit = 0
@@ -126,9 +140,19 @@ def compute_prediction(stats: Dict, playing_xi: Dict = None) -> Dict:
     # Dew: high dew benefits chasing team → slight general neutralizer
     dew_logit = -0.2 * dew_factor if dew_factor > 0.4 else 0.0
 
-    # ── Factor 8: Key Matchups (0.10) ──
-    t1_matchup_score = _calc_matchup_score(matchups.get("team1_batters_vs_team2_bowlers", []))
-    t2_matchup_score = _calc_matchup_score(matchups.get("team2_batters_vs_team1_bowlers", []))
+    # ── Factor 8: Key Matchups (0.10) — filtered to current squad ──
+    t1_matchups_raw = matchups.get("team1_batters_vs_team2_bowlers", [])
+    t2_matchups_raw = matchups.get("team2_batters_vs_team1_bowlers", [])
+    if squad_data:
+        squad_names = list(squad_data.keys())
+        t1_players = squad_data.get(squad_names[0], []) if len(squad_names) > 0 else []
+        t2_players = squad_data.get(squad_names[1], []) if len(squad_names) > 1 else []
+        t1_names = {p.get("name", "").lower() for p in t1_players}
+        t2_names = {p.get("name", "").lower() for p in t2_players}
+        t1_matchups_raw = [m for m in t1_matchups_raw if _name_in_squad(m.get("batter",""), t1_names) and _name_in_squad(m.get("bowler",""), t2_names)]
+        t2_matchups_raw = [m for m in t2_matchups_raw if _name_in_squad(m.get("batter",""), t2_names) and _name_in_squad(m.get("bowler",""), t1_names)]
+    t1_matchup_score = _calc_matchup_score(t1_matchups_raw)
+    t2_matchup_score = _calc_matchup_score(t2_matchups_raw)
     total_matchup = max(t1_matchup_score + t2_matchup_score, 1)
     matchup_logit = 2.0 * ((t1_matchup_score / total_matchup) - 0.5) if total_matchup > 1 else 0.0
 
@@ -136,6 +160,9 @@ def compute_prediction(stats: Dict, playing_xi: Dict = None) -> Dict:
     t1_death_net = (death.get("team1_avg_death_score", 45) - death.get("team1_avg_death_conceded", 48))
     t2_death_net = (death.get("team2_avg_death_score", 45) - death.get("team2_avg_death_conceded", 48))
     death_logit = 1.5 * ((t1_death_net - t2_death_net) / max(abs(t1_death_net) + abs(t2_death_net), 1))
+    # Post-auction: cap stale death overs data influence
+    if squad_data:
+        death_logit = max(-0.5, min(0.5, death_logit))
 
     # ── Factor 10: Powerplay (0.08) ──
     t1_pp_score = pp.get("team1_avg_pp_score", 48)
@@ -157,19 +184,38 @@ def compute_prediction(stats: Dict, playing_xi: Dict = None) -> Dict:
     momentum_logit = 0.5 * streak_logit + 0.5 * long_form_logit
 
     # ── Weighted Combination ──
-    combined_logit = (
-        0.12 * h2h_logit +
-        0.10 * final_venue_logit +
-        0.12 * form_logit +
-        0.10 * squad_logit +
-        0.06 * home_logit +
-        0.08 * toss_logit +
-        0.10 * (pitch_logit + dew_logit) +
-        0.10 * matchup_logit +
-        0.08 * death_logit +
-        0.08 * pp_logit +
-        0.06 * momentum_logit
-    )
+    # Post mega-auction season: squad composition matters most,
+    # historical team-level stats (death, powerplay, form, h2h) are less
+    # reliable because squads have changed dramatically.
+    is_post_auction = squad_data is not None  # indicates we have actual 2026 roster
+    if is_post_auction:
+        combined_logit = (
+            0.03 * h2h_logit +          # minimal: old squads
+            0.07 * final_venue_logit +   # venue still matters
+            0.03 * form_logit +          # minimal: old squad results
+            0.35 * squad_logit +         # DOMINANT: actual 2026 roster strength
+            0.04 * home_logit +
+            0.05 * toss_logit +
+            0.10 * (pitch_logit + dew_logit) +
+            0.15 * matchup_logit +       # current player matchups
+            0.03 * death_logit +         # minimal: old squad data
+            0.03 * pp_logit +            # minimal: old squad data
+            0.12 * momentum_logit        # recent form signal
+        )
+    else:
+        combined_logit = (
+            0.12 * h2h_logit +
+            0.10 * final_venue_logit +
+            0.12 * form_logit +
+            0.10 * squad_logit +
+            0.06 * home_logit +
+            0.08 * toss_logit +
+            0.10 * (pitch_logit + dew_logit) +
+            0.10 * matchup_logit +
+            0.08 * death_logit +
+            0.08 * pp_logit +
+            0.06 * momentum_logit
+        )
 
     # Sigmoid
     raw_prob = 1 / (1 + math.exp(-combined_logit * 3.5))
@@ -249,8 +295,8 @@ def compute_prediction(stats: Dict, playing_xi: Dict = None) -> Dict:
             "team1_matchup_score": round(t1_matchup_score, 2),
             "team2_matchup_score": round(t2_matchup_score, 2),
             "matchups_data": {
-                "team1_vs_team2": matchups.get("team1_batters_vs_team2_bowlers", [])[:3],
-                "team2_vs_team1": matchups.get("team2_batters_vs_team1_bowlers", [])[:3],
+                "team1_vs_team2": t1_matchups_raw[:3],
+                "team2_vs_team1": t2_matchups_raw[:3],
             },
             "logit_contribution": round(0.10 * matchup_logit, 4),
         },
@@ -345,3 +391,106 @@ def _calc_avg_buzz(players: list) -> float:
         else:
             buzzes.append(p.get("buzz_confidence", 50))
     return sum(buzzes) / len(buzzes)
+
+
+# ── Role-based squad strength ratings ──
+
+ROLE_WEIGHTS = {
+    "Batsman": {"batting": 9, "bowling": 1},
+    "Wicketkeeper": {"batting": 7, "bowling": 0},
+    "All-rounder": {"batting": 6, "bowling": 6},
+    "Bowler": {"batting": 2, "bowling": 9},
+}
+
+STAR_PLAYERS = {
+    # Batsmen
+    "Virat Kohli": 96, "Rohit Sharma": 93, "Suryakumar Yadav": 92, "Shubman Gill": 90,
+    "KL Rahul": 89, "Yashasvi Jaiswal": 90, "Rishabh Pant": 91, "Shreyas Iyer": 87,
+    "Sanju Samson": 86, "Ruturaj Gaikwad": 87, "Rajat Patidar": 84, "Tilak Varma": 85,
+    "Travis Head": 89, "Phil Salt": 88, "Jos Buttler": 90, "Heinrich Klaasen": 89,
+    "Nicholas Pooran": 86, "Quinton de Kock": 85, "David Miller": 83,
+    "Devdutt Padikkal": 82, "Ishan Kishan": 83, "Karun Nair": 82,
+    # All-rounders
+    "Hardik Pandya": 90, "Ravindra Jadeja": 89, "Marcus Stoinis": 86,
+    "Axar Patel": 85, "Sunil Narine": 87, "Cameron Green": 85,
+    "Sam Curran": 84, "Liam Livingstone": 83, "Mitchell Marsh": 84,
+    "Venkatesh Iyer": 82, "Nitish Kumar Reddy": 82, "Krunal Pandya": 80,
+    "Shivam Dube": 81, "Marco Jansen": 85, "Washington Sundar": 82,
+    "Azmatullah Omarzai": 82, "Will Jacks": 83, "Jacob Bethell": 81,
+    "Rashid Khan": 92, "Wanindu Hasaranga": 85,
+    # Bowlers
+    "Jasprit Bumrah": 97, "Mohammed Siraj": 84, "Arshdeep Singh": 86,
+    "Yuzvendra Chahal": 85, "Kuldeep Yadav": 86, "Varun Chakaravarthy": 84,
+    "Josh Hazlewood": 87, "Mitchell Starc": 89, "Trent Boult": 86,
+    "Pat Cummins": 90, "Kagiso Rabada": 88, "Lockie Ferguson": 85,
+    "Bhuvneshwar Kumar": 83, "Harshal Patel": 82, "Jofra Archer": 87,
+    "Mohammed Shami": 86, "Matheesha Pathirana": 84, "Anrich Nortje": 84,
+    "Ravi Bishnoi": 82, "Mayank Yadav": 82,
+}
+
+
+def _compute_squad_ratings(squad_data: dict, playing_xi: dict = None) -> tuple:
+    """Compute batting/bowling ratings from actual 2026 squad roster.
+    Returns ratings on a 0-100 scale where differences are meaningful."""
+    results = {}
+    for team_key in ["team1", "team2"]:
+        players = squad_data.get(team_key, [])
+        if not players:
+            results[team_key] = {"batting": 50, "bowling": 50}
+            continue
+
+        # If playing XI available, use those 11; otherwise full squad
+        xi_names = set()
+        if playing_xi:
+            xi_key = f"{team_key}_xi"
+            for p in playing_xi.get(xi_key, []):
+                xi_names.add(p.get("name", "").lower())
+
+        bat_ratings = []
+        bowl_ratings = []
+        for p in players:
+            name = p.get("name", "")
+            if xi_names and name.lower() not in xi_names:
+                continue
+            role = p.get("role", "Batsman")
+            base_rating = STAR_PLAYERS.get(name, 65)
+            is_overseas = p.get("isOverseas", False)
+            is_captain = p.get("isCaptain", False)
+            overseas_bonus = 4 if is_overseas and base_rating >= 78 else 0
+            captain_bonus = 3 if is_captain else 0
+            player_rating = min(99, base_rating + overseas_bonus + captain_bonus)
+
+            weights = ROLE_WEIGHTS.get(role, {"batting": 5, "bowling": 5})
+            if weights["batting"] >= 6:
+                bat_ratings.append(player_rating)
+            if weights["bowling"] >= 6:
+                bowl_ratings.append(player_rating)
+
+        # Average of top contributors, scaled to 0-100
+        bat_avg = sum(sorted(bat_ratings, reverse=True)[:6]) / min(6, max(len(bat_ratings), 1)) if bat_ratings else 50
+        bowl_avg = sum(sorted(bowl_ratings, reverse=True)[:5]) / min(5, max(len(bowl_ratings), 1)) if bowl_ratings else 50
+
+        results[team_key] = {"batting": round(bat_avg, 1), "bowling": round(bowl_avg, 1)}
+
+    return results.get("team1", {"batting": 50, "bowling": 50}), results.get("team2", {"batting": 50, "bowling": 50})
+
+
+def _get_squad_names(squad_data: dict, team_key: str) -> set:
+    """Get set of lowercase player names for a team."""
+    players = squad_data.get(team_key, [])
+    return {p.get("name", "").lower() for p in players}
+
+
+def _name_in_squad(name: str, squad_names: set) -> bool:
+    """Check if a player name matches any name in the squad (fuzzy last-name match)."""
+    name_lower = name.lower().strip()
+    if name_lower in squad_names:
+        return True
+    # Try last name match
+    parts = name_lower.split()
+    if parts:
+        last_name = parts[-1]
+        for sn in squad_names:
+            if last_name in sn:
+                return True
+    return False
