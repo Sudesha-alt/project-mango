@@ -31,7 +31,7 @@ from services.ai_service import (
     claude_deep_match_analysis, claude_live_analysis,
     claude_sportmonks_prediction
 )
-from services.sportmonks_service import fetch_live_match, parse_fixture, fetch_fixture_details
+from services.sportmonks_service import fetch_live_match, check_fixture_status, check_all_live_ipl, parse_fixture, fetch_fixture_details
 from services.beta_prediction_engine import run_beta_prediction
 from services.consultant_engine import run_consultation, build_features
 from services.cricdata_service import fetch_live_ipl_details, fetch_venue_stats_from_cricapi
@@ -565,8 +565,14 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
     }
 
     live_match_state[match_id] = result
-    # Exclude raw sportmonks data from DB (too large, has nested structures)
-    db_result = {k: v for k, v in result.items() if k != "sportmonks"}
+    # Store sportmonks data in DB-safe format (convert any integer keys to strings)
+    def make_db_safe(obj):
+        if isinstance(obj, dict):
+            return {str(k): make_db_safe(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [make_db_safe(i) for i in obj]
+        return obj
+    db_result = make_db_safe(result)
     await db.live_snapshots.update_one(
         {"matchId": match_id},
         {"$set": {**db_result, "updatedAt": datetime.now(timezone.utc).isoformat()}},
@@ -658,6 +664,94 @@ async def refresh_claude_prediction(match_id: str):
         "probabilities": cached.get("probabilities", {}),
         "refreshedAt": datetime.now(timezone.utc).isoformat(),
     }
+
+
+
+@api_router.post("/matches/{match_id}/check-status")
+async def check_match_status(match_id: str):
+    """Check if a match is still live, finished, or not found on SportMonks.
+    If finished, mark it as 'completed' in the schedule."""
+    match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
+    if not match_info:
+        return {"error": "Match not found in schedule"}
+
+    team1 = match_info.get("team1", "")
+    team2 = match_info.get("team2", "")
+
+    result = await check_fixture_status(team1, team2)
+
+    # If match is finished, update schedule to "completed"
+    if result.get("is_finished"):
+        update = {
+            "status": "completed",
+            "completedAt": datetime.now(timezone.utc).isoformat(),
+        }
+        if result.get("winner"):
+            update["winner"] = result["winner"]
+        if result.get("note"):
+            update["result"] = result["note"]
+        await db.ipl_schedule.update_one({"matchId": match_id}, {"$set": update})
+        logger.info(f"Match {match_id} marked completed: {result.get('note')}")
+
+    return {
+        "matchId": match_id,
+        "sportmonks_status": result.get("status"),
+        "is_live": result.get("is_live", False),
+        "is_finished": result.get("is_finished", False),
+        "winner": result.get("winner"),
+        "note": result.get("note", ""),
+        "schedule_status": "completed" if result.get("is_finished") else match_info.get("status"),
+    }
+
+
+@api_router.get("/live/current")
+async def get_current_live_match():
+    """Find the currently live IPL match from SportMonks and return its matchId."""
+    # First check our schedule for matches marked as live
+    live_schedule = await db.ipl_schedule.find(
+        {"status": "live"}, {"_id": 0}
+    ).to_list(10)
+
+    # Query SportMonks for actual live fixtures
+    sportmonks_live = await check_all_live_ipl()
+
+    # Match SportMonks live fixtures to our schedule
+    found = []
+    for sm in sportmonks_live:
+        sm_t1 = sm.get("team1", "").lower()
+        sm_t2 = sm.get("team2", "").lower()
+        for sched in live_schedule:
+            s_t1 = sched.get("team1", "").lower()
+            s_t2 = sched.get("team2", "").lower()
+            if (s_t1 in sm_t1 or sm_t1 in s_t1) or (s_t2 in sm_t2 or sm_t2 in s_t2):
+                found.append({
+                    "matchId": sched["matchId"],
+                    "team1": sched.get("team1"),
+                    "team2": sched.get("team2"),
+                    "status": sm.get("status"),
+                    "note": sm.get("note"),
+                    "fixture_id": sm.get("fixture_id"),
+                })
+                break
+
+    # Also check schedule-only matches that SportMonks doesn't have
+    for sched in live_schedule:
+        mid = sched["matchId"]
+        if not any(f["matchId"] == mid for f in found):
+            found.append({
+                "matchId": mid,
+                "team1": sched.get("team1"),
+                "team2": sched.get("team2"),
+                "status": "scheduled_live",
+                "note": sched.get("score", ""),
+            })
+
+    return {
+        "live_matches": found,
+        "count": len(found),
+        "sportmonks_count": len(sportmonks_live),
+    }
+
 
 
 

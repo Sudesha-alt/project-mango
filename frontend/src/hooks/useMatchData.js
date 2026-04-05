@@ -167,11 +167,32 @@ export function useMatchData() {
     }
   }, []);
 
+  const checkMatchStatus = useCallback(async (matchId) => {
+    try {
+      const res = await axios.post(`${API}/matches/${matchId}/check-status`);
+      return res.data;
+    } catch (e) {
+      console.error("Status check error:", e);
+      return null;
+    }
+  }, []);
+
+  const getCurrentLiveMatch = useCallback(async () => {
+    try {
+      const res = await axios.get(`${API}/live/current`);
+      return res.data;
+    } catch (e) {
+      console.error("Live match check error:", e);
+      return null;
+    }
+  }, []);
+
   return {
     schedule, squads, loading, apiStatus,
     fetchStatus, loadSchedule, loadSquads, getTeamSquad,
     fetchLiveData, getMatchState, fetchPlayerPredictions, fetchMatchPrediction,
     fetchBetaPrediction, fetchConsultation, sendChat,
     fetchClaudeAnalysis, clearClaudeAnalysis, fetchClaudeLive, refreshClaudePrediction,
+    checkMatchStatus, getCurrentLiveMatch,
   };
 }

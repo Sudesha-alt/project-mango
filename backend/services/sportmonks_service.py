@@ -320,3 +320,60 @@ async def fetch_live_match(team1: str, team2: str, fixture_id: int = None) -> Op
         return None
     
     return parse_fixture(raw)
+
+
+
+async def check_all_live_ipl() -> list:
+    """Fetch all live IPL fixtures from SportMonks and return parsed list."""
+    live = await fetch_live_fixtures()
+    results = []
+    for m in live:
+        lt = m.get("localteam", {}).get("name", "")
+        vt = m.get("visitorteam", {}).get("name", "")
+        status = m.get("status", "")
+        note = m.get("note", "")
+        fid = m.get("id")
+        results.append({
+            "fixture_id": fid,
+            "team1": lt,
+            "team2": vt,
+            "status": status,
+            "note": note,
+        })
+    return results
+
+
+async def check_fixture_status(team1: str, team2: str) -> dict:
+    """Check the current status of a fixture (live, finished, upcoming)."""
+    fid = await find_ipl_fixture(team1, team2)
+    if not fid:
+        return {"status": "not_found", "fixture_id": None}
+    
+    raw = await fetch_fixture_details(fid)
+    if not raw:
+        return {"status": "error", "fixture_id": fid}
+    
+    status = raw.get("status", "Unknown")
+    note = raw.get("note", "")
+    winner_team_id = raw.get("winner_team_id")
+    
+    # Determine winner name
+    local = raw.get("localteam", {})
+    visitor = raw.get("visitorteam", {})
+    winner = None
+    if winner_team_id:
+        if winner_team_id == local.get("id"):
+            winner = local.get("name")
+        elif winner_team_id == visitor.get("id"):
+            winner = visitor.get("name")
+    
+    return {
+        "status": status,
+        "fixture_id": fid,
+        "note": note,
+        "winner": winner,
+        "team1": local.get("name", ""),
+        "team2": visitor.get("name", ""),
+        "is_finished": status.lower() in ["finished", "aban.", "cancelled", "no result"],
+        "is_live": status.lower() in ["1st innings", "2nd innings", "innings break", "live"],
+    }

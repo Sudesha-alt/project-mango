@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import { useMatchData } from "@/hooks/useMatchData";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import LiveScoreboard from "@/components/LiveScoreboard";
@@ -13,11 +13,12 @@ import BetaPrediction from "@/components/BetaPrediction";
 import ConsultantDashboard from "@/components/ConsultantDashboard";
 import CricApiLivePanel from "@/components/CricApiLivePanel";
 import ClaudeLiveAnalysis from "@/components/ClaudeLiveAnalysis";
-import { WifiHigh, WifiSlash, Lightning, Spinner, UserCircle } from "@phosphor-icons/react";
+import { WifiHigh, WifiSlash, Lightning, Spinner, UserCircle, ArrowsClockwise, CheckCircle, Warning, Info } from "@phosphor-icons/react";
 
 export default function LiveMatch() {
   const { matchId } = useParams();
-  const { fetchLiveData, getMatchState, getTeamSquad, fetchPlayerPredictions, fetchBetaPrediction, fetchConsultation, sendChat, fetchClaudeLive, refreshClaudePrediction } = useMatchData();
+  const navigate = useNavigate();
+  const { fetchLiveData, getMatchState, getTeamSquad, fetchPlayerPredictions, fetchBetaPrediction, fetchConsultation, sendChat, fetchClaudeLive, refreshClaudePrediction, checkMatchStatus, getCurrentLiveMatch } = useMatchData();
   const { data: wsData, connected } = useWebSocket(matchId);
 
   const [matchState, setMatchState] = useState(null);
@@ -33,6 +34,8 @@ export default function LiveMatch() {
   const [claudeLiveLoading, setClaudeLiveLoading] = useState(false);
   const [refreshingClaude, setRefreshingClaude] = useState(false);
   const [showFormula, setShowFormula] = useState(false);
+  const [checkingStatus, setCheckingStatus] = useState(false);
+  const [matchCompleted, setMatchCompleted] = useState(null);
 
   useEffect(() => {
     const load = async () => {
@@ -111,6 +114,33 @@ export default function LiveMatch() {
     setRefreshingClaude(false);
   };
 
+  const handleCheckStatus = async () => {
+    setCheckingStatus(true);
+    const status = await checkMatchStatus(matchId);
+    if (status) {
+      if (status.is_finished) {
+        setMatchCompleted({
+          winner: status.winner,
+          note: status.note,
+          status: status.sportmonks_status,
+        });
+      } else if (status.is_live) {
+        // Match is live — fetch fresh data
+        await handleFetchLive();
+      } else {
+        // Check if there's another live match to navigate to
+        const liveData = await getCurrentLiveMatch();
+        if (liveData?.live_matches?.length > 0) {
+          const other = liveData.live_matches.find(m => m.matchId !== matchId);
+          if (other) {
+            navigate(`/live/${other.matchId}`);
+          }
+        }
+      }
+    }
+    setCheckingStatus(false);
+  };
+
   const liveData = matchState?.liveData || {};
   const score = liveData.score || {};
   const probs = matchState?.probabilities || {};
@@ -162,11 +192,38 @@ export default function LiveMatch() {
                 </span>
               )}
             </div>
-            <button onClick={handleFetchLive} disabled={fetchingLive} data-testid="fetch-live-btn"
-              className="flex items-center gap-2 bg-[#007AFF] text-white px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider hover:bg-[#0066DD] transition-colors disabled:opacity-50">
-              {fetchingLive ? <><Spinner className="w-4 h-4 animate-spin" /> Fetching...</> : <><Lightning weight="fill" className="w-4 h-4" /> Fetch Live Scores</>}
-            </button>
+            <div className="flex items-center gap-2">
+              <button onClick={handleCheckStatus} disabled={checkingStatus} data-testid="check-status-btn"
+                className="flex items-center gap-1.5 bg-[#1E1E1E] border border-white/10 text-[#A1A1AA] px-3 py-2 rounded-md text-xs font-bold uppercase tracking-wider hover:text-white hover:border-white/20 transition-colors disabled:opacity-50">
+                {checkingStatus ? <Spinner className="w-3.5 h-3.5 animate-spin" /> : <ArrowsClockwise weight="bold" className="w-3.5 h-3.5" />}
+                {checkingStatus ? "Checking..." : "Check Status"}
+              </button>
+              <button onClick={handleFetchLive} disabled={fetchingLive} data-testid="fetch-live-btn"
+                className="flex items-center gap-2 bg-[#007AFF] text-white px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider hover:bg-[#0066DD] transition-colors disabled:opacity-50">
+                {fetchingLive ? <><Spinner className="w-4 h-4 animate-spin" /> Fetching...</> : <><Lightning weight="fill" className="w-4 h-4" /> Fetch Live Scores</>}
+              </button>
+            </div>
           </div>
+
+          {/* Match Completed Banner */}
+          {matchCompleted && (
+            <div className="bg-[#141414] border border-[#22C55E]/30 rounded-md p-5 mb-4 text-center" data-testid="match-completed-banner">
+              <CheckCircle weight="fill" className="w-8 h-8 text-[#22C55E] mx-auto mb-2" />
+              <p className="text-lg font-bold uppercase" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>Match Completed</p>
+              {matchCompleted.winner && <p className="text-[#22C55E] font-bold mt-1">{matchCompleted.winner} wins!</p>}
+              {matchCompleted.note && <p className="text-sm text-[#A1A1AA] mt-1">{matchCompleted.note}</p>}
+              <div className="flex items-center justify-center gap-3 mt-3">
+                <button onClick={() => navigate(`/post-match/${matchId}`)} data-testid="view-post-match-btn"
+                  className="text-xs font-bold uppercase tracking-wider bg-[#007AFF] text-white px-4 py-1.5 rounded hover:bg-[#0066DD] transition-colors">
+                  View Post-Match
+                </button>
+                <button onClick={() => navigate("/")} data-testid="back-to-matches-btn"
+                  className="text-xs font-bold uppercase tracking-wider bg-[#1E1E1E] text-[#A1A1AA] px-4 py-1.5 rounded hover:text-white transition-colors">
+                  All Matches
+                </button>
+              </div>
+            </div>
+          )}
 
           {!hasLiveData && !noLiveMatch && (
             <div className="bg-[#141414] border border-[#007AFF]/30 rounded-md p-8 text-center mb-4" data-testid="no-live-data">
@@ -286,7 +343,16 @@ export default function LiveMatch() {
                 )}
 
                 {/* ═══ TWO PREDICTION MODELS ═══ */}
-                {(weightedPred || (claudePred && !claudePred.error)) && (
+                {(weightedPred || (claudePred && !claudePred.error)) && (() => {
+                  // Model Consensus computation
+                  let consensus = null;
+                  if (weightedPred && claudePred && !claudePred.error) {
+                    const diff = Math.abs((weightedPred.team1_pct || 50) - (claudePred.team1_win_pct || 50));
+                    if (diff <= 5) consensus = { level: "HIGH", color: "text-[#22C55E]", bg: "bg-[#22C55E]/10 border-[#22C55E]/20", msg: "Both models agree" };
+                    else if (diff <= 15) consensus = { level: "MODERATE", color: "text-[#FFCC00]", bg: "bg-[#FFCC00]/10 border-[#FFCC00]/20", msg: "Models slightly diverge" };
+                    else consensus = { level: "LOW", color: "text-[#FF3B30]", bg: "bg-[#FF3B30]/10 border-[#FF3B30]/20", msg: "Models disagree — proceed with caution" };
+                  }
+                  return (
                   <div className="space-y-4" data-testid="dual-prediction-models">
                     {/* Refresh bar */}
                     <div className="flex items-center justify-between">
@@ -298,6 +364,24 @@ export default function LiveMatch() {
                         {refreshingClaude ? <><Spinner className="w-3 h-3 animate-spin" /> Refreshing...</> : <><Lightning weight="fill" className="w-3 h-3 text-[#007AFF]" /> Refresh Both</>}
                       </button>
                     </div>
+
+                    {/* Model Consensus Indicator */}
+                    {consensus && (
+                      <div className={`flex items-center justify-between px-3 py-2 rounded border ${consensus.bg}`} data-testid="model-consensus">
+                        <div className="flex items-center gap-2">
+                          {consensus.level === "HIGH" ? <CheckCircle weight="fill" className={`w-4 h-4 ${consensus.color}`} /> :
+                           consensus.level === "LOW" ? <Warning weight="fill" className={`w-4 h-4 ${consensus.color}`} /> :
+                           <Info weight="fill" className={`w-4 h-4 ${consensus.color}`} />}
+                          <span className={`text-xs font-bold uppercase tracking-wider ${consensus.color}`}>
+                            {consensus.level} Consensus
+                          </span>
+                          <span className="text-[10px] text-[#A1A1AA]">{consensus.msg}</span>
+                        </div>
+                        <span className="text-[10px] font-mono text-[#737373]">
+                          Diff: {weightedPred && claudePred ? Math.abs((weightedPred.team1_pct || 50) - (claudePred.team1_win_pct || 50)).toFixed(1) : "?"}%
+                        </span>
+                      </div>
+                    )}
 
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                       {/* ── MODEL 1: Weighted Probability ── */}
@@ -497,7 +581,8 @@ export default function LiveMatch() {
                       </div>
                     )}
                   </div>
-                )}
+                  );
+                })()}
 
                 {/* Betting Edge Display */}
                 {bettingEdge && (bettingEdge.team1 || bettingEdge.team2) && (
