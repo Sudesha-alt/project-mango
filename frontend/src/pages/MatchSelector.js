@@ -240,26 +240,52 @@ export default function MatchSelector() {
         )}
 
         {refreshResult && (
-          <div className={`mb-4 rounded-md p-3 flex items-center gap-3 ${refreshResult.completed_count > 0 ? "bg-[#22C55E]/10 border border-[#22C55E]/30" : "bg-[#141414] border border-white/10"}`} data-testid="refresh-result-banner">
-            {refreshResult.completed_count > 0 ? (
+          <div className={`mb-4 rounded-md p-3 flex items-center gap-3 ${
+            refreshResult.promoted_count > 0 ? "bg-[#FF3B30]/10 border border-[#FF3B30]/30" :
+            refreshResult.completed_count > 0 ? "bg-[#22C55E]/10 border border-[#22C55E]/30" :
+            "bg-[#141414] border border-white/10"
+          }`} data-testid="refresh-result-banner">
+            {refreshResult.promoted_count > 0 ? (
+              <Broadcast weight="fill" className="w-4 h-4 text-[#FF3B30]" />
+            ) : refreshResult.completed_count > 0 ? (
               <Trophy weight="fill" className="w-4 h-4 text-[#22C55E]" />
             ) : (
-              <Broadcast weight="fill" className="w-4 h-4 text-[#FF3B30]" />
+              <Broadcast weight="fill" className="w-4 h-4 text-[#A1A1AA]" />
             )}
             <div className="flex-1">
-              <p className="text-xs font-bold text-white">
-                {refreshResult.message
-                  ? refreshResult.message
-                  : refreshResult.completed_count > 0
-                    ? `${refreshResult.completed_count} match${refreshResult.completed_count > 1 ? "es" : ""} moved to Completed`
-                    : `${refreshResult.still_live_count || 0} match${(refreshResult.still_live_count || 0) !== 1 ? "es" : ""} still live`
-                }
-              </p>
+              {refreshResult.promoted_count > 0 && (
+                <p className="text-xs font-bold text-[#FF3B30]">
+                  {refreshResult.promoted_count} match{refreshResult.promoted_count > 1 ? "es" : ""} now LIVE!
+                </p>
+              )}
+              {refreshResult.newly_promoted?.map((m, i) => (
+                <p key={`p-${i}`} className="text-[10px] text-[#A1A1AA]">
+                  {m.team1} vs {m.team2} — {m.score || m.status}
+                </p>
+              ))}
+              {refreshResult.completed_count > 0 && (
+                <p className="text-xs font-bold text-[#22C55E]">
+                  {refreshResult.completed_count} match{refreshResult.completed_count > 1 ? "es" : ""} completed
+                </p>
+              )}
               {refreshResult.completed?.map((m, i) => (
-                <p key={i} className="text-[10px] text-[#A1A1AA]">
+                <p key={`c-${i}`} className="text-[10px] text-[#A1A1AA]">
                   {m.team1} vs {m.team2} — {m.winner ? `${m.winner} won` : m.result || "Completed"}
                 </p>
               ))}
+              {refreshResult.still_live_count > 0 && (
+                <p className="text-xs text-[#A1A1AA]">
+                  {refreshResult.still_live_count} match{refreshResult.still_live_count !== 1 ? "es" : ""} still live
+                </p>
+              )}
+              {!refreshResult.promoted_count && !refreshResult.completed_count && !refreshResult.still_live_count && (
+                <p className="text-xs text-[#737373]">
+                  {refreshResult.message || "No live IPL matches found right now"}
+                </p>
+              )}
+              <p className="text-[9px] text-[#525252] mt-1">
+                SportMonks: {refreshResult.sportmonks_live || 0} &middot; CricAPI: {refreshResult.cricapi_live || 0}
+              </p>
             </div>
             <button onClick={() => setRefreshResult(null)} className="text-[#737373] hover:text-white text-xs">x</button>
           </div>

@@ -323,24 +323,52 @@ async def fetch_live_match(team1: str, team2: str, fixture_id: int = None) -> Op
 
 
 
-async def check_all_live_ipl() -> list:
-    """Fetch all live IPL fixtures from SportMonks and return parsed list."""
-    live = await fetch_live_fixtures()
-    results = []
-    for m in live:
-        lt = m.get("localteam", {}).get("name", "")
-        vt = m.get("visitorteam", {}).get("name", "")
-        status = m.get("status", "")
-        note = m.get("note", "")
-        fid = m.get("id")
-        results.append({
-            "fixture_id": fid,
-            "team1": lt,
-            "team2": vt,
-            "status": status,
-            "note": note,
-        })
-    return results
+async def fetch_livescores_ipl() -> list:
+    """Fetch all currently live IPL matches from SportMonks livescores endpoint.
+    Returns list of parsed fixtures with teams, scores, status."""
+    url = f"{BASE_URL}/livescores"
+    params = {
+        "api_token": SPORTMONKS_TOKEN,
+        "include": "localteam,visitorteam,runs,batting,bowling,lineup,venue",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(url, params=params)
+            if resp.status_code != 200:
+                logger.warning(f"SportMonks livescores {resp.status_code}")
+                return []
+            data = resp.json().get("data", [])
+            # Filter for T20 / IPL-like matches (league filtering if available)
+            results = []
+            for m in data:
+                lt = m.get("localteam", {}).get("name", "")
+                vt = m.get("visitorteam", {}).get("name", "")
+                status = m.get("status", "")
+                note = m.get("note", "")
+                fixture_id = m.get("id")
+                # Include all — we'll match to our schedule later
+                entry = {
+                    "fixture_id": fixture_id,
+                    "team1": lt,
+                    "team2": vt,
+                    "status": status,
+                    "note": note,
+                    "league_id": m.get("league_id"),
+                    "is_live": status.lower() in ["1st innings", "2nd innings", "innings break", "live"],
+                    "is_finished": status.lower() in ["finished", "aban.", "cancelled", "no result"],
+                }
+                # Parse scores
+                runs_data = m.get("runs", [])
+                for r in runs_data:
+                    inn = r.get("inning", 1)
+                    entry[f"inn{inn}_runs"] = r.get("score", 0)
+                    entry[f"inn{inn}_wickets"] = r.get("wickets", 0)
+                    entry[f"inn{inn}_overs"] = r.get("overs", 0)
+                results.append(entry)
+            return results
+    except Exception as e:
+        logger.error(f"SportMonks livescores error: {e}")
+        return []
 
 
 async def check_fixture_status(team1: str, team2: str) -> dict:

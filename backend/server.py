@@ -31,7 +31,7 @@ from services.ai_service import (
     claude_deep_match_analysis, claude_live_analysis,
     claude_sportmonks_prediction
 )
-from services.sportmonks_service import fetch_live_match, check_fixture_status, check_all_live_ipl, parse_fixture, fetch_fixture_details
+from services.sportmonks_service import fetch_live_match, check_fixture_status, fetch_livescores_ipl, parse_fixture, fetch_fixture_details
 from services.beta_prediction_engine import run_beta_prediction
 from services.consultant_engine import run_consultation, build_features
 from services.cricdata_service import fetch_live_ipl_details, fetch_venue_stats_from_cricapi
@@ -706,162 +706,210 @@ async def check_match_status(match_id: str):
 
 @api_router.get("/live/current")
 async def get_current_live_match():
-    """Find the currently live IPL match from SportMonks and return its matchId."""
-    # First check our schedule for matches marked as live
+    """Find currently live IPL matches from our schedule."""
     live_schedule = await db.ipl_schedule.find(
-        {"status": "live"}, {"_id": 0}
+        {"status": {"$in": ["live", "Live"]}}, {"_id": 0}
     ).to_list(10)
 
-    # Query SportMonks for actual live fixtures
-    sportmonks_live = await check_all_live_ipl()
-
-    # Match SportMonks live fixtures to our schedule
     found = []
-    for sm in sportmonks_live:
-        sm_t1 = sm.get("team1", "").lower()
-        sm_t2 = sm.get("team2", "").lower()
-        for sched in live_schedule:
-            s_t1 = sched.get("team1", "").lower()
-            s_t2 = sched.get("team2", "").lower()
-            if (s_t1 in sm_t1 or sm_t1 in s_t1) or (s_t2 in sm_t2 or sm_t2 in s_t2):
-                found.append({
-                    "matchId": sched["matchId"],
-                    "team1": sched.get("team1"),
-                    "team2": sched.get("team2"),
-                    "status": sm.get("status"),
-                    "note": sm.get("note"),
-                    "fixture_id": sm.get("fixture_id"),
-                })
-                break
-
-    # Also check schedule-only matches that SportMonks doesn't have
     for sched in live_schedule:
-        mid = sched["matchId"]
-        if not any(f["matchId"] == mid for f in found):
-            found.append({
-                "matchId": mid,
-                "team1": sched.get("team1"),
-                "team2": sched.get("team2"),
-                "status": "scheduled_live",
-                "note": sched.get("score", ""),
-            })
+        found.append({
+            "matchId": sched["matchId"],
+            "team1": sched.get("team1"),
+            "team2": sched.get("team2"),
+            "score": sched.get("score", ""),
+            "venue": sched.get("venue", ""),
+        })
 
     return {
         "live_matches": found,
         "count": len(found),
-        "sportmonks_count": len(sportmonks_live),
     }
 
 
 
 @api_router.post("/matches/refresh-live-status")
 async def refresh_live_status():
-    """Check all 'live' matches against SportMonks and update their status.
-    Moves finished matches to 'completed'. Returns updated counts."""
-    live_matches = await db.ipl_schedule.find(
-        {"status": {"$in": ["live", "Live", "in progress"]}}, {"_id": 0}
-    ).to_list(20)
+    """Discover live IPL matches from SportMonks + CricAPI, promote them to 'live',
+    and mark finished ones as 'completed'. Full discovery + cleanup."""
 
-    if not live_matches:
-        return {"message": "No live matches to check", "updated": [], "still_live": [], "completed": []}
+    # Load entire schedule for matching
+    all_schedule = await db.ipl_schedule.find({}, {"_id": 0}).to_list(100)
+    current_live = [m for m in all_schedule if m.get("status") in ("live", "Live", "in progress")]
 
+    newly_promoted = []
     still_live = []
     newly_completed = []
 
-    # First try SportMonks for each match
-    unresolved = []
-    for match in live_matches:
-        mid = match.get("matchId")
-        team1 = match.get("team1", "")
-        team2 = match.get("team2", "")
+    # ─── Step 1: Discover from SportMonks livescores ───
+    sm_live = await fetch_livescores_ipl()
+    sm_matched_mids = set()
 
-        status_result = await check_fixture_status(team1, team2)
+    for sm in sm_live:
+        sm_t1 = sm.get("team1", "").lower()
+        sm_t2 = sm.get("team2", "").lower()
 
-        if status_result.get("is_finished"):
-            update_data = {
-                "status": "completed",
-                "completedAt": datetime.now(timezone.utc).isoformat(),
-            }
-            if status_result.get("winner"):
-                update_data["winner"] = status_result["winner"]
-            if status_result.get("note"):
-                update_data["result"] = status_result["note"]
-            await db.ipl_schedule.update_one({"matchId": mid}, {"$set": update_data})
-            newly_completed.append({
-                "matchId": mid, "team1": team1, "team2": team2,
-                "winner": status_result.get("winner"), "result": status_result.get("note", ""),
-            })
-            logger.info(f"Match {mid} marked completed via SportMonks: {status_result.get('note')}")
+        # Match to our schedule — prefer upcoming/today's match over future duplicates
+        candidates = []
+        for sched in all_schedule:
+            s_t1 = sched.get("team1", "").lower()
+            s_t2 = sched.get("team2", "").lower()
+            # Check both orderings of teams
+            match_a = (any(w in sm_t1 for w in s_t1.split() if len(w) > 3) or any(w in s_t1 for w in sm_t1.split() if len(w) > 3))
+            match_b = (any(w in sm_t2 for w in s_t2.split() if len(w) > 3) or any(w in s_t2 for w in sm_t2.split() if len(w) > 3))
+            match_a2 = (any(w in sm_t1 for w in s_t2.split() if len(w) > 3) or any(w in s_t2 for w in sm_t1.split() if len(w) > 3))
+            match_b2 = (any(w in sm_t2 for w in s_t1.split() if len(w) > 3) or any(w in s_t1 for w in sm_t2.split() if len(w) > 3))
+            if (match_a and match_b) or (match_a2 and match_b2):
+                candidates.append(sched)
 
-        elif status_result.get("is_live"):
-            still_live.append({"matchId": mid, "team1": team1, "team2": team2, "status": status_result.get("status")})
-
-        else:
-            # SportMonks doesn't know this match — add to unresolved
-            unresolved.append(match)
-
-    # For unresolved matches, try CricketData.org as fallback
-    if unresolved:
-        try:
-            cricapi_result = await fetch_live_ipl_details()
-            cricapi_matches = cricapi_result.get("matches", [])
-            cricapi_active_teams = set()
-            for cm in cricapi_matches:
-                for t in cm.get("teams", []):
-                    cricapi_active_teams.add(t.lower())
-
-            for match in unresolved:
-                mid = match.get("matchId")
-                team1 = match.get("team1", "")
-                team2 = match.get("team2", "")
-                score = match.get("score", "")
-
-                # Check if CricAPI has this match as active
-                t1_lower = team1.lower()
-                t2_lower = team2.lower()
-                found_active = False
-                for cm in cricapi_matches:
-                    cm_teams = [t.lower() for t in cm.get("teams", [])]
-                    if any(t1_lower in ct or ct in t1_lower for ct in cm_teams):
-                        found_active = True
-                        # Check CricAPI status
-                        cm_status = cm.get("status", "").lower()
-                        if any(w in cm_status for w in ["won", "result", "tie", "no result", "abandoned"]):
-                            await db.ipl_schedule.update_one({"matchId": mid}, {"$set": {
-                                "status": "completed", "result": cm.get("status", ""),
-                                "completedAt": datetime.now(timezone.utc).isoformat(),
-                            }})
-                            newly_completed.append({"matchId": mid, "team1": team1, "team2": team2, "result": cm.get("status", "")})
-                            logger.info(f"Match {mid} marked completed via CricAPI: {cm.get('status')}")
-                        else:
-                            still_live.append({"matchId": mid, "team1": team1, "team2": team2, "status": "live (cricapi)"})
+        # Pick best candidate: prefer "upcoming" or "live", then earliest by matchId
+        matched = None
+        if candidates:
+            # Prefer already-live or upcoming (not completed)
+            for c in candidates:
+                if c.get("status") in ("live", "Live", "in progress"):
+                    matched = c
+                    break
+            if not matched:
+                for c in candidates:
+                    if c.get("status") in ("upcoming", "Upcoming", "not_started"):
+                        matched = c
                         break
+            if not matched:
+                matched = candidates[0]
 
-                if not found_active:
-                    # Neither SportMonks nor CricAPI has this match live — likely finished
-                    # Check score text for completion hints
-                    if any(w in score.lower() for w in ["won", "tie", "no result", "abandoned"]):
-                        await db.ipl_schedule.update_one({"matchId": mid}, {"$set": {"status": "completed"}})
-                        newly_completed.append({"matchId": mid, "team1": team1, "team2": team2, "result": score})
-                    else:
-                        # Not found anywhere — mark as completed (match likely ended)
-                        await db.ipl_schedule.update_one({"matchId": mid}, {"$set": {
-                            "status": "completed",
-                            "completedAt": datetime.now(timezone.utc).isoformat(),
-                        }})
-                        newly_completed.append({"matchId": mid, "team1": team1, "team2": team2, "result": "Match ended (no longer live on any source)"})
-                        logger.info(f"Match {mid} marked completed: not found on any live source")
-        except Exception as e:
-            logger.error(f"CricAPI fallback check failed: {e}")
-            # If CricAPI also fails, keep them as unverified
-            for match in unresolved:
-                still_live.append({"matchId": match.get("matchId"), "team1": match.get("team1"), "team2": match.get("team2"), "status": "unverified"})
+        if not matched:
+            continue
+
+        mid = matched["matchId"]
+        sm_matched_mids.add(mid)
+
+        if sm.get("is_live"):
+            # Promote to live if not already
+            if matched.get("status") != "live":
+                score_text = ""
+                if sm.get("inn1_runs") is not None:
+                    score_text = f"{sm['team1']} {sm.get('inn1_runs',0)}/{sm.get('inn1_wickets',0)} ({sm.get('inn1_overs',0)} ov)"
+                if sm.get("inn2_runs") is not None:
+                    score_text += f" | {sm['team2']} {sm.get('inn2_runs',0)}/{sm.get('inn2_wickets',0)} ({sm.get('inn2_overs',0)} ov)"
+                await db.ipl_schedule.update_one({"matchId": mid}, {"$set": {
+                    "status": "live",
+                    "score": score_text or sm.get("note", ""),
+                    "sportmonks_fixture_id": sm.get("fixture_id"),
+                }})
+                newly_promoted.append({"matchId": mid, "team1": matched["team1"], "team2": matched["team2"], "status": sm.get("status"), "score": score_text})
+                logger.info(f"Match {mid} promoted to live via SportMonks: {matched['team1']} vs {matched['team2']}")
+            else:
+                still_live.append({"matchId": mid, "team1": matched["team1"], "team2": matched["team2"], "status": sm.get("status"), "note": sm.get("note")})
+
+        elif sm.get("is_finished"):
+            await db.ipl_schedule.update_one({"matchId": mid}, {"$set": {
+                "status": "completed",
+                "result": sm.get("note", ""),
+                "completedAt": datetime.now(timezone.utc).isoformat(),
+            }})
+            newly_completed.append({"matchId": mid, "team1": matched["team1"], "team2": matched["team2"], "result": sm.get("note", "")})
+            logger.info(f"Match {mid} marked completed via SportMonks: {sm.get('note')}")
+
+    # ─── Step 2: Discover from CricAPI ───
+    cric_matched_mids = set()
+    try:
+        cricapi_result = await fetch_live_ipl_details()
+        cricapi_matches = cricapi_result.get("matches", [])
+
+        for cm in cricapi_matches:
+            cm_t1 = cm.get("team1", "").lower()
+            cm_t2 = cm.get("team2", "").lower()
+
+            candidates = []
+            for sched in all_schedule:
+                s_t1 = sched.get("team1", "").lower()
+                s_t2 = sched.get("team2", "").lower()
+                match_a = (any(w in cm_t1 for w in s_t1.split() if len(w) > 3) or any(w in s_t1 for w in cm_t1.split() if len(w) > 3))
+                match_b = (any(w in cm_t2 for w in s_t2.split() if len(w) > 3) or any(w in s_t2 for w in cm_t2.split() if len(w) > 3))
+                match_a2 = (any(w in cm_t1 for w in s_t2.split() if len(w) > 3) or any(w in s_t2 for w in cm_t1.split() if len(w) > 3))
+                match_b2 = (any(w in cm_t2 for w in s_t1.split() if len(w) > 3) or any(w in s_t1 for w in cm_t2.split() if len(w) > 3))
+                if (match_a and match_b) or (match_a2 and match_b2):
+                    candidates.append(sched)
+
+            matched = None
+            if candidates:
+                for c in candidates:
+                    if c.get("status") in ("live", "Live", "in progress"):
+                        matched = c
+                        break
+                if not matched:
+                    for c in candidates:
+                        if c.get("status") in ("upcoming", "Upcoming", "not_started"):
+                            matched = c
+                            break
+                if not matched:
+                    matched = candidates[0]
+
+            if not matched or matched["matchId"] in sm_matched_mids:
+                continue
+
+            mid = matched["matchId"]
+            cric_matched_mids.add(mid)
+            cm_status = cm.get("status", "").lower()
+            is_ended = cm.get("matchEnded", False) or any(w in cm_status for w in ["won", "result", "tie", "no result", "abandoned"])
+
+            if is_ended:
+                await db.ipl_schedule.update_one({"matchId": mid}, {"$set": {
+                    "status": "completed",
+                    "result": cm.get("status", ""),
+                    "completedAt": datetime.now(timezone.utc).isoformat(),
+                }})
+                newly_completed.append({"matchId": mid, "team1": matched["team1"], "team2": matched["team2"], "result": cm.get("status", "")})
+            elif cm.get("matchStarted", False):
+                if matched.get("status") != "live":
+                    score_parts = []
+                    for inn in cm.get("innings", []):
+                        score_parts.append(f"{inn.get('inning_label','')}: {inn.get('runs',0)}/{inn.get('wickets',0)} ({inn.get('overs',0)} ov)")
+                    score_text = " | ".join(score_parts)
+                    await db.ipl_schedule.update_one({"matchId": mid}, {"$set": {
+                        "status": "live",
+                        "score": score_text,
+                        "cricapi_id": cm.get("cricapi_id"),
+                    }})
+                    newly_promoted.append({"matchId": mid, "team1": matched["team1"], "team2": matched["team2"], "status": "live (cricapi)", "score": score_text})
+                    logger.info(f"Match {mid} promoted to live via CricAPI")
+                else:
+                    if mid not in [s["matchId"] for s in still_live]:
+                        still_live.append({"matchId": mid, "team1": matched["team1"], "team2": matched["team2"], "status": "live (cricapi)"})
+    except Exception as e:
+        logger.error(f"CricAPI discovery failed: {e}")
+
+    # ─── Step 3: Clean up stale 'live' matches not found in any source ───
+    all_discovered_mids = sm_matched_mids | cric_matched_mids
+    for match in current_live:
+        mid = match.get("matchId")
+        if mid in all_discovered_mids:
+            continue
+        if mid in [s["matchId"] for s in still_live] or mid in [s["matchId"] for s in newly_completed]:
+            continue
+        # Not found in any live source — check score text for completion
+        score = match.get("score", "")
+        if any(w in score.lower() for w in ["won", "tie", "no result", "abandoned"]):
+            await db.ipl_schedule.update_one({"matchId": mid}, {"$set": {"status": "completed", "result": score}})
+            newly_completed.append({"matchId": mid, "team1": match.get("team1"), "team2": match.get("team2"), "result": score})
+        else:
+            # Not found anywhere — mark completed
+            await db.ipl_schedule.update_one({"matchId": mid}, {"$set": {
+                "status": "completed", "completedAt": datetime.now(timezone.utc).isoformat(),
+            }})
+            newly_completed.append({"matchId": mid, "team1": match.get("team1"), "team2": match.get("team2"), "result": "Match ended (no longer live)"})
+            logger.info(f"Match {mid} marked completed: not found on any live source")
 
     return {
-        "checked": len(live_matches),
+        "checked": len(current_live),
+        "sportmonks_live": len(sm_live),
+        "cricapi_live": len(cricapi_matches) if 'cricapi_matches' in dir() else 0,
+        "newly_promoted": newly_promoted,
         "still_live": still_live,
         "completed": newly_completed,
         "still_live_count": len(still_live),
+        "promoted_count": len(newly_promoted),
         "completed_count": len(newly_completed),
     }
 

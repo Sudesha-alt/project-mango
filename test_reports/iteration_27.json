@@ -1,0 +1,115 @@
+{
+  "summary": "Iteration 27 - Full end-to-end live match flow testing complete. All backend APIs and frontend UI components working correctly. CSK vs SRH (ipl2026_027) is live and properly discovered via SportMonks.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "LiveMatch page",
+        "issues": ["WebSocket connection warning in console (non-blocking)", "Chart dimension warnings in console (non-blocking)"]
+      }
+    ]
+  },
+  "passed_tests": [
+    "Backend: POST /api/matches/refresh-live-status returns correct structure (newly_promoted, still_live, completed arrays)",
+    "Backend: refresh-live-status discovers CSK vs SRH (ipl2026_027) as live from SportMonks",
+    "Backend: GET /api/schedule shows ipl2026_027 with status='live'",
+    "Backend: Schedule counts correct (1 live, 59 upcoming, 10 completed)",
+    "Backend: POST /api/matches/ipl2026_027/fetch-live returns source='sportmonks'",
+    "Backend: claudePrediction contains team1_win_pct, team2_win_pct, historical_factors",
+    "Backend: historical_factors contains h2h_win_pct, venue_win_pct, recent_form_pct, toss_advantage_pct",
+    "Backend: weightedPrediction contains team1_pct, team2_pct, alpha, H, L, breakdown",
+    "Backend: breakdown contains run_rate_ratio, wickets_in_hand_ratio, phase_momentum",
+    "Backend: yetToBat and yetToBowl arrays present in fetch-live response",
+    "Backend: POST /api/matches/ipl2026_027/check-status returns is_live, is_finished, sportmonks_status",
+    "Backend: GET /api/live/current returns live_matches array with ipl2026_027",
+    "Frontend: Live tab shows CSK vs SRH match card with LIVE badge",
+    "Frontend: Refresh Matches button visible with data-testid='refresh-live-btn'",
+    "Frontend: Clicking Refresh Matches shows result banner '1 match still live'",
+    "Frontend: Live match page loads with data-testid='live-match-page'",
+    "Frontend: Check Status button visible with data-testid='check-status-btn'",
+    "Frontend: Fetch Live Scores button visible with data-testid='fetch-live-btn'",
+    "Frontend: Dual prediction models section visible with data-testid='dual-prediction-models'",
+    "Frontend: Weighted Probability panel visible with data-testid='weighted-prediction'",
+    "Frontend: Claude Opus Prediction panel visible with data-testid='claude-live-prediction'",
+    "Frontend: LOW CONSENSUS indicator visible with data-testid='model-consensus' (diff 24.7%)",
+    "Frontend: Yet to Bat section visible with data-testid='yet-to-bat'",
+    "Frontend: Yet to Bowl section visible with data-testid='yet-to-bowl'",
+    "Frontend: Refresh Both button visible with data-testid='refresh-predictions-btn'"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_iteration27_live_flow.py",
+    "/app/test_reports/pytest/iteration27_live_flow_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "refresh-live-status endpoint (lines 731-914) correctly discovers live matches from SportMonks + CricAPI fallback",
+    "fetch-live endpoint (lines 371-601) correctly returns SportMonks data with dual predictions",
+    "compute_weighted_prediction function (lines 267-367) correctly implements P(win) = alpha*H + (1-alpha)*L formula",
+    "Model Consensus Indicator (LiveMatch.js lines 346-384) correctly shows LOW/MODERATE/HIGH based on prediction difference",
+    "Consensus thresholds: HIGH (diff <= 5%), MODERATE (diff <= 15%), LOW (diff > 15%)"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration27_live_flow.py"
+  ],
+  "success_rate": {
+    "backend": "100% (10/10 tests passed)",
+    "frontend": "100% (all UI components verified)"
+  },
+  "test_credentials": "No authentication required - open access app",
+  "seed_data_creation": "None - used existing live match data from SportMonks",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration 27 features fully working. CSK vs SRH (ipl2026_027) is currently live. The refresh-live-status endpoint discovers live matches from SportMonks and promotes them. The fetch-live endpoint returns dual predictions (Weighted + Claude) with historical_factors. The Model Consensus Indicator shows LOW (red) when models diverge >15%, MODERATE (yellow) 5-15%, HIGH (green) <=5%. Current state: 1 live, 59 upcoming, 10 completed matches.",
+  "feature_verification": {
+    "refresh_live_status": {
+      "status": "WORKING",
+      "description": "POST /api/matches/refresh-live-status discovers live IPL matches from SportMonks + CricAPI",
+      "verification": "Returns newly_promoted, still_live, completed arrays. Found CSK vs SRH as live."
+    },
+    "schedule_live_promotion": {
+      "status": "WORKING",
+      "description": "GET /api/schedule shows promoted match as 'live'",
+      "verification": "ipl2026_027 shows status='live' with score 'CSK 30/4 (8.4 ov)'"
+    },
+    "fetch_live_sportmonks": {
+      "status": "WORKING",
+      "description": "POST /api/matches/{matchId}/fetch-live returns SportMonks data",
+      "verification": "source='sportmonks', includes liveData, sportmonks, batsmen, bowler, yetToBat, yetToBowl"
+    },
+    "claude_prediction": {
+      "status": "WORKING",
+      "description": "claudePrediction contains team1_win_pct, team2_win_pct, historical_factors",
+      "verification": "CSK 82% vs SRH 18%, historical_factors: h2h=0.58, venue=0.72, form=0.65, toss=0.55"
+    },
+    "weighted_prediction": {
+      "status": "WORKING",
+      "description": "weightedPrediction contains team1_pct, team2_pct, alpha, H, L, breakdown",
+      "verification": "CSK 57.3% vs SRH 42.7%, alpha=0.779, H=0.625, L=0.389"
+    },
+    "model_consensus_indicator": {
+      "status": "WORKING",
+      "description": "Shows LOW/MODERATE/HIGH consensus based on prediction difference",
+      "verification": "LOW CONSENSUS visible (diff 24.7% > 15% threshold)"
+    },
+    "refresh_matches_button": {
+      "status": "WORKING",
+      "description": "Refresh Matches button on Live tab with data-testid='refresh-live-btn'",
+      "verification": "Button visible and functional, shows result banner after click"
+    },
+    "check_status_button": {
+      "status": "WORKING",
+      "description": "Check Status button on live match page with data-testid='check-status-btn'",
+      "verification": "Button visible and functional"
+    },
+    "yet_to_bat_bowl": {
+      "status": "WORKING",
+      "description": "Yet to Bat and Yet to Bowl sections on live match page",
+      "verification": "Both sections visible with player names"
+    }
+  }
+}
