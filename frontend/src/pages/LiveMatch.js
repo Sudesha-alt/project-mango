@@ -446,24 +446,56 @@ export default function LiveMatch() {
                             ))}
                           </div>
 
-                          {/* Live factors breakdown */}
-                          <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2.5 space-y-1">
-                            <p className="text-[9px] text-[#525252] uppercase mb-1">Live Factors (L)</p>
+                          {/* Live factors breakdown — 7 granular factors */}
+                          <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2.5 space-y-1" data-testid="live-factors-breakdown">
+                            <div className="flex items-center justify-between mb-1">
+                              <p className="text-[9px] text-[#525252] uppercase">Live Factors (L)</p>
+                              {weightedPred.live_context?.recent_wickets_in_12 > 0 && (
+                                <span className="text-[8px] px-1.5 py-0.5 rounded bg-[#FF3B30]/15 text-[#FF3B30] font-bold">
+                                  {weightedPred.live_context.recent_wickets_in_12}W in last 12
+                                </span>
+                              )}
+                            </div>
                             {[
-                              { label: "Run Rate Ratio", val: weightedPred.breakdown?.run_rate_ratio, w: "0.40" },
-                              { label: "Wickets in Hand", val: weightedPred.breakdown?.wickets_in_hand_ratio, w: "0.35" },
-                              { label: "Phase Momentum", val: weightedPred.breakdown?.phase_momentum, w: "0.25" },
+                              { label: "CRR/RRR Pressure", val: weightedPred.breakdown?.crr_pressure, w: "0.20", color: "#34C759" },
+                              { label: "Wickets in Hand", val: weightedPred.breakdown?.wickets_in_hand_ratio, w: "0.15", color: "#34C759" },
+                              { label: "Recent Wkt Penalty", val: weightedPred.breakdown?.recent_wicket_penalty, w: "0.15", color: (weightedPred.breakdown?.recent_wicket_penalty || 1) < 0.5 ? "#FF3B30" : "#34C759" },
+                              { label: "Batter Confidence", val: weightedPred.breakdown?.batter_confidence, w: "0.15", color: "#007AFF" },
+                              { label: "New Batsman", val: weightedPred.breakdown?.new_batsman_factor, w: "0.10", color: (weightedPred.breakdown?.new_batsman_factor || 1) < 0.5 ? "#FF9500" : "#34C759" },
+                              { label: "Bowler Threat", val: weightedPred.breakdown?.bowler_threat, w: "0.10", color: (weightedPred.breakdown?.bowler_threat || 1) < 0.4 ? "#FF3B30" : "#34C759" },
+                              { label: "Phase Momentum", val: weightedPred.breakdown?.phase_momentum, w: "0.15", color: "#FFCC00" },
                             ].map(f => (
                               <div key={f.label} className="flex items-center justify-between text-[10px]">
                                 <span className="text-[#737373]">{f.label} <span className="text-[#525252]">({f.w})</span></span>
                                 <div className="flex items-center gap-2">
                                   <div className="w-16 h-1 bg-[#1E1E1E] rounded-full overflow-hidden">
-                                    <div className="h-full bg-[#34C759] rounded-full" style={{ width: `${(f.val || 0) * 100}%` }} />
+                                    <div className="h-full rounded-full" style={{ width: `${(f.val || 0) * 100}%`, backgroundColor: f.color }} />
                                   </div>
                                   <span className="font-mono text-[#A3A3A3] w-10 text-right">{((f.val || 0) * 100).toFixed(0)}%</span>
                                 </div>
                               </div>
                             ))}
+                            {/* Live context: who's at crease & bowling */}
+                            {weightedPred.live_context && (
+                              <div className="mt-1.5 pt-1.5 border-t border-[#262626] space-y-0.5">
+                                {weightedPred.live_context.active_batsmen?.length > 0 && (
+                                  <p className="text-[9px] text-[#A3A3A3]">
+                                    <span className="text-[#525252]">Batting:</span> {weightedPred.live_context.active_batsmen.join(" & ")}
+                                  </p>
+                                )}
+                                {weightedPred.live_context.active_bowler && (
+                                  <p className="text-[9px] text-[#A3A3A3]">
+                                    <span className="text-[#525252]">Bowling:</span> {weightedPred.live_context.active_bowler}
+                                  </p>
+                                )}
+                                <div className="flex gap-3 text-[9px] font-mono">
+                                  <span className="text-[#34C759]">CRR {weightedPred.live_context.crr}</span>
+                                  {weightedPred.live_context.rrr && (
+                                    <span className="text-[#FF9500]">RRR {weightedPred.live_context.rrr}</span>
+                                  )}
+                                </div>
+                              </div>
+                            )}
                           </div>
 
                           {/* Chase Analysis */}

@@ -1,0 +1,89 @@
+{
+  "summary": "Iteration 28 - 7 Granular Live Factors feature fully tested and working. All backend tests passed (10/10). Frontend displays all 7 factors with color-coded bars and live context section.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "passed_tests": [
+    "Backend: API health check - version 4.1.0",
+    "Backend: GET /api/schedule returns live match (CSK vs RCB - ipl2026_011)",
+    "Backend: POST /api/matches/{matchId}/fetch-live returns all 7 live factors in breakdown",
+    "Backend: breakdown contains crr_pressure, wickets_in_hand_ratio, recent_wicket_penalty, batter_confidence, new_batsman_factor, bowler_threat, phase_momentum",
+    "Backend: All factor values are between 0.0 and 1.0",
+    "Backend: live_context dict contains active_batsmen, active_bowler, crr, rrr, recent_wickets_in_12",
+    "Backend: L value = 0.20*crr_pressure + 0.15*wickets_in_hand + 0.15*recent_wicket_penalty + 0.15*batter_confidence + 0.10*new_batsman + 0.10*bowler_threat + 0.15*phase_momentum (formula verified)",
+    "Backend: Historical factors (h2h_win_pct, venue_win_pct, recent_form_pct, toss_advantage_pct) present in breakdown",
+    "Backend: alpha, H, L values present and valid (0-1 range)",
+    "Backend: team1_pct + team2_pct = 100%",
+    "Backend: 1st innings has RRR = None (edge case verified)",
+    "Frontend: Live match page loads with data-testid='live-match-page'",
+    "Frontend: Weighted prediction panel visible with data-testid='weighted-prediction'",
+    "Frontend: Live factors breakdown visible with data-testid='live-factors-breakdown'",
+    "Frontend: All 7 factor labels displayed with correct weights (0.20, 0.15, 0.15, 0.15, 0.10, 0.10, 0.15)",
+    "Frontend: Color-coded bars for each factor (green for good, blue for neutral, yellow/red for concerning)",
+    "Frontend: Live context section shows 'Batting: Devdutt Padikkal' and 'CRR 9.76'",
+    "Frontend: Claude Opus Prediction panel visible with data-testid='claude-live-prediction'",
+    "Frontend: Model consensus indicator shows LOW CONSENSUS (diff 15.7%)"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_iteration28_7_live_factors.py",
+    "/app/test_reports/pytest/iteration28_7_live_factors_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "compute_weighted_prediction function (server.py lines 284-484) correctly implements 7 granular live factors",
+    "Factor weights sum to 1.0: 0.20 + 0.15 + 0.15 + 0.15 + 0.10 + 0.10 + 0.15 = 1.0",
+    "live_context dict provides useful UI context (active batsmen names, bowler name, CRR, RRR, recent wickets)",
+    "LiveMatch.js (lines 449-499) correctly renders all 7 factors with color-coded bars",
+    "Recent wickets badge appears when wickets found in last 12 balls (line 453-456)"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration28_7_live_factors.py"
+  ],
+  "success_rate": {
+    "backend": "100% (10/10 tests passed)",
+    "frontend": "100% (all UI components verified)"
+  },
+  "test_credentials": "No authentication required - open access app",
+  "seed_data_creation": "None - used existing live match data from SportMonks (CSK vs RCB - ipl2026_011)",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration 28 features fully working. CSK vs RCB (ipl2026_011) is currently live. The 7 granular live factors are: CRR/RRR Pressure (0.20), Wickets in Hand (0.15), Recent Wkt Penalty (0.15), Batter Confidence (0.15), New Batsman (0.10), Bowler Threat (0.10), Phase Momentum (0.15). The live_context dict provides active batsmen names, bowler name, CRR, RRR, and recent wickets count. Current state: 1 live, 58 upcoming, 11 completed matches.",
+  "feature_verification": {
+    "7_live_factors_backend": {
+      "status": "WORKING",
+      "description": "compute_weighted_prediction returns 7 granular live factors in breakdown dict",
+      "verification": "All factors present: crr_pressure=1.0, wickets_in_hand_ratio=0.9, recent_wicket_penalty=1.0, batter_confidence=0.22, new_batsman_factor=0.75, bowler_threat=0.5, phase_momentum=0.0"
+    },
+    "live_context_backend": {
+      "status": "WORKING",
+      "description": "live_context dict contains active_batsmen, active_bowler, crr, rrr, recent_wickets_in_12",
+      "verification": "active_batsmen=['Devdutt Padikkal'], crr=9.76, rrr=None (1st innings)"
+    },
+    "l_value_formula": {
+      "status": "WORKING",
+      "description": "L = 0.20*crr + 0.15*wickets + 0.15*recent_wkt + 0.15*batter + 0.10*new_bat + 0.10*bowler + 0.15*phase",
+      "verification": "Formula verified - expected L matches actual L within 0.01 tolerance"
+    },
+    "frontend_7_factors_display": {
+      "status": "WORKING",
+      "description": "LiveMatch.js renders all 7 factor bars with labels and weights",
+      "verification": "All 7 factors visible with correct labels: CRR/RRR Pressure (0.20), Wickets in Hand (0.15), Recent Wkt Penalty (0.15), Batter Confidence (0.15), New Batsman (0.10), Bowler Threat (0.10), Phase Momentum (0.15)"
+    },
+    "frontend_live_context": {
+      "status": "WORKING",
+      "description": "Live context section shows active batsmen, bowler, CRR, RRR",
+      "verification": "Shows 'Batting: Devdutt Padikkal' and 'CRR 9.76'"
+    },
+    "color_coded_bars": {
+      "status": "WORKING",
+      "description": "Factor bars use color coding based on value",
+      "verification": "Green for good values, blue for neutral, yellow/red for concerning values"
+    }
+  }
+}
