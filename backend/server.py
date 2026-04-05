@@ -754,6 +754,119 @@ async def get_current_live_match():
 
 
 
+@api_router.post("/matches/refresh-live-status")
+async def refresh_live_status():
+    """Check all 'live' matches against SportMonks and update their status.
+    Moves finished matches to 'completed'. Returns updated counts."""
+    live_matches = await db.ipl_schedule.find(
+        {"status": {"$in": ["live", "Live", "in progress"]}}, {"_id": 0}
+    ).to_list(20)
+
+    if not live_matches:
+        return {"message": "No live matches to check", "updated": [], "still_live": [], "completed": []}
+
+    still_live = []
+    newly_completed = []
+
+    # First try SportMonks for each match
+    unresolved = []
+    for match in live_matches:
+        mid = match.get("matchId")
+        team1 = match.get("team1", "")
+        team2 = match.get("team2", "")
+
+        status_result = await check_fixture_status(team1, team2)
+
+        if status_result.get("is_finished"):
+            update_data = {
+                "status": "completed",
+                "completedAt": datetime.now(timezone.utc).isoformat(),
+            }
+            if status_result.get("winner"):
+                update_data["winner"] = status_result["winner"]
+            if status_result.get("note"):
+                update_data["result"] = status_result["note"]
+            await db.ipl_schedule.update_one({"matchId": mid}, {"$set": update_data})
+            newly_completed.append({
+                "matchId": mid, "team1": team1, "team2": team2,
+                "winner": status_result.get("winner"), "result": status_result.get("note", ""),
+            })
+            logger.info(f"Match {mid} marked completed via SportMonks: {status_result.get('note')}")
+
+        elif status_result.get("is_live"):
+            still_live.append({"matchId": mid, "team1": team1, "team2": team2, "status": status_result.get("status")})
+
+        else:
+            # SportMonks doesn't know this match — add to unresolved
+            unresolved.append(match)
+
+    # For unresolved matches, try CricketData.org as fallback
+    if unresolved:
+        try:
+            cricapi_result = await fetch_live_ipl_details()
+            cricapi_matches = cricapi_result.get("matches", [])
+            cricapi_active_teams = set()
+            for cm in cricapi_matches:
+                for t in cm.get("teams", []):
+                    cricapi_active_teams.add(t.lower())
+
+            for match in unresolved:
+                mid = match.get("matchId")
+                team1 = match.get("team1", "")
+                team2 = match.get("team2", "")
+                score = match.get("score", "")
+
+                # Check if CricAPI has this match as active
+                t1_lower = team1.lower()
+                t2_lower = team2.lower()
+                found_active = False
+                for cm in cricapi_matches:
+                    cm_teams = [t.lower() for t in cm.get("teams", [])]
+                    if any(t1_lower in ct or ct in t1_lower for ct in cm_teams):
+                        found_active = True
+                        # Check CricAPI status
+                        cm_status = cm.get("status", "").lower()
+                        if any(w in cm_status for w in ["won", "result", "tie", "no result", "abandoned"]):
+                            await db.ipl_schedule.update_one({"matchId": mid}, {"$set": {
+                                "status": "completed", "result": cm.get("status", ""),
+                                "completedAt": datetime.now(timezone.utc).isoformat(),
+                            }})
+                            newly_completed.append({"matchId": mid, "team1": team1, "team2": team2, "result": cm.get("status", "")})
+                            logger.info(f"Match {mid} marked completed via CricAPI: {cm.get('status')}")
+                        else:
+                            still_live.append({"matchId": mid, "team1": team1, "team2": team2, "status": "live (cricapi)"})
+                        break
+
+                if not found_active:
+                    # Neither SportMonks nor CricAPI has this match live — likely finished
+                    # Check score text for completion hints
+                    if any(w in score.lower() for w in ["won", "tie", "no result", "abandoned"]):
+                        await db.ipl_schedule.update_one({"matchId": mid}, {"$set": {"status": "completed"}})
+                        newly_completed.append({"matchId": mid, "team1": team1, "team2": team2, "result": score})
+                    else:
+                        # Not found anywhere — mark as completed (match likely ended)
+                        await db.ipl_schedule.update_one({"matchId": mid}, {"$set": {
+                            "status": "completed",
+                            "completedAt": datetime.now(timezone.utc).isoformat(),
+                        }})
+                        newly_completed.append({"matchId": mid, "team1": team1, "team2": team2, "result": "Match ended (no longer live on any source)"})
+                        logger.info(f"Match {mid} marked completed: not found on any live source")
+        except Exception as e:
+            logger.error(f"CricAPI fallback check failed: {e}")
+            # If CricAPI also fails, keep them as unverified
+            for match in unresolved:
+                still_live.append({"matchId": match.get("matchId"), "team1": match.get("team1"), "team2": match.get("team2"), "status": "unverified"})
+
+    return {
+        "checked": len(live_matches),
+        "still_live": still_live,
+        "completed": newly_completed,
+        "still_live_count": len(still_live),
+        "completed_count": len(newly_completed),
+    }
+
+
+
 
 
 def _compute_live_prediction(result: Dict, match_info: Dict) -> Dict:

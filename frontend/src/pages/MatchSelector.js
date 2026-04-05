@@ -19,6 +19,8 @@ export default function MatchSelector() {
   const [predictProgress, setPredictProgress] = useState({ done: 0, total: 0 });
   const [repredicting, setRepredicting] = useState(false);
   const [repredictStatus, setRepredictStatus] = useState(null);
+  const [refreshingLive, setRefreshingLive] = useState(false);
+  const [refreshResult, setRefreshResult] = useState(null);
 
   useEffect(() => {
     fetchStatus();
@@ -44,6 +46,20 @@ export default function MatchSelector() {
     setScheduleLoading(true);
     await loadSchedule(force);
     setScheduleLoading(false);
+  };
+
+  const handleRefreshLiveStatus = async () => {
+    setRefreshingLive(true);
+    setRefreshResult(null);
+    try {
+      const res = await axios.post(`${API}/matches/refresh-live-status`);
+      setRefreshResult(res.data);
+      // Reload schedule to reflect status changes
+      await loadSchedule();
+    } catch (e) {
+      console.error("Refresh live status error:", e);
+    }
+    setRefreshingLive(false);
   };
 
   const handlePredictAll = async () => {
@@ -186,6 +202,17 @@ export default function MatchSelector() {
               </button>
             </div>
           )}
+
+          {tab === "live" && (
+            <button onClick={handleRefreshLiveStatus} disabled={refreshingLive} data-testid="refresh-live-btn"
+              className="flex items-center gap-2 bg-[#141414] border border-[#FF3B30]/30 text-white px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider hover:border-[#FF3B30] transition-colors disabled:opacity-50">
+              {refreshingLive ? (
+                <><Spinner className="w-3.5 h-3.5 animate-spin" /> Checking...</>
+              ) : (
+                <><ArrowsClockwise weight="bold" className="w-3.5 h-3.5 text-[#FF3B30]" /> Refresh Matches</>
+              )}
+            </button>
+          )}
         </div>
 
         {(loading || scheduleLoading) && (
@@ -209,6 +236,32 @@ export default function MatchSelector() {
             <div className="text-right">
               <p className="text-xs font-mono text-[#7C3AED]">{repredictStatus.total > 0 ? Math.round(repredictStatus.completed / repredictStatus.total * 100) : 0}%</p>
             </div>
+          </div>
+        )}
+
+        {refreshResult && (
+          <div className={`mb-4 rounded-md p-3 flex items-center gap-3 ${refreshResult.completed_count > 0 ? "bg-[#22C55E]/10 border border-[#22C55E]/30" : "bg-[#141414] border border-white/10"}`} data-testid="refresh-result-banner">
+            {refreshResult.completed_count > 0 ? (
+              <Trophy weight="fill" className="w-4 h-4 text-[#22C55E]" />
+            ) : (
+              <Broadcast weight="fill" className="w-4 h-4 text-[#FF3B30]" />
+            )}
+            <div className="flex-1">
+              <p className="text-xs font-bold text-white">
+                {refreshResult.message
+                  ? refreshResult.message
+                  : refreshResult.completed_count > 0
+                    ? `${refreshResult.completed_count} match${refreshResult.completed_count > 1 ? "es" : ""} moved to Completed`
+                    : `${refreshResult.still_live_count || 0} match${(refreshResult.still_live_count || 0) !== 1 ? "es" : ""} still live`
+                }
+              </p>
+              {refreshResult.completed?.map((m, i) => (
+                <p key={i} className="text-[10px] text-[#A1A1AA]">
+                  {m.team1} vs {m.team2} — {m.winner ? `${m.winner} won` : m.result || "Completed"}
+                </p>
+              ))}
+            </div>
+            <button onClick={() => setRefreshResult(null)} className="text-[#737373] hover:text-white text-xs">x</button>
           </div>
         )}
 
