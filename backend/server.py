@@ -496,17 +496,25 @@ def compute_weighted_prediction(sm_data: dict, claude_prediction: dict, match_in
             chase_feasibility = 0.5
 
     # ── Compose L ──
-    # In 2nd innings, chase feasibility dominates (0.35 weight)
-    # In 1st innings, it's a lighter score-trajectory factor
+    # In 2nd innings, chase feasibility dominates (0.48 weight)
+    # When chase is near-impossible (CF < 0.25), suppress other factors —
+    # they're irrelevant noise when the game is effectively decided.
     if innings == 2:
-        L = (0.12 * crr_pressure
-             + 0.08 * wickets_in_hand_ratio
-             + 0.08 * recent_wicket_penalty
-             + 0.08 * batter_confidence
-             + 0.04 * new_batsman_factor
-             + 0.04 * bowler_threat
-             + 0.08 * phase_momentum
-             + 0.48 * chase_feasibility)
+        other_L = (0.12 * crr_pressure
+                   + 0.08 * wickets_in_hand_ratio
+                   + 0.08 * recent_wicket_penalty
+                   + 0.08 * batter_confidence
+                   + 0.04 * new_batsman_factor
+                   + 0.04 * bowler_threat
+                   + 0.08 * phase_momentum)
+        cf_component = 0.48 * chase_feasibility
+
+        # Chase severity multiplier: when CF is very low, suppress other factors
+        if chase_feasibility < 0.25:
+            severity = chase_feasibility / 0.25  # 0→0, 0.25→1
+            other_L *= severity  # shrink other factors toward 0
+
+        L = other_L + cf_component
     else:
         L = (0.20 * crr_pressure
              + 0.15 * wickets_in_hand_ratio
