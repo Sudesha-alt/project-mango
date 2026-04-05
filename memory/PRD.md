@@ -12,55 +12,46 @@ AI-powered IPL 2026 betting consultant combining Weighted Probability Formula, C
 
 ## Core Features
 
+### Live Match Discovery & Management
+- **Refresh Matches**: Queries SportMonks `/livescores` + CricAPI to discover live IPL matches, promotes them to "live" in schedule
+- **Auto-completion**: Finished matches automatically pushed to "completed" with winner/result
+- **Team matching**: Smart fuzzy matching with priority (live > upcoming > future) to handle multiple fixtures between same teams
+- **Check Status**: Individual match status check against SportMonks
+
 ### Dual Live Prediction Models
-**Model 1 — Weighted Probability**: P(win) = alpha x H + (1-alpha) x L with info button
-**Model 2 — Claude Opus**: AI prediction with batting depth, bowling assessment, key matchup
-**Model Consensus Indicator**: HIGH/MODERATE/LOW agreement between models
+**Model 1 — Weighted Probability**: P(win) = alpha x H + (1-alpha) x L with full breakdown + info button
+**Model 2 — Claude Opus**: AI prediction considering player form, batting depth, bowling options
+**Model Consensus Indicator**: HIGH (≤5%) / MODERATE (5-15%) / LOW (>15%)
 
-### Smart Live Match Management
-- **Refresh Matches button** on Live tab: Checks all "live" matches against SportMonks + CricAPI fallback
-- Finished matches auto-pushed to "completed" with winner/result
-- Match completed banner on individual live pages with navigation options
-- `POST /api/matches/refresh-live-status` — Bulk status check + auto-completion
-- `POST /api/matches/{id}/check-status` — Individual match status check
-- `GET /api/live/current` — Find currently live IPL matches
-
-### Live Match Page
-- SportMonks primary data source, CricAPI fallback
-- Manual "Fetch Live Scores" + "Check Status" buttons
-- Yet to Bat/Bowl lineups
-- Claude probabilities as single source of truth for scoreboard
-- Refreshable predictions without re-fetching SportMonks
-
-### Pre-Match + Compare
-- 11-Factor algorithm + 50K NB simulations
-- Claude Opus deep narrative analysis
-- Algorithm vs Claude comparison dashboard
+### Real-time Score Fetching
+- SportMonks primary: full batting card, bowling card, lineup, recent balls
+- CricAPI fallback when SportMonks unavailable
+- Manual "Fetch Live Scores" triggers SportMonks → Claude prediction pipeline
+- Yet to Bat/Bowl lineups displayed and passed to Claude
 
 ### Key API Endpoints
-- `POST /api/matches/{id}/fetch-live` — Manual live fetch
-- `POST /api/matches/{id}/refresh-claude-prediction` — Refresh predictions
-- `POST /api/matches/refresh-live-status` — Bulk live status check
+- `POST /api/matches/refresh-live-status` — Discover + promote live matches
+- `POST /api/matches/{id}/fetch-live` — Real-time SportMonks data + Claude + Weighted predictions
+- `POST /api/matches/{id}/refresh-claude-prediction` — Refresh predictions only
 - `POST /api/matches/{id}/check-status` — Individual status check
 - `GET /api/live/current` — Currently live matches
 
 ## Completed
 - [x] 11-Factor + 50K NB simulations
-- [x] Claude Opus migration
+- [x] Claude Opus migration from GPT-5.4
 - [x] Pre-match Claude narrative
-- [x] Compare dashboard
 - [x] Component modularization
 - [x] APScheduler background tasks
-- [x] SportMonks API integration
-- [x] Claude live win prediction with lineup context
-- [x] Unified Claude probabilities
+- [x] SportMonks API integration (livescores + fixture details)
+- [x] Claude live prediction with full lineup context + historical factors
 - [x] Weighted Probability model (formula-based)
-- [x] Dual prediction models UI
-- [x] Formula info (i) button
-- [x] Model Consensus Indicator
-- [x] Smart live match detection + auto-completion
-- [x] Refresh Matches on Live tab
-- [x] Match completed banner + navigation
+- [x] Dual prediction models UI (side-by-side)
+- [x] Model Consensus Indicator (HIGH/MODERATE/LOW)
+- [x] Live match discovery from SportMonks livescores API
+- [x] Refresh Matches button (Live tab)
+- [x] Smart team matching (priority: live > upcoming)
+- [x] Auto-completion of finished matches
+- [x] Check Status + match completed banner
 
 ## Backlog
 - P2: Shareable prediction card
