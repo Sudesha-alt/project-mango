@@ -577,12 +577,35 @@ def _default_pre_match_stats():
 
 # ─── Playing XI ───────────────────────────────────────────────
 
-async def fetch_playing_xi(team1: str, team2: str, venue: str) -> Dict:
-    """Web search + Claude: Fetch expected Playing XI with buzz scores."""
+async def fetch_playing_xi(team1: str, team2: str, venue: str, squads: dict = None) -> Dict:
+    """Web search + Claude: Fetch expected Playing XI with buzz scores.
+    Uses actual squad rosters from DB when provided."""
     raw_text = await search_player_data(team1, team2, venue)
     logger.info(f"Playing XI search for {team1} vs {team2}: {len(raw_text)} chars")
 
-    prompt = f"""Parse the Playing XI data into this exact JSON format:
+    # Build squad constraint block if DB squads are available
+    squad_block = ""
+    if squads:
+        for team_name, players in squads.items():
+            if players:
+                player_lines = []
+                for p in players:
+                    name = p.get("name", "?")
+                    role = p.get("role", "Unknown")
+                    overseas = " [OVERSEAS]" if p.get("isOverseas") else ""
+                    captain = " [CAPTAIN]" if p.get("isCaptain") else ""
+                    player_lines.append(f"  - {name} ({role}){overseas}{captain}")
+                squad_block += f"\n{team_name} OFFICIAL SQUAD ({len(players)} players):\n" + "\n".join(player_lines) + "\n"
+
+    squad_instruction = ""
+    if squad_block:
+        squad_instruction = f"""
+CRITICAL CONSTRAINT — OFFICIAL IPL 2026 SQUADS:
+You MUST ONLY select players from the official squads below. Do NOT invent or include any player not in these lists.
+Max 4 overseas players per XI. The captain from the squad should be marked is_captain: true.
+{squad_block}"""
+
+    prompt = f"""Pick the expected Playing XI for both teams from their official squads. Return JSON:
 {{
   "team1_name": "{team1}",
   "team2_name": "{team2}",
@@ -592,30 +615,25 @@ async def fetch_playing_xi(team1: str, team2: str, venue: str) -> Dict:
       "role": "Batsman/Bowler/All-rounder/Wicketkeeper",
       "is_overseas": boolean,
       "is_captain": boolean,
-      "venue_stats": {{
-        "matches_at_venue": number, "runs_at_venue": number, "avg_at_venue": number,
-        "sr_at_venue": number, "wickets_at_venue": number, "economy_at_venue": number
-      }},
-      "season_runs": number, "season_avg": number, "season_sr": number,
-      "season_wickets": number, "season_economy": number,
-      "base_expected_runs": number, "base_expected_wickets": number,
+      "base_expected_runs": number,
+      "base_expected_wickets": number,
       "buzz_score": number (-100 to +100),
-      "buzz_reason": string (1-sentence explanation)
+      "buzz_reason": "1-sentence explanation"
     }}
   ],
   "team2_xi": [same structure],
   "confidence": "confirmed" or "predicted"
 }}
-
+{squad_instruction}
 RULES:
-- 11 AVAILABLE players per team. EXCLUDE injured/rested/dropped.
-- buzz_score: -100 to +100 sentiment. Positive = good form/news, Negative = injury/controversy.
-- buzz_reason: Must explain the score with specific facts.
-- base_expected_runs/wickets: 60% venue form + 40% season form.
+- EXACTLY 11 players per team. Max 4 overseas per XI.
+- ONLY pick players from the official squads above. Do NOT invent players.
+- buzz_score: -100 to +100. Positive = good form, Negative = injury/poor form.
+- buzz_reason: specific facts from source data or general IPL knowledge.
 - team1={team1}, team2={team2}
 
 Source data:
-{raw_text[:12000]}"""
+{raw_text[:8000]}"""
 
     try:
         data = await _claude_json(prompt)
@@ -627,7 +645,7 @@ Source data:
 
 # ─── Claude Deep Narrative Analysis (NEW) ─────────────────────
 
-async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_info: dict) -> dict:
+async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_info: dict, squads: dict = None) -> dict:
     """
     Claude Opus: Generate a rich, narrative match analysis in the style of an expert cricket pundit.
     This is the "Claude Analysis" section — separate from the algorithm-based prediction.
@@ -640,6 +658,22 @@ async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_i
     t2_short = match_info.get("team2Short", team2[:3].upper())
     date_str = match_info.get("dateTimeGMT", "")
     match_num = match_info.get("match_number", "")
+
+    # Build squad block for Claude
+    squad_block = ""
+    if squads:
+        for team_name, players in squads.items():
+            if players:
+                player_lines = []
+                for p in players:
+                    name = p.get("name", "?")
+                    role = p.get("role", "Unknown")
+                    overseas = " [OVERSEAS]" if p.get("isOverseas") else ""
+                    captain = " [C]" if p.get("isCaptain") else ""
+                    player_lines.append(f"  - {name} ({role}){overseas}{captain}")
+                squad_block += f"\n{team_name} OFFICIAL SQUAD:\n" + "\n".join(player_lines) + "\n"
+
+    squad_section = f"\n=== OFFICIAL IPL 2026 SQUADS (MUST reference only these players) ===\n{squad_block}" if squad_block else ""
 
     chat = _get_claude_chat(
         f"deep-{uuid.uuid4().hex[:8]}",
@@ -663,6 +697,7 @@ Match #{match_num} | Venue: {venue} | Date: {date_str}
 
 === PLAYER DATA ===
 {player_data[:5000]}
+{squad_section}
 === END DATA ===
 
 Return a JSON object with this EXACT structure:

@@ -1372,7 +1372,8 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
     stats = await fetch_pre_match_stats(team1, team2, venue)
 
     # Fetch Playing XI with expected performance + buzz sentiment + luck biasness
-    xi_data = await fetch_playing_xi(team1, team2, venue)
+    match_squads = await _get_squads_for_match(team1, team2)
+    xi_data = await fetch_playing_xi(team1, team2, venue, squads=match_squads)
     xi_data = apply_buzz_and_luck(xi_data)
 
     # Run algorithm stack with player-level data
@@ -1478,7 +1479,8 @@ async def api_predict_upcoming(force: bool = False):
             stats = await fetch_pre_match_stats(team1, team2, venue)
 
             # Fetch Playing XI with buzz sentiment + luck
-            xi_data = await fetch_playing_xi(team1, team2, venue)
+            match_squads = await _get_squads_for_match(team1, team2)
+            xi_data = await fetch_playing_xi(team1, team2, venue, squads=match_squads)
             xi_data = apply_buzz_and_luck(xi_data)
 
             prediction = compute_prediction(stats, playing_xi=xi_data)
@@ -1579,7 +1581,8 @@ async def _background_repredict_all():
             stats = await fetch_pre_match_stats(team1, team2, venue)
 
             # Fetch Playing XI with buzz sentiment + luck
-            xi_data = await fetch_playing_xi(team1, team2, venue)
+            _squads = await _get_squads_for_match(team1, team2)
+            xi_data = await fetch_playing_xi(team1, team2, venue, squads=_squads)
             xi_data = apply_buzz_and_luck(xi_data)
 
             prediction = compute_prediction(stats, playing_xi=xi_data)
@@ -1760,7 +1763,8 @@ async def _bg_fetch_playing_xi(match_id: str, team1: str, team2: str, venue: str
     """Background task to fetch Playing XI data."""
     playing_xi_tasks[match_id] = {"status": "running", "progress": "Searching news for expected lineups..."}
     try:
-        xi_data = await fetch_playing_xi(team1, team2, venue)
+        match_squads = await _get_squads_for_match(team1, team2)
+        xi_data = await fetch_playing_xi(team1, team2, venue, squads=match_squads)
         if not xi_data.get("team1_xi") and not xi_data.get("team2_xi"):
             playing_xi_tasks[match_id] = {"status": "error", "error": "Could not parse Playing XI data. Try again."}
             return
@@ -1984,7 +1988,8 @@ async def api_claude_analysis(match_id: str, background_tasks: BackgroundTasks =
     venue = match_info.get("venue", "")
 
     # Run Claude deep analysis (this takes time due to web scraping + Claude)
-    analysis = await claude_deep_match_analysis(team1, team2, venue, match_info)
+    match_squads = await _get_squads_for_match(team1, team2)
+    analysis = await claude_deep_match_analysis(team1, team2, venue, match_info, squads=match_squads)
 
     # Cache in DB
     result = {
