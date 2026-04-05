@@ -8,7 +8,6 @@ export default function Header({ selectedMatch }) {
   const navItems = [
     { path: "/", label: "MATCHES", icon: Target },
     { path: "/live", label: "LIVE", icon: Pulse },
-    { path: "/compare", label: "COMPARE", icon: Scales },
     { path: "/analysis", label: "ANALYSIS", icon: ChartLine },
   ];
 
