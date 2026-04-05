@@ -27,6 +27,25 @@ export default function MatchSelector() {
     loadSchedule();
   }, [fetchStatus, loadSchedule]);
 
+  // Auto-discover live matches on mount (silent background check)
+  useEffect(() => {
+    const discoverLive = async () => {
+      try {
+        const res = await axios.post(`${API}/matches/refresh-live-status`);
+        const data = res.data;
+        if (data.promoted_count > 0 || data.completed_count > 0) {
+          // Reload schedule to reflect changes
+          await loadSchedule();
+          // Auto-switch to Live tab if matches were found
+          if (data.promoted_count > 0 || data.still_live_count > 0) {
+            setTab("live");
+          }
+        }
+      } catch (e) { /* silent */ }
+    };
+    discoverLive();
+  }, [loadSchedule]);
+
   // Load cached predictions on mount
   useEffect(() => {
     const loadPredictions = async () => {

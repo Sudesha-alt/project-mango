@@ -84,6 +84,23 @@ ws_connections: Dict[str, List[WebSocket]] = {}
 live_match_state: Dict[str, Any] = {}
 
 
+async def _get_squads_for_match(team1: str, team2: str) -> dict:
+    """Fetch both team squads from DB. Returns {team_name: [players]}."""
+    squads = {}
+    for team_name in [team1, team2]:
+        doc = await db.ipl_squads.find_one(
+            {"$or": [
+                {"team": {"$regex": team_name.split()[0], "$options": "i"}},
+                {"teamName": {"$regex": team_name.split()[0], "$options": "i"}},
+            ]},
+            {"_id": 0}
+        )
+        if doc:
+            squads[team_name] = doc.get("players", [])
+    return squads
+
+
+
 # ─── HEALTH & STATUS ─────────────────────────────────────────
 
 @api_router.get("/")
@@ -496,10 +513,13 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
     edge_team1 = calculate_betting_edge(probs["ensemble"], betting_t1_decimal) if betting_t1_decimal else None
     edge_team2 = calculate_betting_edge(1 - probs["ensemble"], betting_t2_decimal) if betting_t2_decimal else None
 
-    # ── Claude Win Prediction (pass full SportMonks data) ──
+    # ── Fetch squads for Claude context ──
+    match_squads = await _get_squads_for_match(team1, team2)
+
+    # ── Claude Win Prediction (pass full SportMonks data + squads) ──
     claude_prediction = None
     if sm_data:
-        claude_prediction = await claude_sportmonks_prediction(sm_data, probs, match_info)
+        claude_prediction = await claude_sportmonks_prediction(sm_data, probs, match_info, squads=match_squads)
 
     # ── Use Claude's probabilities as the single source of truth ──
     if claude_prediction and not claude_prediction.get("error"):
@@ -621,7 +641,10 @@ async def refresh_claude_prediction(match_id: str):
     t2_short = cached.get("team2Short", "T2")
     old_probs = cached.get("probabilities", {})
 
-    claude_prediction = await claude_sportmonks_prediction(sm_data, old_probs, match_info)
+    match_squads = await _get_squads_for_match(
+        match_info.get("team1", ""), match_info.get("team2", "")
+    )
+    claude_prediction = await claude_sportmonks_prediction(sm_data, old_probs, match_info, squads=match_squads)
 
     if claude_prediction and not claude_prediction.get("error"):
         claude_t1 = claude_prediction.get(f"{t1_short}_win_pct")
@@ -1813,7 +1836,10 @@ async def api_claude_live(match_id: str):
     algo_probs = live_state.get("probabilities", {})
     live_data = live_state.get("liveData", {})
 
-    analysis = await claude_live_analysis(match_info, live_data, algo_probs)
+    match_squads = await _get_squads_for_match(
+        match_info.get("team1", ""), match_info.get("team2", "")
+    )
+    analysis = await claude_live_analysis(match_info, live_data, algo_probs, squads=match_squads)
 
     return {
         "matchId": match_id,

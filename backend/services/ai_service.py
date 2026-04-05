@@ -720,15 +720,36 @@ RULES:
 
 # ─── Claude Live Match Analysis (NEW) ─────────────────────────
 
-async def claude_live_analysis(match_info: dict, live_data: dict, algo_probs: dict) -> dict:
+async def claude_live_analysis(match_info: dict, live_data: dict, algo_probs: dict, squads: dict = None) -> dict:
     """
     Claude Opus: Generate real-time analysis during a live match.
-    Combines scraped live data with algorithm outputs.
+    Combines scraped live data with algorithm outputs and full squad info.
     """
     team1 = match_info.get("team1", "Team A")
     team2 = match_info.get("team2", "Team B")
     t1_short = match_info.get("team1Short", team1[:3].upper())
     t2_short = match_info.get("team2Short", team2[:3].upper())
+
+    # Squad info
+    squads = squads or {}
+    squad1 = squads.get(team1, [])
+    squad2 = squads.get(team2, [])
+
+    def format_squad(players):
+        if not players:
+            return "  Squad not available"
+        lines = []
+        for p in players:
+            if isinstance(p, dict):
+                name = p.get("name", "?")
+                role = p.get("role", "")
+                lines.append(f"  {name} ({role})" if role else f"  {name}")
+            else:
+                lines.append(f"  {p}")
+        return "\n".join(lines)
+
+    squad1_text = format_squad(squad1)
+    squad2_text = format_squad(squad2)
 
     # Scrape latest live data
     live_scraped = await search_cricket_live(team1, team2)
@@ -744,6 +765,12 @@ Never hedge — give clear directional advice."""
 
 {team1} ({t1_short}) vs {team2} ({t2_short})
 
+=== {team1} FULL SQUAD ===
+{squad1_text}
+
+=== {team2} FULL SQUAD ===
+{squad2_text}
+
 === LIVE MATCH DATA (from our system) ===
 {json.dumps(live_data, indent=2, default=str)[:4000]}
 
@@ -752,6 +779,8 @@ Never hedge — give clear directional advice."""
 
 === LATEST SCRAPED DATA ===
 {live_scraped[:4000]}
+
+Consider the full squads above — remaining batting depth, available bowling changes, and each player's IPL form.
 
 Return JSON:
 {{
@@ -785,17 +814,43 @@ Return JSON:
 
 # ─── Claude SportMonks Live Win Prediction ────────────────────
 
-async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_info: dict) -> dict:
+async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_info: dict, squads: dict = None) -> dict:
     """
     Claude Opus: Generate a live win prediction using rich SportMonks data.
-    Passes full batting card, bowling card, yet-to-bat, yet-to-bowl lineups
-    so Claude can assess remaining depth and predict the outcome.
+    Passes full batting card, bowling card, yet-to-bat, yet-to-bowl lineups,
+    and BOTH team squads so Claude can assess remaining depth and predict the outcome.
     """
     team1 = match_info.get("team1", "Team A")
     team2 = match_info.get("team2", "Team B")
     t1_short = match_info.get("team1Short", team1[:3].upper())
     t2_short = match_info.get("team2Short", team2[:3].upper())
     venue = match_info.get("venue", "")
+
+    batting_team = sm_data.get("batting_team", team1)
+    current_inn = sm_data.get("current_innings", 1)
+    current_score = sm_data.get("current_score", {})
+    target = sm_data.get("target")
+
+    # ── Squad info ──
+    squads = squads or {}
+    squad1 = squads.get(team1, [])
+    squad2 = squads.get(team2, [])
+
+    def format_squad(players):
+        if not players:
+            return "  Squad not available"
+        lines = []
+        for p in players:
+            if isinstance(p, dict):
+                name = p.get("name", "?")
+                role = p.get("role", "")
+                lines.append(f"  {name} ({role})" if role else f"  {name}")
+            else:
+                lines.append(f"  {p}")
+        return "\n".join(lines)
+
+    squad1_text = format_squad(squad1)
+    squad2_text = format_squad(squad2)
 
     batting_team = sm_data.get("batting_team", team1)
     current_inn = sm_data.get("current_innings", 1)
@@ -860,7 +915,7 @@ async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_in
 
     chat = _get_claude_chat(
         f"sm-live-pred-{uuid.uuid4().hex[:8]}",
-        f"""You are an elite IPL cricket analyst providing REAL-TIME win predictions.
+        """You are an elite IPL cricket analyst providing REAL-TIME win predictions.
 You have deep knowledge of IPL player form, career stats, and T20 match dynamics.
 Given live scorecard data, remaining batting/bowling lineups, consider:
 - Each player's recent IPL form and career T20 stats
@@ -874,6 +929,12 @@ Give a REALISTIC win probability for BOTH teams (must add to 100). Be decisive."
 Innings: {current_inn} | Status: {sm_data.get('status', 'Live')}
 {sm_data.get('note', '')}
 {prev_inn_text}
+
+=== {team1} FULL SQUAD ===
+{squad1_text}
+
+=== {team2} FULL SQUAD ===
+{squad2_text}
 
 === CURRENT SCORE ===
 {batting_team} batting: {current_score.get('runs',0)}/{current_score.get('wickets',0)} in {current_score.get('overs',0)} overs
@@ -900,7 +961,7 @@ CRR: {sm_data.get('crr', 0)} | RRR: {sm_data.get('rrr', 'N/A')}
 === RECENT BALLS (momentum indicator) ===
 {recent_text}
 
-IMPORTANT: Give realistic win probabilities for BOTH teams. Consider each player's known IPL form and career record.
+IMPORTANT: Consider the FULL SQUADS of both teams. Assess the remaining batting depth, available bowling changes, and each player's known IPL form and career record. Give realistic win probabilities for BOTH teams.
 
 Also provide HISTORICAL FACTORS for {t1_short} (all values 0 to 1, based on your IPL knowledge):
 
