@@ -70,6 +70,7 @@ Live Context returned: active batsmen names, bowler name, CRR, RRR, recent wicke
 - [x] Squad-aware Claude for all live analysis functions
 - [x] **Enhanced Live Factors (L) — 7 granular real-time factors** (Apr 5, 2026)
 - [x] **Fixed team perspective bug in weighted prediction** — L now normalized to team1's perspective before combining with H (Apr 5, 2026)
+- [x] **Updated IPL 2026 squads** — seeded all 10 teams with official post-auction rosters from NDTV/BCCI (Apr 5, 2026)
 
 ## Backlog
 - P2: Shareable prediction card
