@@ -12,7 +12,7 @@ AI-powered IPL 2026 betting consultant combining Weighted Probability Formula, C
 
 ## Core Features
 
-### Dual Live Prediction Models (NEW - v6)
+### Dual Live Prediction Models (v6)
 Two side-by-side prediction models during live matches:
 
 **Model 1 — Weighted Probability Prediction (Formula-based)**
@@ -26,10 +26,22 @@ Two side-by-side prediction models during live matches:
 **Model 2 — Claude Opus Prediction (AI-based)**
 - Full scorecard + remaining batting/bowling lineups passed to Claude
 - Considers player form, career stats, finishing ability, death overs record
-- Returns headline, reasoning, batting depth assessment, bowling assessment, key matchup
-- Momentum and confidence indicators
+- Returns headline, reasoning, batting depth, bowling assessment, key matchup, momentum, confidence
+
+**Model Consensus Indicator** — Shows agreement level between models:
+- HIGH (diff ≤5%): green — "Both models agree"
+- MODERATE (diff 5-15%): yellow — "Models slightly diverge"
+- LOW (diff >15%): red — "Models disagree — proceed with caution"
 
 Both models refreshable via single "Refresh Both" button.
+
+### Smart Live Match Status Detection (v6.1)
+- **Check Status button**: Queries SportMonks for real-time fixture status
+- If match is finished → marks as "completed" in schedule, shows winner banner with navigation to Post-Match
+- If match is still live → fetches fresh data
+- If match not found → checks for other live matches and offers navigation
+- **GET /api/live/current**: Returns all currently live IPL matches from SportMonks + schedule
+- **POST /api/matches/{id}/check-status**: Real-time status check with auto-completion
 
 ### Live Match System
 - **Primary**: SportMonks API for rich live data
@@ -37,6 +49,7 @@ Both models refreshable via single "Refresh Both" button.
 - **Claude probabilities**: Single source of truth for scoreboard
 - **Yet to Bat/Bowl**: Full lineups displayed
 - **Refreshable**: Independent refresh without re-fetching SportMonks data
+- **DB persistence**: SportMonks data stored in DB-safe format for refresh after restarts
 
 ### Pre-Match System
 - **Algorithm-Based**: 11-Factor Model with 50K NB simulations
@@ -49,6 +62,8 @@ Both models refreshable via single "Refresh Both" button.
 ### Key API Endpoints
 - `POST /api/matches/{id}/fetch-live` — Manual live fetch (SportMonks + Claude + Weighted)
 - `POST /api/matches/{id}/refresh-claude-prediction` — Refresh both predictions (cached data)
+- `POST /api/matches/{id}/check-status` — Check live/finished status on SportMonks
+- `GET /api/live/current` — Find currently live IPL matches
 - `GET /api/predictions/{id}/pre-match` — Cached algo prediction
 - `POST /api/matches/{id}/claude-analysis` — Fresh Claude analysis
 - `POST /api/matches/{id}/chat` — Consultation chat
@@ -66,7 +81,10 @@ Both models refreshable via single "Refresh Both" button.
 - [x] Weighted Probability Prediction (formula-based model)
 - [x] Dual prediction models UI (side-by-side display)
 - [x] Formula methodology info (i) button
-- [x] Shared refresh button for both models
+- [x] Model Consensus Indicator (HIGH/MODERATE/LOW)
+- [x] Smart live match status detection (Check Status + auto-complete)
+- [x] /api/live/current endpoint
+- [x] DB-safe SportMonks data persistence for refresh
 
 ## Backlog
 - P2: Shareable prediction card
