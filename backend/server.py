@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, WebSocket, WebSocketDisconnect, BackgroundTasks
+from fastapi import FastAPI, APIRouter, WebSocket, WebSocketDisconnect, BackgroundTasks, Body
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -1083,8 +1083,17 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
     xi_data = await fetch_playing_xi(team1, team2, venue, squads=match_squads)
     xi_data = apply_buzz_and_luck(xi_data)
 
-    # Run algorithm stack with player-level data
-    prediction = compute_prediction(stats, playing_xi=xi_data, squad_data=match_squads)
+    # Fetch injury overrides from DB (manual overrides take priority)
+    injury_overrides = []
+    injury_docs = db.injury_overrides.find({"matchId": match_id}, {"_id": 0})
+    async for doc in injury_docs:
+        injury_overrides.append(doc)
+
+    # Run 10-category algorithm stack with player-level data
+    prediction = compute_prediction(
+        stats, playing_xi=xi_data, squad_data=match_squads,
+        match_info=match_info, injury_overrides=injury_overrides
+    )
     # Compute odds direction vs previous prediction
     odds_direction = {"team1": "new", "team2": "new"}
     if cached:
@@ -1144,6 +1153,58 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
     logger.info(f"Stored prediction for {match_id}: {t1_short} {prediction['team1_win_prob']}% vs {t2_short} {prediction['team2_win_prob']}% [dir: {odds_direction['team1']}]")
 
     return result
+
+
+
+@api_router.post("/matches/{match_id}/injury-override")
+async def api_injury_override(match_id: str, body: dict = Body(...)):
+    """
+    Add or update a manual injury/absence override for a match.
+    Manual overrides take priority over auto-scraped injury data.
+    Body: { player: str, team: "team1"|"team2", impact_score: 1-10, reason: str }
+    """
+    player = body.get("player", "")
+    team = body.get("team", "")
+    impact_score = body.get("impact_score", 0)
+    reason = body.get("reason", "")
+
+    if not player or not team:
+        return {"error": "player and team are required"}
+
+    override = {
+        "matchId": match_id,
+        "player": player,
+        "team": team,
+        "impact_score": impact_score,
+        "reason": reason,
+        "source": "manual",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    await db.injury_overrides.update_one(
+        {"matchId": match_id, "player": player},
+        {"$set": override},
+        upsert=True
+    )
+
+    return {"status": "ok", "override": override}
+
+
+@api_router.get("/matches/{match_id}/injury-overrides")
+async def api_get_injury_overrides(match_id: str):
+    """Get all injury overrides for a match."""
+    overrides = []
+    async for doc in db.injury_overrides.find({"matchId": match_id}, {"_id": 0}):
+        overrides.append(doc)
+    return {"matchId": match_id, "overrides": overrides}
+
+
+@api_router.delete("/matches/{match_id}/injury-override/{player_name}")
+async def api_delete_injury_override(match_id: str, player_name: str):
+    """Delete a specific injury override."""
+    result = await db.injury_overrides.delete_one({"matchId": match_id, "player": player_name})
+    return {"deleted": result.deleted_count > 0}
+
 
 
 @api_router.post("/schedule/predict-upcoming")

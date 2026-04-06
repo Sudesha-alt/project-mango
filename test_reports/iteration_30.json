@@ -1,0 +1,104 @@
+{
+  "summary": "Iteration 30 - 10-Category Pre-Match Prediction Model testing complete. All 12 backend tests passed. Backend implements new 10-category model with research-validated weights (Squad 22%, Form 18%, Venue 16%, H2H 10%, Toss 8%, Matchups 8%, Bowling 7%, Injury 5%, Conditions 4%, Momentum 2%). Injury override API (POST/GET/DELETE) working. TOSS_LOOKUP contains all 8 required venues. Frontend displays all 10 factor labels correctly. Cached predictions still use old 11-factor model - new predictions will use 10-category model.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "/api/predictions/{matchId}/pre-match",
+        "issue": "Cached predictions use old 11-factor model structure. New predictions will use 10-category model.",
+        "priority": "LOW"
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "PreMatch page",
+        "issues": ["Cached predictions show old factor weights. New predictions will show correct 10-category weights."]
+      }
+    ]
+  },
+  "passed_tests": [
+    "Backend: API health check - version 4.1.0, dataSource: Claude Opus + Web Scraping",
+    "Backend: 10-category weights sum to 1.0 (22+18+16+10+8+8+7+5+4+2=100)",
+    "Backend: compute_prediction returns all 10 factors (squad_strength, current_form, venue_pitch_home, h2h, toss_impact, matchup_index, bowling_depth, injury_availability, conditions, momentum)",
+    "Backend: Model identifier is '10-category-v1'",
+    "Backend: TOSS_LOOKUP contains all 8 required venues (wankhede, chepauk, chinnaswamy, narendra_modi, eden_gardens, arun_jaitley, rajiv_gandhi, mohali)",
+    "Backend: TOSS_LOOKUP structure verified (city, default_decision, conditions with preferred/toss_win_pct)",
+    "Backend: POST /api/matches/{id}/injury-override creates injury override in DB",
+    "Backend: GET /api/matches/{id}/injury-overrides returns list of overrides",
+    "Backend: DELETE /api/matches/{id}/injury-override/{player} deletes the override",
+    "Backend: ai_service.py fetch_pre_match_stats prompt includes 'injuries' field in JSON schema",
+    "Backend: ai_service.py enforces '2023-2026' data constraint in fetch_pre_match_stats prompt",
+    "Backend: Injury overrides affect compute_prediction (team1_impact increases when injury added)",
+    "Frontend: PreMatch page renders with data-testid='pre-match-page'",
+    "Frontend: Combined Prediction Block visible with data-testid='combined-prediction-block'",
+    "Frontend: Algorithm prediction box visible",
+    "Frontend: All 10 factor labels displayed correctly (Squad Strength & Balance, Current Season Form, Venue + Pitch + Home, Head-to-Head (2023-26), Toss Impact (Venue), Key Player Matchups, Bowling Depth & Balance, Injuries & Availability, Conditions (Dew/Weather), Momentum & Psychology)",
+    "Frontend: All 10 factor data-testids found",
+    "Frontend: Player-Level Data badge visible",
+    "Frontend: Odds direction indicator visible"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_iteration30_10category_model.py",
+    "/app/test_reports/pytest/iteration30_10category_results.xml"
+  ],
+  "action_items": [
+    "Consider running 'Re-Predict All' to regenerate cached predictions with new 10-category model weights"
+  ],
+  "critical_code_review_comments": [
+    "pre_match_predictor.py correctly implements 10-category model with WEIGHTS dict summing to 1.0",
+    "TOSS_LOOKUP contains venue-specific toss data for 10 IPL venues with conditions and chasing_bias",
+    "compute_prediction accepts injury_overrides parameter and passes to _compute_injury_impact",
+    "server.py lines 1159-1206 implement injury override CRUD endpoints correctly",
+    "server.py line 1095 passes injury_overrides to compute_prediction during pre-match predict",
+    "ai_service.py lines 473-548 fetch_pre_match_stats includes injuries field and 2023-2026 constraint",
+    "PreMatchPredictionBreakdown.js displays all 10 factors with correct labels and default weights"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration30_10category_model.py"
+  ],
+  "success_rate": {
+    "backend": "100% (12/12 tests passed)",
+    "frontend": "100% (all UI components verified)"
+  },
+  "test_credentials": "No authentication required - open access app",
+  "seed_data_creation": "Created and deleted TEST_Jasprit Bumrah injury override for testing",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration 30 features verified. The 10-category pre-match model is implemented in pre_match_predictor.py with weights: Squad 22%, Form 18%, Venue 16%, H2H 10%, Toss 8%, Matchups 8%, Bowling 7%, Injury 5%, Conditions 4%, Momentum 2%. Injury override API endpoints work correctly. TOSS_LOOKUP contains venue-specific toss data. Cached predictions in DB still have old 11-factor structure - new predictions will use the new 10-category model. MI vs RR (ipl2026_013) is an upcoming match good for testing.",
+  "feature_verification": {
+    "10_category_model": {
+      "status": "WORKING",
+      "description": "pre_match_predictor.py implements 10-category model with research-validated weights",
+      "verification": "WEIGHTS dict verified: squad_strength=0.22, current_form=0.18, venue_pitch_home=0.16, h2h=0.10, toss_impact=0.08, matchup_index=0.08, bowling_depth=0.07, injury_availability=0.05, conditions=0.04, momentum=0.02"
+    },
+    "injury_override_api": {
+      "status": "WORKING",
+      "description": "POST/GET/DELETE endpoints for injury overrides",
+      "verification": "All 3 endpoints tested successfully with TEST_Jasprit Bumrah override"
+    },
+    "toss_lookup": {
+      "status": "WORKING",
+      "description": "TOSS_LOOKUP contains venue-specific toss data",
+      "verification": "All 8 required venues present with city, default_decision, and conditions"
+    },
+    "ai_service_injuries": {
+      "status": "WORKING",
+      "description": "ai_service.py fetch_pre_match_stats includes injuries field",
+      "verification": "Found 'injuries', 'team1_injuries', 'team2_injuries' in prompt"
+    },
+    "ai_service_2023_2026": {
+      "status": "WORKING",
+      "description": "ai_service.py enforces 2023-2026 data constraint",
+      "verification": "Found '2023-2026' constraint in fetch_pre_match_stats prompt"
+    },
+    "frontend_10_factors": {
+      "status": "WORKING",
+      "description": "PreMatchPredictionBreakdown displays all 10 factor labels",
+      "verification": "All 10 labels found: Squad Strength & Balance, Current Season Form, Venue + Pitch + Home, Head-to-Head (2023-26), Toss Impact (Venue), Key Player Matchups, Bowling Depth & Balance, Injuries & Availability, Conditions (Dew/Weather), Momentum & Psychology"
+    }
+  }
+}

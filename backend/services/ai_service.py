@@ -471,14 +471,16 @@ Answer their question directly. Be honest. Factor in their {risk_tolerance} risk
 # ─── Pre-Match Stats (11-Factor) ─────────────────────────────
 
 async def fetch_pre_match_stats(team1: str, team2: str, venue: str) -> dict:
-    """Web search + Claude: Fetch comprehensive 11-factor pre-match stats."""
+    """Web search + Claude: Fetch comprehensive 10-category pre-match stats (2023-2026 data only)."""
     raw_text = await search_match_context(team1, team2, venue)
     logger.info(f"Pre-match stats search for {team1} vs {team2}: {len(raw_text)} chars")
 
-    prompt = f"""Parse the cricket statistics into this exact JSON format:
+    prompt = f"""Parse the cricket statistics into this exact JSON format.
+CRITICAL: Only use data from IPL seasons 2023, 2024, 2025, and 2026. Do NOT reference any pre-2023 stats, records, or events. The mega-auction happened before IPL 2025, making older team compositions irrelevant.
+
 {{
   "h2h": {{
-    "team1_wins": number, "team2_wins": number, "no_result": number, "total_matches": number,
+    "team1_wins": number (from 2023-2026 IPL only), "team2_wins": number (from 2023-2026 IPL only), "no_result": number, "total_matches": number,
     "last_5_results": ["W", "L", "W", "W", "L"],
     "match_details": [{{"date": "YYYY-MM-DD", "venue": "Ground", "winner": "Team", "margin": "5 wkts"}}]
   }},
@@ -491,12 +493,12 @@ async def fetch_pre_match_stats(team1: str, team2: str, venue: str) -> dict:
     "is_team1_home": boolean, "is_team2_home": boolean
   }},
   "form": {{
-    "team1_last5_wins": number, "team1_last5_losses": number, "team1_last5_win_pct": number,
+    "team1_last5_wins": number (IPL 2026 season only), "team1_last5_losses": number, "team1_last5_win_pct": number,
     "team1_recent_results": ["W vs CSK by 20 runs", "L vs MI by 5 wkts"],
-    "team1_nrr": number or null,
-    "team2_last5_wins": number, "team2_last5_losses": number, "team2_last5_win_pct": number,
+    "team1_nrr": number or null (current IPL 2026 NRR),
+    "team2_last5_wins": number (IPL 2026 season only), "team2_last5_losses": number, "team2_last5_win_pct": number,
     "team2_recent_results": ["W vs KKR by 8 wkts"],
-    "team2_nrr": number or null
+    "team2_nrr": number or null (current IPL 2026 NRR)
   }},
   "squad_strength": {{
     "team1_batting_rating": number (0-100), "team1_bowling_rating": number (0-100),
@@ -516,7 +518,7 @@ async def fetch_pre_match_stats(team1: str, team2: str, venue: str) -> dict:
   }},
   "key_matchups": {{
     "team1_batters_vs_team2_bowlers": [{{"batter": "Name", "bowler": "Name", "runs": number, "balls": number, "dismissals": number, "sr": number}}],
-    "team2_batters_vs_team1_bowlers": [same]
+    "team2_batters_vs_team1_bowlers": [same format]
   }},
   "death_overs": {{
     "team1_avg_death_score": number, "team1_avg_death_conceded": number,
@@ -527,12 +529,19 @@ async def fetch_pre_match_stats(team1: str, team2: str, venue: str) -> dict:
     "team2_avg_pp_score": number, "team2_avg_pp_wickets_lost": number
   }},
   "momentum": {{
-    "team1_current_streak": number, "team2_current_streak": number,
-    "team1_last10_wins": number, "team2_last10_wins": number
+    "team1_current_streak": number (positive = winning streak, negative = losing),
+    "team2_current_streak": number,
+    "team1_last10_wins": number (out of last 10 IPL matches in 2025-2026),
+    "team2_last10_wins": number
+  }},
+  "injuries": {{
+    "team1_injuries": [{{"player": "Name", "impact_score": number (1-10, how key is this player), "reason": "hamstring/rested/dropped"}}],
+    "team2_injuries": [same format]
   }}
 }}
 
-Use ONLY real data from source. For missing stats, use reasonable IPL defaults.
+IMPORTANT: Use ONLY real data from IPL 2023-2026. For missing stats, use reasonable IPL defaults.
+For injuries: report any confirmed injuries, fitness concerns, or player absences announced in the last 48 hours.
 team1={team1}, team2={team2}
 
 Source data:
@@ -572,6 +581,7 @@ def _default_pre_match_stats():
         "death_overs": {"team1_avg_death_score": 45, "team1_avg_death_conceded": 48, "team2_avg_death_score": 45, "team2_avg_death_conceded": 48},
         "powerplay": {"team1_avg_pp_score": 48, "team1_avg_pp_wickets_lost": 1.2, "team2_avg_pp_score": 48, "team2_avg_pp_wickets_lost": 1.2},
         "momentum": {"team1_current_streak": 0, "team2_current_streak": 0, "team1_last10_wins": 5, "team2_last10_wins": 5},
+        "injuries": {"team1_injuries": [], "team2_injuries": []},
     }
 
 
