@@ -1,86 +1,96 @@
 # Baatu - 11 — Product Requirements Document
 
 ## Overview
-AI-powered IPL 2026 betting consultant combining Weighted Probability Formula (7 granular live factors), Claude Opus AI prediction with full squad context, 50K NB simulations, SportMonks live API, and background auto-scraping.
+AI-powered IPL 2026 betting consultant combining a 6-Factor Live Prediction Model, 5-Factor Pre-Match Model, Claude Opus AI narrative analysis, and SportMonks live API.
 
 ## Architecture
 - **Frontend**: React (Vite), Shadcn/UI, Phosphor Icons
 - **Backend**: FastAPI, MongoDB, Scipy (NB/Poisson), Claude Opus 4.5 (Anthropic), APScheduler
 - **Data Sources**: SportMonks API (primary live), CricketData.org API (fallback), DuckDuckGo web scraping
-- **AI Engine**: Claude Opus 4.5 via emergentintegrations LlmChat — receives full squad data for both teams
+- **AI Engine**: Claude Opus 4.5 via emergentintegrations LlmChat — constrained to 2023-2026 data only
 - **Background Jobs**: APScheduler (promote at 4PM/7PM IST, auto-scrape every 5 min)
 
-## Core Features
+## Core Prediction Models
 
-### Enhanced Weighted Prediction — 7 Granular Live Factors
-The Live (L) component of P(win) = alpha x H + (1-alpha) x L now uses 7 real-time factors from SportMonks:
-- **CRR/RRR Pressure** (0.20) — phase-aware run rate comparison (powerplay/middle/death par rates)
-- **Wickets in Hand** (0.15) — remaining wickets as ratio
-- **Recent Wicket Penalty** (0.15) — decay penalty for wickets in last 12 balls
-- **Batter Confidence** (0.15) — active batsmen strike rate + boundary hitting
-- **New Batsman Factor** (0.10) — vulnerability penalty for newly arrived batter (<5 balls)
-- **Bowler Threat** (0.10) — current bowler economy + wicket-taking inverted for batting side
-- **Phase Momentum** (0.15) — scoring rate in last 6 balls vs par
+### Pre-Match: 5-Factor Model (`/app/backend/services/pre_match_predictor.py`)
+Weights:
+1. **Form** (35%) — IPL 2026 season results + player buzz sentiment
+2. **Squad Strength / Availability** (25%) — 2026 roster quality from STAR_PLAYERS DB
+3. **Team Combination / Strategy** (20%) — XI settled-ness, role clarity, overseas balance
+4. **Home Advantage** (15%) — Venue familiarity, crowd, conditions
+5. **H2H / Pitch Conditions** (5%) — Historical head-to-head, pitch type
 
-Live Context returned: active batsmen names, bowler name, CRR, RRR, recent wickets count.
+### Live Match: 6-Factor Model (`/app/backend/services/live_predictor.py`)
+Weights:
+1. **Score vs Par Score** (30%) — Phase-adjusted par comparison with sigmoid mapping
+2. **Wickets in Hand** (25%) — Non-linear wicket ratio with phase context
+3. **Recent Over Rate** (15%) — Last 12 balls scoring rate vs required
+4. **Bowlers Remaining** (15%) — Bowling team's remaining quality options
+5. **Pre-match Base Probability** (10%) — Anchor from pre-match algorithm
+6. **Match Situation Context** (5%) — New batsman, death over pressure, momentum
 
-### Squad-aware Claude Predictions
-- ALL Claude live analysis functions receive both team squads from DB
-- Claude references specific players by name, role, and IPL career form
-- Squads passed to: `claude_sportmonks_prediction`, `claude_live_analysis`, refresh endpoint
-- `_get_squads_for_match` helper fetches from `ipl_squads` collection
+### Claude Opus Analysis
+- **Data Constraint**: All Claude prompts enforce 2023-2026 data only. No pre-2023 references.
+- Uses official IPL 2026 squads from DB for all analysis
+- Provides narrative predictions, key matchups, injury impacts
 
-### Auto-discovery on Page Load
-- On mount, MatchSelector silently calls `refresh-live-status` to discover live matches
-- Auto-switches to Live tab if matches found
+## UI Features
 
-### Live Match Discovery & Management
-- `POST /api/matches/refresh-live-status` — queries SportMonks livescores + CricAPI, promotes matches to "live"
-- Smart team matching (priority: live > upcoming) for duplicate fixtures
-- Auto-completion of finished matches
+### Combined Prediction Block (PreMatch Page)
+- Shows Algorithm %, Claude %, and Average % side-by-side
+- Model consensus indicator: HIGH (≤5% diff), MODERATE (5-15%), LOW (>15%)
+- Individual model boxes with distinct styling
 
-### Dual Live Prediction Models
-- **Weighted Probability**: P(win) = alpha x H + (1-alpha) x L with 7-factor breakdown + live context
-- **Claude Opus**: AI prediction with squad-aware batting depth, bowling assessment, key matchup
-- **Model Consensus**: HIGH (<=5%) / MODERATE (5-15%) / LOW (>15%)
+### PreMatch Page
+- Combined Prediction Block (top)
+- 5-Factor Algorithm Breakdown with logit bars
+- Claude Opus Deep Analysis (narrative)
+- Expected Playing XI with buzz scores
+- Consultant Dashboard
 
-### Key API Endpoints
-- `POST /api/matches/refresh-live-status` — Discover + promote live matches
-- `POST /api/matches/{id}/fetch-live` — Real-time SportMonks + Claude (with squads) + Weighted (7 factors)
-- `POST /api/matches/{id}/refresh-claude-prediction` — Refresh predictions with squads
-- `POST /api/matches/{id}/claude-live` — Claude live analysis with squads
-- `POST /api/matches/{id}/check-status` — Status check
-- `GET /api/live/current` — Currently live matches
+### LiveMatch Page
+- 6-Factor Algorithm Breakdown with color-coded bars
+- Claude Opus Live Prediction
+- Model Consensus Indicator
+- Betting Edge Calculator
+- Live score with SportMonks data
 
-## Completed
-- [x] 11-Factor + 50K NB simulations
-- [x] Claude Opus migration from GPT-5.4
-- [x] Pre-match Claude narrative
-- [x] Component modularization
-- [x] APScheduler background tasks
+## Key API Endpoints
+- `GET /api/` — Health check
+- `GET /api/schedule` — IPL schedule
+- `GET /api/predictions/upcoming` — Cached pre-match predictions
+- `POST /api/matches/{id}/pre-match-predict` — Run/refresh pre-match prediction
+- `POST /api/matches/{id}/fetch-live` — Fetch live data + predictions
+- `POST /api/matches/{id}/claude-analysis` — Claude deep analysis
+- `POST /api/matches/{id}/refresh-claude-prediction` — Refresh Claude live prediction
+- `POST /api/matches/refresh-live-status` — Discover live matches
+
+## DB Schema
+- `ipl_squads`: {teamName, teamShort, players: [{name, role, isCaptain, isOverseas}]}
+- `pre_match_predictions`: {matchId, prediction: {team1_win_prob, team2_win_prob, factors: {form, squad_strength, team_combination, home_advantage, h2h_pitch}}}
+- `claude_analysis`: {matchId, analysis: {team1_win_pct, team2_win_pct, factors[], headline}}
+- `live_snapshots`: {matchId, weightedPrediction: {team1_pct, team2_pct, breakdown: {score_vs_par, wickets_in_hand, recent_over_rate, bowlers_remaining, pre_match_base, match_situation_context}}}
+
+## Completed (Apr 2026)
+- [x] 2026 IPL squad seeding
+- [x] Claude Opus integration with 2023-2026 data constraint
+- [x] 5-factor pre-match algorithm (Form 35%, Squad 25%, Combo 20%, Home 15%, H2H 5%)
+- [x] 6-factor live algorithm (ScoreVsPar 30%, Wickets 25%, RecentRate 15%, Bowlers 15%, PreMatch 10%, Context 5%)
+- [x] Combined Prediction Block UI (Algo + Claude + Average)
+- [x] PreMatch 5-factor breakdown display
+- [x] LiveMatch 6-factor breakdown display
+- [x] Claude prompt 2023-2026 constraints
+- [x] Squad-aware Claude for all analysis functions
 - [x] SportMonks API integration
-- [x] Claude live prediction with full squad context for BOTH teams
-- [x] Weighted Probability model (3 basic factors)
-- [x] Dual prediction models UI
-- [x] Model Consensus Indicator
-- [x] Live match discovery (SportMonks livescores + CricAPI)
-- [x] Auto-discovery on page load
-- [x] Smart team matching
-- [x] Auto-completion of finished matches
-- [x] Squad-aware Claude for all live analysis functions
-- [x] **Enhanced Live Factors (L) — 7 granular real-time factors** (Apr 5, 2026)
-- [x] **Fixed team perspective bug in weighted prediction** — L now normalized to team1's perspective before combining with H (Apr 5, 2026)
-- [x] **Updated IPL 2026 squads** — seeded all 10 teams with official post-auction rosters from NDTV/BCCI (Apr 5, 2026)
-- [x] **Major weighted model overhaul** — added Chase Feasibility factor (48% weight in 2nd inn), non-linear CRR/RRR sigmoid, RRR×wicket interaction. Model now correctly predicts losing chases (Apr 5, 2026)
-- [x] **Fixed batter confidence calculation** — added sample-size discount, batting position factor (#1-4 vs #8+), and pressure discount when RRR > 12 (Apr 5, 2026)
-- [x] **Chase severity multiplier** — when chase feasibility < 25%, suppress all other live factors (they're noise in decided games). Gap between models dropped from 36% to ~3% in extreme scenarios (Apr 5, 2026)
-- [x] **Squad-constrained Playing XI & Analysis** — All `fetch_playing_xi` and `claude_deep_match_analysis` callers now pass DB squads. Claude is forced to pick only from official IPL 2026 rosters (Apr 5, 2026)
-- [x] **Pre-match prediction overhaul for post-auction era** — Added squad strength ratings from actual 2026 rosters (STAR_PLAYERS db), filtered key matchups to current players only, reweighted factors so squad (35%) dominates over stale historical data (h2h 3%, form 3%, death 3%) (Apr 5, 2026)
+- [x] Live match discovery + auto-completion
+- [x] Dual prediction models with consensus indicator
+- [x] Consultant Dashboard
+- [x] APScheduler background tasks
 
 ## Backlog
 - P2: Shareable prediction card
-- P2: Celery migration
+- P2: Celery migration for background jobs
 - P3: Prediction accuracy leaderboard
 
 ## Deployment Note
-Preview and deployed versions use SEPARATE databases. After deploying, the production site auto-discovers live matches on page load via the `refresh-live-status` endpoint.
+Preview and deployed versions use SEPARATE databases. After deploying, the production site auto-discovers live matches on page load.
