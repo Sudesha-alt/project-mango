@@ -677,17 +677,37 @@ async def refresh_live_status():
         sm_t1 = sm.get("team1", "").lower()
         sm_t2 = sm.get("team2", "").lower()
 
-        # Match to our schedule — prefer upcoming/today's match over future duplicates
+        # Match to our schedule — require strong team name overlap
         candidates = []
         for sched in all_schedule:
             s_t1 = sched.get("team1", "").lower()
             s_t2 = sched.get("team2", "").lower()
-            # Check both orderings of teams
-            match_a = (any(w in sm_t1 for w in s_t1.split() if len(w) > 3) or any(w in s_t1 for w in sm_t1.split() if len(w) > 3))
-            match_b = (any(w in sm_t2 for w in s_t2.split() if len(w) > 3) or any(w in s_t2 for w in sm_t2.split() if len(w) > 3))
-            match_a2 = (any(w in sm_t1 for w in s_t2.split() if len(w) > 3) or any(w in s_t2 for w in sm_t1.split() if len(w) > 3))
-            match_b2 = (any(w in sm_t2 for w in s_t1.split() if len(w) > 3) or any(w in s_t1 for w in sm_t2.split() if len(w) > 3))
-            if (match_a and match_b) or (match_a2 and match_b2):
+            s_t1_short = sched.get("team1Short", "").lower()
+            s_t2_short = sched.get("team2Short", "").lower()
+
+            def team_match(sm_name, sched_name, sched_short):
+                """Require at least 2 significant words to match, or full short code match."""
+                sm_words = [w for w in sm_name.split() if len(w) > 3]
+                sched_words = [w for w in sched_name.split() if len(w) > 3]
+                # Short code check (e.g. "kkr" in "kolkata knight riders")
+                if sched_short and sched_short in sm_name:
+                    return True
+                # Require at least 2 matching words (avoids "Kings" false positives)
+                matched_words = sum(1 for w in sm_words if w in sched_name)
+                if matched_words >= 2:
+                    return True
+                # Single unique word match (city names like "kolkata", "chennai", "mumbai")
+                city_words = {"mumbai", "chennai", "kolkata", "bangalore", "bengaluru", "hyderabad",
+                              "delhi", "rajasthan", "punjab", "lucknow", "gujarat", "ahmedabad"}
+                for w in sm_words:
+                    if w in city_words and w in sched_name:
+                        return True
+                return False
+
+            # Check both orderings
+            if (team_match(sm_t1, s_t1, s_t1_short) and team_match(sm_t2, s_t2, s_t2_short)):
+                candidates.append(sched)
+            elif (team_match(sm_t1, s_t2, s_t2_short) and team_match(sm_t2, s_t1, s_t1_short)):
                 candidates.append(sched)
 
         # Pick best candidate: prefer "upcoming" or "live", then earliest by matchId
@@ -704,7 +724,45 @@ async def refresh_live_status():
                         matched = c
                         break
             if not matched:
-                matched = candidates[0]
+                # All candidates are completed — this is likely a rematch (teams play twice in IPL).
+                # Auto-create a new schedule entry for this live match.
+                existing_ids = [int(s["matchId"].replace("ipl2026_", "")) for s in all_schedule if s.get("matchId", "").startswith("ipl2026_")]
+                new_num = max(existing_ids) + 1 if existing_ids else 100
+                new_mid = f"ipl2026_{new_num:03d}"
+                # Use the SportMonks team names, map to our schedule format
+                ref = candidates[0]  # Use first completed match as reference for team metadata
+                # Determine short codes — check if team order matches reference
+                sm_team1 = sm.get("team1", "")
+                sm_team2 = sm.get("team2", "")
+                ref_t1 = ref.get("team1", "").lower()
+                ref_t2 = ref.get("team2", "").lower()
+                # Match SM team1 to ref teams
+                if any(w in sm_team1.lower() for w in ref_t1.split() if len(w) > 3 and w not in ("kings", "super")):
+                    t1_short = ref.get("team1Short", "")
+                    t2_short = ref.get("team2Short", "")
+                else:
+                    t1_short = ref.get("team2Short", "")
+                    t2_short = ref.get("team1Short", "")
+                new_entry = {
+                    "matchId": new_mid,
+                    "team1": sm_team1,
+                    "team2": sm_team2,
+                    "team1Short": t1_short,
+                    "team2Short": t2_short,
+                    "status": "live",
+                    "venue": ref.get("venue", ""),
+                    "dateTimeGMT": datetime.now(timezone.utc).isoformat(),
+                    "matchType": "T20",
+                    "series": ref.get("series", "IPL 2026"),
+                    "match_number": new_num,
+                    "sportmonks_fixture_id": sm.get("fixture_id"),
+                    "auto_created": True,
+                }
+                await db.ipl_schedule.insert_one(new_entry)
+                del new_entry["_id"]  # Remove MongoDB _id before using in response
+                matched = new_entry
+                all_schedule.append(new_entry)
+                logger.info(f"Auto-created schedule entry {new_mid} for live rematch: {sm.get('team1')} vs {sm.get('team2')}")
 
         if not matched:
             continue

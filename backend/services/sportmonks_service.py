@@ -354,7 +354,7 @@ async def fetch_livescores_ipl() -> list:
                     "status": status,
                     "note": note,
                     "league_id": m.get("league_id"),
-                    "is_live": status.lower() in ["1st innings", "2nd innings", "innings break", "live"],
+                    "is_live": status.lower() in ["1st innings", "2nd innings", "innings break", "int.", "live", "ns"],
                     "is_finished": status.lower() in ["finished", "aban.", "cancelled", "no result"],
                 }
                 # Parse scores
@@ -403,5 +403,5 @@ async def check_fixture_status(team1: str, team2: str) -> dict:
         "team1": local.get("name", ""),
         "team2": visitor.get("name", ""),
         "is_finished": status.lower() in ["finished", "aban.", "cancelled", "no result"],
-        "is_live": status.lower() in ["1st innings", "2nd innings", "innings break", "live"],
+        "is_live": status.lower() in ["1st innings", "2nd innings", "innings break", "int.", "live", "ns"],
     }
