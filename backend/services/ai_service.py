@@ -657,19 +657,17 @@ Source data:
 
 async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_info: dict, squads: dict = None, news: list = None) -> dict:
     """
-    Claude Opus: Generate a rich, narrative match analysis in the style of an expert cricket pundit.
-    This is the "Claude Analysis" section — separate from the algorithm-based prediction.
+    Claude Opus: Generate a rich, narrative match analysis.
+    NO web scraping. Only uses official IPL 2026 squad data + news from newsdata.io.
     """
-    # First, gather real-time data via web scraping
-    raw_context = await search_match_context(team1, team2, venue)
-    player_data = await search_player_data(team1, team2, venue)
-
     t1_short = match_info.get("team1Short", team1[:3].upper())
     t2_short = match_info.get("team2Short", team2[:3].upper())
     date_str = match_info.get("dateTimeGMT", "")
+    time_ist = match_info.get("timeIST", "")
     match_num = match_info.get("match_number", "")
+    city = match_info.get("city", "")
 
-    # Build squad block for Claude
+    # Build squad block for Claude (ONLY from DB)
     squad_block = ""
     if squads:
         for team_name, players in squads.items():
@@ -683,19 +681,33 @@ async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_i
                     player_lines.append(f"  - {name} ({role}){overseas}{captain}")
                 squad_block += f"\n{team_name} OFFICIAL SQUAD:\n" + "\n".join(player_lines) + "\n"
 
-    squad_section = f"\n=== OFFICIAL IPL 2026 SQUADS (MUST reference only these players) ===\n{squad_block}" if squad_block else ""
+    squad_section = f"\n=== OFFICIAL IPL 2026 SQUADS (ONLY reference these players) ===\n{squad_block}" if squad_block else ""
 
-    # Build news section for Claude
+    # Build news section (ONLY from newsdata.io, filtered for these teams)
     news_section = ""
     if news:
+        # Filter news for relevance to these two teams
+        t1_words = set(team1.lower().split())
+        t2_words = set(team2.lower().split())
+        relevant = []
+        for article in news[:8]:
+            title_lower = (article.get("title", "") or "").lower()
+            body_lower = (article.get("body", "") or "").lower()
+            text = title_lower + " " + body_lower
+            # Check if article mentions either team
+            t1_match = any(w in text for w in t1_words if len(w) > 3)
+            t2_match = any(w in text for w in t2_words if len(w) > 3)
+            ipl_match = "ipl" in text or "cricket" in text
+            if (t1_match or t2_match) and ipl_match:
+                relevant.append(article)
         news_lines = []
-        for article in news[:5]:
+        for article in relevant[:5]:
             title = article.get("title", "")
             body = article.get("body", "")[:200]
             if title:
                 news_lines.append(f"  - {title}" + (f": {body}" if body else ""))
         if news_lines:
-            news_section = "\n=== LATEST NEWS (consider injuries, form updates, team changes) ===\n" + "\n".join(news_lines) + "\n"
+            news_section = "\n=== LATEST NEWS ABOUT THESE TEAMS ===\n" + "\n".join(news_lines) + "\n"
 
     chat = _get_claude_chat(
         f"deep-{uuid.uuid4().hex[:8]}",
@@ -711,16 +723,11 @@ Your style:
 - Confidence level is honest: low-medium for genuinely close games, high only when data is overwhelming"""
     )
 
-    prompt = f"""Analyze this IPL 2026 match using ALL the real-time data I'm giving you. Do NOT make up stats — use what's in the data.
+    prompt = f"""Analyze this IPL 2026 match using ONLY the squad data and news I'm providing. Do NOT make up stats.
 
 Match: {team1} ({t1_short}) vs {team2} ({t2_short})
-Match #{match_num} | Venue: {venue} | Date: {date_str}
-
-=== REAL-TIME WEB DATA ===
-{raw_context[:8000]}
-
-=== PLAYER DATA ===
-{player_data[:5000]}
+Match #{match_num} | Venue: {venue} | City: {city}
+Date: {date_str} | Time (IST): {time_ist}
 {squad_section}
 {news_section}
 === END DATA ===

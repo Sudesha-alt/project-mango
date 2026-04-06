@@ -138,8 +138,6 @@ export default function PreMatch() {
             </div>
 
             <div className="lg:col-span-4 space-y-4">
-              {/* Consultant Dashboard */}
-              <ConsultantDashboard matchId={matchId} team1={t1Short} team2={t2Short} fetchConsultation={fetchConsultation} sendChat={sendChat} />
               {prediction && (
                 <>
                   <AlgorithmRadarChart probabilities={{

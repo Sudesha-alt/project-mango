@@ -158,7 +158,7 @@ export default function MatchSelector() {
         <div className="mb-8 text-center">
           <h1 className="text-4xl sm:text-5xl lg:text-6xl font-black uppercase tracking-tight"
             style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
-            Baatu - 11
+            The Lucky 11
           </h1>
           <p className="text-sm text-[#A1A1AA] mt-2" style={{ fontFamily: "'IBM Plex Sans'" }}>
             IPL 2026 &middot; {schedule.total || 0} matches &middot; Powered by Claude Opus
