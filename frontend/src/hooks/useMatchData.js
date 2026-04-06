@@ -80,6 +80,19 @@ export function useMatchData() {
     } catch (e) { return null; }
   }, []);
 
+  const fetchPreMatchPrediction = useCallback(async (matchId, force = false) => {
+    try {
+      const url = force
+        ? `${API}/matches/${matchId}/pre-match-predict?force=true`
+        : `${API}/matches/${matchId}/pre-match-predict`;
+      const res = await axios.post(url);
+      return res.data;
+    } catch (e) {
+      console.error("Pre-match prediction error:", e);
+      return null;
+    }
+  }, []);
+
   const fetchBetaPrediction = useCallback(async (matchId, marketOdds = {}) => {
     try {
       const res = await axios.post(`${API}/matches/${matchId}/beta-predict`, {
@@ -191,6 +204,7 @@ export function useMatchData() {
     schedule, squads, loading, apiStatus,
     fetchStatus, loadSchedule, loadSquads, getTeamSquad,
     fetchLiveData, getMatchState, fetchPlayerPredictions, fetchMatchPrediction,
+    fetchPreMatchPrediction,
     fetchBetaPrediction, fetchConsultation, sendChat,
     fetchClaudeAnalysis, clearClaudeAnalysis, fetchClaudeLive, refreshClaudePrediction,
     checkMatchStatus, getCurrentLiveMatch,

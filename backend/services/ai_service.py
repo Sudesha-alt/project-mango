@@ -5,7 +5,7 @@ import uuid
 import re
 from typing import Dict, List, Optional
 from emergentintegrations.llm.chat import LlmChat, UserMessage
-from services.web_scraper import web_search, search_cricket_live, search_match_context, search_player_data
+from services.web_scraper import web_search, search_cricket_live, search_match_context, search_player_data, fetch_match_news
 
 logger = logging.getLogger(__name__)
 
@@ -864,7 +864,7 @@ Return JSON:
 
 # ─── Claude SportMonks Live Win Prediction ────────────────────
 
-async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_info: dict, squads: dict = None) -> dict:
+async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_info: dict, squads: dict = None, weather: dict = None) -> dict:
     """
     Claude Opus: Generate a live win prediction using rich SportMonks data.
     Passes full batting card, bowling card, yet-to-bat, yet-to-bowl lineups,
@@ -963,6 +963,25 @@ async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_in
     recent = sm_data.get("recent_balls", [])
     recent_text = " ".join(str(b) for b in recent[-12:]) if recent else "No ball-by-ball data"
 
+    # Weather context
+    weather_text = "Weather data not available"
+    if weather and weather.get("available"):
+        cur = weather.get("current", {})
+        impact = weather.get("cricket_impact", {})
+        weather_text = (
+            f"Temperature: {cur.get('temperature', 'N/A')}C (Feels like {cur.get('feels_like', 'N/A')}C)\n"
+            f"Humidity: {cur.get('humidity', 'N/A')}%\n"
+            f"Wind: {cur.get('wind_speed_kmh', 'N/A')} km/h\n"
+            f"Condition: {cur.get('condition', 'N/A')}\n"
+            f"Dew Factor: {impact.get('dew_factor', 'unknown')}\n"
+            f"Cricket Impact: {impact.get('summary', 'N/A')}"
+        )
+
+    # Match date/time context
+    match_dt = match_info.get("dateTimeGMT", "")
+    time_ist = match_info.get("timeIST", "")
+    match_date_text = f"Match Date: {match_dt}" + (f" ({time_ist} IST)" if time_ist else "")
+
     chat = _get_claude_chat(
         f"sm-live-pred-{uuid.uuid4().hex[:8]}",
         """You are an elite IPL cricket analyst providing REAL-TIME win predictions.
@@ -979,6 +998,7 @@ Give a REALISTIC win probability for BOTH teams (must add to 100). Be decisive."
     )
 
     prompt = f"""LIVE MATCH: {team1} ({t1_short}) vs {team2} ({t2_short}) at {venue}
+{match_date_text}
 Innings: {current_inn} | Status: {sm_data.get('status', 'Live')}
 {sm_data.get('note', '')}
 {prev_inn_text}
@@ -1013,6 +1033,12 @@ CRR: {sm_data.get('crr', 0)} | RRR: {sm_data.get('rrr', 'N/A')}
 
 === RECENT BALLS (momentum indicator) ===
 {recent_text}
+
+=== WEATHER CONDITIONS (affects dew, swing, player fatigue) ===
+{weather_text}
+
+=== ALGORITHM PROBABILITIES (for reference only, use your own analysis) ===
+{json.dumps(algo_probs, indent=2, default=str)[:800]}
 
 IMPORTANT: Consider the FULL SQUADS of both teams. Assess the remaining batting depth, available bowling changes, and each player's known IPL form and career record FROM 2023-2026 ONLY. Do NOT reference pre-2023 stats or players not in the 2026 squads. Give realistic win probabilities for BOTH teams.
 

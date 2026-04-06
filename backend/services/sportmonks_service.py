@@ -85,11 +85,18 @@ def parse_fixture(raw: dict) -> dict:
     bowling_team = team2 if batting_team == team1 else team1
 
     target = None
-    if "target" in (raw.get("note", "") or "").lower():
+    # Try to extract target from note text
+    note_text = raw.get("note", "") or ""
+    if "target" in note_text.lower():
         try:
-            target = int(''.join(c for c in raw.get("note", "").split("Target")[1].split("runs")[0].strip() if c.isdigit()))
+            target = int(''.join(c for c in note_text.split("Target")[1].split("runs")[0].strip() if c.isdigit()))
         except Exception:
             pass
+    # Fallback: compute target from 1st innings score when in 2nd innings
+    if target is None and current_inn >= 2 and "1" in innings_scores:
+        inn1_runs = innings_scores["1"].get("runs", 0)
+        if inn1_runs > 0:
+            target = inn1_runs + 1
 
     # Parse batting
     bat_raw = raw.get("batting", [])

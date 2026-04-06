@@ -12,10 +12,13 @@ from datetime import datetime, timezone, timedelta
 from pydantic import BaseModel
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+
 import pytz
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
+
+IST = pytz.timezone("Asia/Kolkata")
 
 from services.cricket_service import get_short_name
 from services.probability_engine import (
@@ -37,6 +40,9 @@ from services.consultant_engine import run_consultation, build_features
 from services.cricdata_service import fetch_live_ipl_details, fetch_venue_stats_from_cricapi
 from services.pre_match_predictor import compute_prediction
 from services.live_predictor import compute_live_prediction
+from services.weather_service import fetch_weather_for_venue
+from services.schedule_data import get_schedule_documents, TEAM_SHORT_CODES, CITY_STADIUMS
+from services.web_scraper import fetch_match_news
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -203,6 +209,89 @@ async def api_resolve_venues():
                 updated += 1
     
     return {"status": "resolved", "total_tbd": len(tbd), "updated": updated}
+
+
+@api_router.post("/schedule/seed-official")
+async def seed_official_schedule(force: bool = False):
+    """Seed the official TATA IPL 2026 schedule from the PDF data.
+    This replaces AI-generated schedule with accurate official data."""
+    existing = await db.ipl_schedule.count_documents({})
+    if existing > 0 and not force:
+        return {"status": "already_loaded", "count": existing, "message": "Use ?force=true to replace existing schedule"}
+
+    docs = get_schedule_documents()
+    if not docs:
+        return {"status": "error", "message": "No schedule data available"}
+
+    await db.ipl_schedule.delete_many({})
+    for doc in docs:
+        doc["loadedAt"] = datetime.now(timezone.utc).isoformat()
+    await db.ipl_schedule.insert_many(docs)
+    # Remove _id from response docs
+    for doc in docs:
+        doc.pop("_id", None)
+
+    return {"status": "loaded", "count": len(docs), "source": "official_pdf"}
+
+
+# ─── WEATHER API ─────────────────────────────────────────────
+
+@api_router.get("/weather/{city}")
+async def get_weather(city: str, match_date: str = None):
+    """Fetch current weather and forecast for a city using Open-Meteo (free, no API key)."""
+    weather = await fetch_weather_for_venue(city, match_date)
+    return weather
+
+
+@api_router.get("/matches/{match_id}/weather")
+async def get_match_weather(match_id: str):
+    """Fetch weather for a specific match venue on the match date."""
+    match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
+    if not match_info:
+        return {"error": "Match not found"}
+
+    city = match_info.get("city", "")
+    venue = match_info.get("venue", "")
+    # Extract city from venue string if city field is empty
+    if not city and venue:
+        city = venue.split(",")[-1].strip() if "," in venue else venue
+
+    match_date = None
+    dt_gmt = match_info.get("dateTimeGMT", "")
+    if dt_gmt:
+        try:
+            match_date = dt_gmt[:10]  # Extract YYYY-MM-DD
+        except Exception:
+            pass
+
+    weather = await fetch_weather_for_venue(city, match_date)
+    weather["matchId"] = match_id
+    weather["venue"] = venue
+    weather["team1"] = match_info.get("team1", "")
+    weather["team2"] = match_info.get("team2", "")
+    return weather
+
+
+# ─── NEWS API (DuckDuckGo News Search, Free) ─────────────────
+
+@api_router.get("/matches/{match_id}/news")
+async def get_match_news(match_id: str):
+    """Fetch latest news articles for a match using DuckDuckGo news search (free, no API key)."""
+    match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
+    if not match_info:
+        return {"error": "Match not found", "articles": []}
+
+    team1 = match_info.get("team1", "")
+    team2 = match_info.get("team2", "")
+    articles = await fetch_match_news(team1, team2)
+
+    return {
+        "matchId": match_id,
+        "team1": team1,
+        "team2": team2,
+        "articles": articles,
+        "count": len(articles),
+    }
 
 @api_router.get("/schedule")
 async def get_schedule():
@@ -416,10 +505,18 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
     # ── Fetch squads for Claude context ──
     match_squads = await _get_squads_for_match(team1, team2)
 
-    # ── Claude Win Prediction (pass full SportMonks data + squads) ──
+    # ── Fetch weather for venue ──
+    match_city = match_info.get("city", "")
+    if not match_city and venue:
+        match_city = venue.split(",")[-1].strip() if "," in venue else venue
+    match_weather = await fetch_weather_for_venue(match_city) if match_city else None
+
+    # ── Claude Win Prediction (pass full SportMonks data + squads + weather) ──
     claude_prediction = None
     if sm_data:
-        claude_prediction = await claude_sportmonks_prediction(sm_data, probs, match_info, squads=match_squads)
+        claude_prediction = await claude_sportmonks_prediction(
+            sm_data, probs, match_info, squads=match_squads, weather=match_weather
+        )
 
     # ── Use Claude's probabilities as the single source of truth ──
     if claude_prediction and not claude_prediction.get("error"):
@@ -484,9 +581,14 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
         "fullBowlingCard": sm_data.get(f"bowlers_inn{sm_data.get('current_innings', 1)}", []) if sm_data else [],
         "fallOfWickets": live_data.get("fallOfWickets", []),
         "lastBallCommentary": live_data.get("note", "") or live_data.get("status", ""),
+        "weather": match_weather,
         "source": source,
         "fetchedAt": datetime.now(timezone.utc).isoformat(),
     }
+
+    # Compute live prediction considering current players on field
+    live_pred = _compute_live_prediction(result, match_info)
+    result["live_prediction"] = live_pred
 
     live_match_state[match_id] = result
     # Store sportmonks data in DB-safe format (convert any integer keys to strings)
@@ -518,10 +620,6 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
     if match_id in ws_connections and ws_connections[match_id]:
         await broadcast_update(match_id, result)
 
-    # Compute live prediction considering current players on field
-    live_pred = _compute_live_prediction(result, match_info)
-    result["live_prediction"] = live_pred
-
     return result
 
 
@@ -548,7 +646,15 @@ async def refresh_claude_prediction(match_id: str):
     match_squads = await _get_squads_for_match(
         match_info.get("team1", ""), match_info.get("team2", "")
     )
-    claude_prediction = await claude_sportmonks_prediction(sm_data, old_probs, match_info, squads=match_squads)
+    # Fetch weather for Claude context
+    refresh_city = match_info.get("city", "")
+    if not refresh_city:
+        v = match_info.get("venue", "")
+        refresh_city = v.split(",")[-1].strip() if "," in v else v
+    refresh_weather = await fetch_weather_for_venue(refresh_city) if refresh_city else None
+    claude_prediction = await claude_sportmonks_prediction(
+        sm_data, old_probs, match_info, squads=match_squads, weather=refresh_weather
+    )
 
     if claude_prediction and not claude_prediction.get("error"):
         claude_t1 = claude_prediction.get(f"{t1_short}_win_pct")
@@ -891,7 +997,7 @@ async def refresh_live_status():
     return {
         "checked": len(current_live),
         "sportmonks_live": len(sm_live),
-        "cricapi_live": len(cricapi_matches) if 'cricapi_matches' in dir() else 0,
+        "cricapi_live": len(cricapi_matches) if cricapi_matches else 0,
         "newly_promoted": newly_promoted,
         "still_live": still_live,
         "completed": newly_completed,
@@ -1047,14 +1153,28 @@ def _compute_live_prediction(result: Dict, match_info: Dict) -> Dict:
 
 @api_router.get("/matches/{match_id}/state")
 async def get_match_state(match_id: str):
-    """Get last known state of a live match."""
+    """Get last known state of a live match, always including schedule info."""
+    schedule_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
+
     if match_id in live_match_state:
-        return live_match_state[match_id]
+        result = live_match_state[match_id]
+        # Merge schedule info into live state
+        if schedule_info:
+            for key in ("city", "timeIST", "match_number", "series"):
+                if key in schedule_info and key not in result:
+                    result[key] = schedule_info[key]
+        return result
+
     cached = await db.live_snapshots.find_one({"matchId": match_id}, {"_id": 0})
     if cached:
+        # Merge schedule info into cached state
+        if schedule_info:
+            for key in ("city", "timeIST", "match_number", "series"):
+                if key in schedule_info and key not in cached:
+                    cached[key] = schedule_info[key]
         return cached
-    match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
-    return {"matchId": match_id, "info": match_info, "noLiveData": True}
+
+    return {"matchId": match_id, "info": schedule_info, "noLiveData": True}
 
 
 # ─── PLAYER PREDICTIONS (on-demand) ─────────────────────────
@@ -1183,6 +1303,12 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
         })
 
     # Build result
+    # Fetch weather for venue
+    prematch_city = match_info.get("city", "")
+    if not prematch_city and venue:
+        prematch_city = venue.split(",")[-1].strip() if "," in venue else venue
+    prematch_weather = await fetch_weather_for_venue(prematch_city, match_info.get("dateTimeGMT", "")[:10] if match_info.get("dateTimeGMT") else None) if prematch_city else None
+
     result = {
         "matchId": match_id,
         "team1": team1,
@@ -1190,7 +1316,9 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
         "team1Short": t1_short,
         "team2Short": t2_short,
         "venue": venue,
+        "city": match_info.get("city", ""),
         "dateTimeGMT": match_info.get("dateTimeGMT", ""),
+        "timeIST": match_info.get("timeIST", ""),
         "match_number": match_info.get("match_number"),
         "prediction": prediction,
         "stats": stats,
@@ -1199,6 +1327,7 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
             "team2_xi": xi_data.get("team2_xi", []),
             "confidence": xi_data.get("confidence", "unavailable"),
         },
+        "weather": prematch_weather,
         "odds_direction": odds_direction,
         "computed_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -1299,7 +1428,6 @@ async def api_predict_upcoming(force: bool = False):
             t2_short = match.get("team2Short", get_short_name(team2))
 
             # Get previous prediction for odds direction
-            import random
             cached = await db.pre_match_predictions.find_one({"matchId": mid}, {"_id": 0})
 
             stats = await fetch_pre_match_stats(team1, team2, venue)
@@ -1378,7 +1506,6 @@ repredict_status = {"running": False, "total": 0, "completed": 0, "failed": 0, "
 
 async def _background_repredict_all():
     """Background task: re-predict all upcoming matches with fresh data + Playing XI."""
-    import random
     global repredict_status
     repredict_status["running"] = True
     repredict_status["completed"] = 0
@@ -1487,7 +1614,7 @@ async def api_repredict_status():
 
 @api_router.get("/data-source")
 async def api_data_source():
-    return {"source": "GPT-5.4 Web Search", "model": "gpt-5.4", "tool": "web_search_preview"}
+    return {"source": "Claude Opus + Web Scraping", "model": "claude-opus-4.5", "tool": "web_search + duckduckgo"}
 
 
 # ─── CRICKETDATA.ORG LIVE API ────────────────────────────────
@@ -2230,7 +2357,6 @@ async def broadcast_update(match_id, data):
 
 # ─── MATCH SCHEDULER (4PM & 7PM IST) ─────────────────────────
 
-IST = pytz.timezone("Asia/Kolkata")
 scheduler = AsyncIOScheduler(timezone=IST)
 
 async def promote_matches_to_live():
@@ -2303,8 +2429,15 @@ async def auto_scrape_live_matches():
             m_t2 = (api_match.get("team2", "") or "").lower()
             t1_low = team1.lower()
             t2_low = team2.lower()
-            if (t1_low in m_t1 or m_t1 in t1_low or t2_low in m_t1) and \
-               (t1_low in m_t2 or m_t2 in t1_low or t2_low in m_t2 or m_t2 in t2_low):
+            # Match both teams: check team1↔m_t1 AND team2↔m_t2 (or swapped)
+            def _words_match(a, b):
+                a_words = [w for w in a.split() if len(w) > 3 and w not in ("super", "kings")]
+                return any(w in b for w in a_words)
+            fwd = (_words_match(t1_low, m_t1) or _words_match(m_t1, t1_low)) and \
+                  (_words_match(t2_low, m_t2) or _words_match(m_t2, t2_low))
+            rev = (_words_match(t1_low, m_t2) or _words_match(m_t2, t1_low)) and \
+                  (_words_match(t2_low, m_t1) or _words_match(m_t1, t2_low))
+            if fwd or rev:
                 cs = api_match.get("current_score", {})
                 runs = cs.get("runs", 0)
                 wickets = cs.get("wickets", 0)

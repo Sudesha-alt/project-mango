@@ -939,26 +939,3 @@ def _compute_conditions(venue_key: Optional[str], match_time: str,
     detail["dew_factor"] = dew
 
     return conditions_logit, detail
-
-
-# ── Backward compatibility ──
-
-def apply_buzz_and_luck(xi_data: dict) -> dict:
-    """Apply buzz sentiment and luck biasness to Playing XI data."""
-    if not xi_data:
-        return xi_data
-    return xi_data
-
-
-def _name_in_squad(name: str, squad_names: set) -> bool:
-    """Check if a player name matches any name in the squad."""
-    name_lower = name.lower().strip()
-    if name_lower in squad_names:
-        return True
-    parts = name_lower.split()
-    if parts:
-        last_name = parts[-1]
-        for sn in squad_names:
-            if last_name in sn:
-                return True
-    return False

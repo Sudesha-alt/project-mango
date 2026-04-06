@@ -13,6 +13,7 @@ import BetaPrediction from "@/components/BetaPrediction";
 import ConsultantDashboard from "@/components/ConsultantDashboard";
 import CricApiLivePanel from "@/components/CricApiLivePanel";
 import ClaudeLiveAnalysis from "@/components/ClaudeLiveAnalysis";
+import WeatherCard from "@/components/WeatherCard";
 import { WifiHigh, WifiSlash, Lightning, Spinner, UserCircle, ArrowsClockwise, CheckCircle, Warning, Info } from "@phosphor-icons/react";
 
 export default function LiveMatch() {
@@ -638,6 +639,22 @@ export default function LiveMatch() {
                           </div>
                         ))}
                     </div>
+                  </div>
+                )}
+
+                {/* Weather at venue */}
+                {matchState?.weather?.available && (
+                  <div className="bg-[#141414] border border-white/10 rounded-md p-4" data-testid="live-weather">
+                    <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-[#A1A1AA] mb-2" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>Weather at Venue</h4>
+                    <div className="grid grid-cols-4 gap-2 text-center text-[10px]">
+                      <div><p className="text-[#71717A]">Temp</p><p className="font-mono font-bold">{matchState.weather.current?.temperature}C</p></div>
+                      <div><p className="text-[#71717A]">Humidity</p><p className="font-mono font-bold">{matchState.weather.current?.humidity}%</p></div>
+                      <div><p className="text-[#71717A]">Wind</p><p className="font-mono font-bold">{matchState.weather.current?.wind_speed_kmh} km/h</p></div>
+                      <div><p className="text-[#71717A]">Condition</p><p className="font-bold">{matchState.weather.current?.condition}</p></div>
+                    </div>
+                    {matchState.weather.cricket_impact?.summary && (
+                      <p className="text-[10px] text-[#A1A1AA] mt-2 bg-white/5 rounded p-1.5">{matchState.weather.cricket_impact.summary}</p>
+                    )}
                   </div>
                 )}
 

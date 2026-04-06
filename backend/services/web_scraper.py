@@ -94,3 +94,65 @@ async def search_player_data(team1: str, team2: str, venue: str) -> str:
         text = await web_search(q, max_results=5)
         results.append(f"=== {q} ===\n{text}")
     return "\n\n".join(results)
+
+
+async def fetch_match_news(team1: str, team2: str) -> list:
+    """Fetch latest news articles related to the match teams using DuckDuckGo search."""
+    articles = []
+    try:
+        # Use text search as DDG news endpoint may timeout
+        with DDGS() as ddgs:
+            results = list(ddgs.text(
+                f"{team1} vs {team2} IPL 2026 latest news preview",
+                max_results=8,
+            ))
+            for item in results:
+                articles.append({
+                    "title": item.get("title", ""),
+                    "body": item.get("body", "")[:300],
+                    "url": item.get("href", ""),
+                    "source": _extract_source(item.get("href", "")),
+                    "date": "",
+                })
+
+        # Also search for team form/injury news
+        if len(articles) < 5:
+            with DDGS() as ddgs:
+                extra = list(ddgs.text(
+                    f"IPL 2026 {team1} {team2} team news injuries playing XI",
+                    max_results=5,
+                ))
+                for item in extra:
+                    articles.append({
+                        "title": item.get("title", ""),
+                        "body": item.get("body", "")[:300],
+                        "url": item.get("href", ""),
+                        "source": _extract_source(item.get("href", "")),
+                        "date": "",
+                    })
+
+    except Exception as e:
+        logger.error(f"News fetch error: {e}")
+
+    # Deduplicate by title
+    seen = set()
+    unique = []
+    for a in articles:
+        if a["title"] and a["title"] not in seen:
+            seen.add(a["title"])
+            unique.append(a)
+
+    return unique[:10]
+
+
+def _extract_source(url: str) -> str:
+    """Extract domain name from URL for source display."""
+    try:
+        from urllib.parse import urlparse
+        domain = urlparse(url).netloc
+        # Remove www. prefix
+        if domain.startswith("www."):
+            domain = domain[4:]
+        return domain
+    except Exception:
+        return ""

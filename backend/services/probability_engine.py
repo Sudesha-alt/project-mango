@@ -11,7 +11,7 @@ def pressure_index(runs, wickets, overs, target, innings, venue_avg=VENUE_AVG, t
         return 1.0 / (1.0 + math.exp(-x))
 
     if innings == 1:
-        balls = int(overs * 6 + (overs % 1) * 10)  # approximate balls
+        balls = int(overs) * 6 + round((overs % 1) * 10)  # cricket notation: 15.3 = 15 overs, 3 balls
         if balls == 0:
             return 0.5
         projected = (runs / balls) * 120  # extrapolate to 120 balls

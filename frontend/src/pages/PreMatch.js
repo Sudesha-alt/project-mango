@@ -6,6 +6,8 @@ import ConsultantDashboard from "@/components/ConsultantDashboard";
 import PreMatchPredictionBreakdown from "@/components/PreMatchPredictionBreakdown";
 import ClaudeAnalysis from "@/components/ClaudeAnalysis";
 import CombinedPredictionBlock from "@/components/CombinedPredictionBlock";
+import WeatherCard from "@/components/WeatherCard";
+import NewsCard from "@/components/NewsCard";
 import { WinProbabilityChart, AlgorithmRadarChart, PreMatchRadarChart } from "@/components/Charts";
 import { ArrowRight, Spinner, MapPin, CalendarBlank } from "@phosphor-icons/react";
 import axios from "axios";
@@ -158,8 +160,14 @@ export default function PreMatch() {
                   <div className="flex justify-between"><span className="text-[#71717A]">Format</span><span>{matchInfo?.matchType || "T20"}</span></div>
                   <div className="flex justify-between"><span className="text-[#71717A]">Series</span><span>{matchInfo?.series || "IPL 2026"}</span></div>
                   <div className="flex justify-between"><span className="text-[#71717A]">Status</span><span className="text-[#EAB308]">{matchInfo?.status || "Upcoming"}</span></div>
+                  {matchInfo?.timeIST && <div className="flex justify-between"><span className="text-[#71717A]">Time (IST)</span><span>{matchInfo.timeIST}</span></div>}
+                  {matchInfo?.city && <div className="flex justify-between"><span className="text-[#71717A]">City</span><span>{matchInfo.city}</span></div>}
                 </div>
               </div>
+              {/* Weather Conditions */}
+              <WeatherCard matchId={matchId} />
+              {/* Match News */}
+              <NewsCard matchId={matchId} />
               <PreMatchRadarChart team1={t1Short} team2={t2Short} />
             </div>
           </div>
