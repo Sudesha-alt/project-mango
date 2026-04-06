@@ -1,0 +1,103 @@
+{
+  "summary": "Iteration 29 - Dual Prediction System (Algo + Claude) testing complete. Backend 6-factor live model and 5-factor pre-match model verified. Frontend displays Combined Prediction Block, 5-factor breakdown on PreMatch, and 6-factor breakdown on LiveMatch. Claude prompts contain 2023-2026 data constraint.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "/api/predictions/upcoming",
+        "issue": "Cached predictions still have old 11-factor structure. New predictions will use 5-factor model.",
+        "priority": "LOW"
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "PreMatch page",
+        "issues": ["Cached predictions show old factor weights (Form 12% instead of 35%). New predictions will show correct weights."]
+      }
+    ]
+  },
+  "passed_tests": [
+    "Backend: API health check - version 4.1.0, dataSource: Claude Opus + Web Scraping",
+    "Backend: GET /api/schedule returns matches list (70 matches)",
+    "Backend: GET /api/predictions/upcoming returns predictions list",
+    "Backend: compute_live_prediction imported from live_predictor.py",
+    "Backend: 6-factor live model weights correct (Score vs Par 30%, Wickets 25%, Recent Rate 15%, Bowlers 15%, Pre-match 10%, Context 5%)",
+    "Backend: 6-factor breakdown returns all factors with values 0-1",
+    "Backend: compute_prediction from pre_match_predictor.py returns 5-factor model",
+    "Backend: 5-factor pre-match weights correct (Form 35%, Squad 25%, Team Combo 20%, Home 15%, H2H 5%)",
+    "Backend: ai_service.py contains '2023 to 2026' data constraint in Claude prompts",
+    "Frontend: PreMatch page renders with data-testid='pre-match-page'",
+    "Frontend: Combined Prediction Block visible at top with data-testid='combined-prediction-block'",
+    "Frontend: Algorithm prediction box shows when algo data exists",
+    "Frontend: 'Run both Algorithm and Claude predictions' message shows when no Claude data",
+    "Frontend: PreMatchPredictionBreakdown shows 5 factors (Form, Squad Strength, Team Combination, Home Advantage, H2H + Pitch)",
+    "Frontend: LiveMatch page displays 6-factor breakdown with correct labels",
+    "Frontend: 6-factor labels: Score vs Par (0.30), Wickets in Hand (0.25), Recent Over Rate (0.15), Bowlers Remaining (0.15), Pre-match Base (0.10), Situation Context (0.05)",
+    "Frontend: Model consensus indicator shows HIGH/MODERATE/LOW based on model agreement",
+    "Frontend: Dual prediction models section visible on LiveMatch page"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_iteration29_dual_prediction.py",
+    "/app/test_reports/pytest/iteration29_dual_prediction_results.xml"
+  ],
+  "action_items": [
+    "Consider running 'Re-Predict All' to regenerate cached predictions with new 5-factor model weights"
+  ],
+  "critical_code_review_comments": [
+    "live_predictor.py correctly implements 6-factor model with weights summing to 1.0",
+    "pre_match_predictor.py correctly implements 5-factor model (Form 35%, Squad 25%, Team Combo 20%, Home 15%, H2H 5%)",
+    "server.py imports compute_live_prediction from live_predictor (lines 38-39)",
+    "ai_service.py contains '2023 to 2026' constraint in multiple Claude prompts (lines 683, 801, 966)",
+    "CombinedPredictionBlock.js correctly shows Algorithm + Claude + Average predictions",
+    "PreMatchPredictionBreakdown.js displays 5 factors with correct labels",
+    "LiveMatch.js displays 6-factor breakdown with correct weights"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration29_dual_prediction.py"
+  ],
+  "success_rate": {
+    "backend": "82% (9/11 tests passed - 2 failed due to cached data using old model)",
+    "frontend": "100% (all UI components verified)"
+  },
+  "test_credentials": "No authentication required - open access app",
+  "seed_data_creation": "None - used existing match data",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration 29 features verified. The 5-factor pre-match model (Form 35%, Squad 25%, Team Combo 20%, Home 15%, H2H 5%) is implemented in pre_match_predictor.py. The 6-factor live model (Score vs Par 30%, Wickets 25%, Recent Rate 15%, Bowlers 15%, Pre-match 10%, Context 5%) is implemented in live_predictor.py. Cached predictions in DB still have old 11-factor structure - new predictions will use the new models. Claude prompts enforce 2023-2026 data constraint. CSK vs RCB (ipl2026_011) is currently live.",
+  "feature_verification": {
+    "combined_prediction_block": {
+      "status": "WORKING",
+      "description": "CombinedPredictionBlock shows Algorithm + Claude + Average at top of PreMatch page",
+      "verification": "data-testid='combined-prediction-block' found, shows 'Run both...' message when no Claude data"
+    },
+    "5_factor_prematch_model": {
+      "status": "WORKING",
+      "description": "pre_match_predictor.py returns 5 factors with correct weights",
+      "verification": "Form 35%, Squad 25%, Team Combo 20%, Home 15%, H2H 5% - verified via direct function call"
+    },
+    "6_factor_live_model": {
+      "status": "WORKING",
+      "description": "live_predictor.py returns 6 factors with correct weights",
+      "verification": "Score vs Par 30%, Wickets 25%, Recent Rate 15%, Bowlers 15%, Pre-match 10%, Context 5%"
+    },
+    "claude_2023_2026_constraint": {
+      "status": "WORKING",
+      "description": "ai_service.py prompts contain 2023-2026 data constraint",
+      "verification": "Found '2023 to 2026' constraint in multiple prompts"
+    },
+    "frontend_prematch_breakdown": {
+      "status": "WORKING",
+      "description": "PreMatchPredictionBreakdown shows 5 factor labels",
+      "verification": "Form (IPL 2026), Squad Strength, Team Combination, Home Advantage, H2H + Pitch all visible"
+    },
+    "frontend_live_breakdown": {
+      "status": "WORKING",
+      "description": "LiveMatch page shows 6-factor breakdown",
+      "verification": "All 6 factors visible with correct weights in parentheses"
+    }
+  }
+}

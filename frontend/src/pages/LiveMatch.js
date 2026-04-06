@@ -389,7 +389,7 @@ export default function LiveMatch() {
                         <div className="bg-[#141414] border border-[#007AFF]/30 rounded-md p-4 space-y-3" data-testid="weighted-prediction">
                           <div className="flex items-center justify-between">
                             <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-[#007AFF]" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
-                              Weighted Probability
+                              Algorithm (6-Factor)
                             </h4>
                             <button onClick={() => setShowFormula(!showFormula)} data-testid="formula-info-btn"
                               className="w-5 h-5 rounded-full border border-[#007AFF]/40 text-[#007AFF] text-[10px] font-bold flex items-center justify-center hover:bg-[#007AFF]/10 transition-colors">
@@ -409,67 +409,21 @@ export default function LiveMatch() {
                             </div>
                           </div>
 
-                          {/* Breakdown */}
-                          <div className="space-y-1.5">
-                            <div className="flex items-center justify-between text-[10px]">
-                              <span className="text-[#737373]">Dynamic Weight (α)</span>
-                              <span className="font-mono text-white">{weightedPred.alpha}</span>
-                            </div>
-                            <div className="flex items-center justify-between text-[10px]">
-                              <span className="text-[#737373]">Historical (H)</span>
-                              <span className="font-mono text-[#FFCC00]">{(weightedPred.H * 100).toFixed(1)}%</span>
-                            </div>
-                            <div className="flex items-center justify-between text-[10px]">
-                              <span className="text-[#737373]">Live (L)</span>
-                              <span className="font-mono text-[#34C759]">{(weightedPred.L * 100).toFixed(1)}%</span>
-                            </div>
-                          </div>
-
-                          {/* Historical factors breakdown */}
-                          <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2.5 space-y-1">
-                            <p className="text-[9px] text-[#525252] uppercase mb-1">Historical Factors (H)</p>
-                            {[
-                              { label: "H2H Win %", val: weightedPred.breakdown?.h2h_win_pct, w: "0.40" },
-                              { label: "Venue Win %", val: weightedPred.breakdown?.venue_win_pct, w: "0.25" },
-                              { label: "Recent Form", val: weightedPred.breakdown?.recent_form_pct, w: "0.20" },
-                              { label: "Toss Adv.", val: weightedPred.breakdown?.toss_advantage_pct, w: "0.15" },
-                            ].map(f => (
-                              <div key={f.label} className="flex items-center justify-between text-[10px]">
-                                <span className="text-[#737373]">{f.label} <span className="text-[#525252]">({f.w})</span></span>
-                                <div className="flex items-center gap-2">
-                                  <div className="w-16 h-1 bg-[#1E1E1E] rounded-full overflow-hidden">
-                                    <div className="h-full bg-[#FFCC00] rounded-full" style={{ width: `${(f.val || 0) * 100}%` }} />
-                                  </div>
-                                  <span className="font-mono text-[#A3A3A3] w-10 text-right">{((f.val || 0) * 100).toFixed(0)}%</span>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-
-                          {/* Live factors breakdown — 8 granular factors */}
+                          {/* Breakdown — 6 Factor Model */}
                           <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2.5 space-y-1" data-testid="live-factors-breakdown">
                             <div className="flex items-center justify-between mb-1">
-                              <p className="text-[9px] text-[#525252] uppercase">Live Factors (L)</p>
-                              {weightedPred.live_context?.recent_wickets_in_12 > 0 && (
-                                <span className="text-[8px] px-1.5 py-0.5 rounded bg-[#FF3B30]/15 text-[#FF3B30] font-bold">
-                                  {weightedPred.live_context.recent_wickets_in_12}W in last 12
-                                </span>
-                              )}
+                              <p className="text-[9px] text-[#525252] uppercase">6-Factor Live Model</p>
+                              <span className="text-[8px] px-1.5 py-0.5 rounded bg-[#007AFF]/15 text-[#007AFF] font-bold">
+                                L = {((weightedPred.L || 0) * 100).toFixed(1)}%
+                              </span>
                             </div>
                             {[
-                              ...(weightedPred.innings === 2 ? [
-                                { label: "Chase Feasibility", val: weightedPred.breakdown?.chase_feasibility, w: "0.48", color: (weightedPred.breakdown?.chase_feasibility || 0) < 0.3 ? "#FF3B30" : (weightedPred.breakdown?.chase_feasibility || 0) < 0.6 ? "#FF9500" : "#34C759" },
-                              ] : []),
-                              { label: "CRR/RRR Pressure", val: weightedPred.breakdown?.crr_pressure, w: weightedPred.innings === 2 ? "0.12" : "0.20", color: (weightedPred.breakdown?.crr_pressure || 0) < 0.3 ? "#FF3B30" : "#34C759" },
-                              { label: "Wickets in Hand", val: weightedPred.breakdown?.wickets_in_hand_ratio, w: weightedPred.innings === 2 ? "0.08" : "0.15", color: (weightedPred.breakdown?.wickets_in_hand_ratio || 0) < 0.4 ? "#FF3B30" : "#34C759" },
-                              { label: "Recent Wkt Penalty", val: weightedPred.breakdown?.recent_wicket_penalty, w: weightedPred.innings === 2 ? "0.08" : "0.10", color: (weightedPred.breakdown?.recent_wicket_penalty || 1) < 0.5 ? "#FF3B30" : "#34C759" },
-                              { label: "Batter Confidence", val: weightedPred.breakdown?.batter_confidence, w: weightedPred.innings === 2 ? "0.08" : "0.15", color: "#007AFF" },
-                              { label: "New Batsman", val: weightedPred.breakdown?.new_batsman_factor, w: weightedPred.innings === 2 ? "0.04" : "0.10", color: (weightedPred.breakdown?.new_batsman_factor || 1) < 0.5 ? "#FF9500" : "#34C759" },
-                              { label: "Bowler Threat", val: weightedPred.breakdown?.bowler_threat, w: weightedPred.innings === 2 ? "0.04" : "0.10", color: (weightedPred.breakdown?.bowler_threat || 1) < 0.4 ? "#FF3B30" : "#34C759" },
-                              { label: "Phase Momentum", val: weightedPred.breakdown?.phase_momentum, w: weightedPred.innings === 2 ? "0.08" : "0.10", color: "#FFCC00" },
-                              ...(weightedPred.innings !== 2 ? [
-                                { label: "Score Trajectory", val: weightedPred.breakdown?.chase_feasibility, w: "0.10", color: "#34C759" },
-                              ] : []),
+                              { label: "Score vs Par", val: weightedPred.breakdown?.score_vs_par, w: "0.30", color: (weightedPred.breakdown?.score_vs_par || 0) < 0.3 ? "#FF3B30" : (weightedPred.breakdown?.score_vs_par || 0) < 0.6 ? "#FF9500" : "#34C759" },
+                              { label: "Wickets in Hand", val: weightedPred.breakdown?.wickets_in_hand, w: "0.25", color: (weightedPred.breakdown?.wickets_in_hand || 0) < 0.4 ? "#FF3B30" : "#34C759" },
+                              { label: "Recent Over Rate", val: weightedPred.breakdown?.recent_over_rate, w: "0.15", color: (weightedPred.breakdown?.recent_over_rate || 0) < 0.3 ? "#FF3B30" : "#34C759" },
+                              { label: "Bowlers Remaining", val: weightedPred.breakdown?.bowlers_remaining, w: "0.15", color: "#FFCC00" },
+                              { label: "Pre-match Base", val: weightedPred.breakdown?.pre_match_base, w: "0.10", color: "#007AFF" },
+                              { label: "Situation Context", val: weightedPred.breakdown?.match_situation_context, w: "0.05", color: "#A855F7" },
                             ].map(f => (
                               <div key={f.label} className="flex items-center justify-between text-[10px]">
                                 <span className="text-[#737373]">{f.label} <span className="text-[#525252]">({f.w})</span></span>
@@ -596,27 +550,32 @@ export default function LiveMatch() {
                     {showFormula && (
                       <div className="bg-[#0A0A0A] border border-[#007AFF]/20 rounded-md p-5 space-y-3 relative" data-testid="formula-modal">
                         <button onClick={() => setShowFormula(false)} className="absolute top-3 right-3 text-[#737373] hover:text-white text-sm">x</button>
-                        <h4 className="text-sm font-bold text-[#007AFF] uppercase tracking-wider" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>Weighted Probability Methodology</h4>
+                        <h4 className="text-sm font-bold text-[#007AFF] uppercase tracking-wider" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>6-Factor Live Prediction Model</h4>
                         <div className="space-y-2 text-[11px] text-[#A3A3A3] leading-relaxed font-mono">
-                          <p className="text-white font-bold">P(win) = (balls_rem / total_balls) x H + (1 - balls_rem / total_balls) x L</p>
+                          <p className="text-white font-bold">P(win) = 0.30×ScoreVsPar + 0.25×Wickets + 0.15×RecentRate + 0.15×Bowlers + 0.10×PreMatch + 0.05×Context</p>
                           <div>
-                            <p className="text-[#FFCC00] font-bold mb-1">Step 1 - Dynamic Weight (alpha)</p>
-                            <p>alpha = Balls Remaining / Total Match Balls</p>
-                            <p className="text-[#525252]">Early in match: historical data matters more. Late: live performance dominates.</p>
+                            <p className="text-[#34C759] font-bold mb-1">Score vs Par Score (30%)</p>
+                            <p>Compares batting team's score to phase-adjusted par. Uses sigmoid mapping for smooth transitions.</p>
                           </div>
                           <div>
-                            <p className="text-[#FFCC00] font-bold mb-1">Step 2 - Historical (H)</p>
-                            <p>H = 0.40 x H2H_Win% + 0.25 x Venue_Win% + 0.20 x Recent_Form% + 0.15 x Toss_Adv%</p>
-                            <p className="text-[#525252]">Head-to-head is weighted highest. All values 0-1.</p>
+                            <p className="text-[#34C759] font-bold mb-1">Wickets in Hand (25%)</p>
+                            <p>Non-linear wicket ratio with phase context. Losing wickets early hurts more; few wickets late with high RRR = critical.</p>
                           </div>
                           <div>
-                            <p className="text-[#34C759] font-bold mb-1">Step 3 - Live (L)</p>
-                            <p>L = 0.40 x (CRR/RRR) + 0.35 x (Wickets_Left/10) + 0.25 x (Phase_Momentum)</p>
-                            <p className="text-[#525252]">Run rate ratio capped at 1. Phase momentum = last 6 balls runs vs par.</p>
+                            <p className="text-[#FFCC00] font-bold mb-1">Recent Over Rate (15%)</p>
+                            <p>Scoring rate in last 12 balls vs required rate. Penalized if wickets fell recently.</p>
                           </div>
                           <div>
-                            <p className="text-white font-bold mb-1">Step 4 - Final Score</p>
-                            <p>Final = [alpha x H + (1-alpha) x L] x 100</p>
+                            <p className="text-[#FFCC00] font-bold mb-1">Bowlers Remaining (15%)</p>
+                            <p>Bowling team's remaining quality bowling options. More options = harder for batting team.</p>
+                          </div>
+                          <div>
+                            <p className="text-[#007AFF] font-bold mb-1">Pre-match Base (10%)</p>
+                            <p>Anchored to pre-match algorithm prediction as a stabilizer.</p>
+                          </div>
+                          <div>
+                            <p className="text-[#A855F7] font-bold mb-1">Match Situation Context (5%)</p>
+                            <p>New batsman vulnerability, death over pressure, momentum from last 6 balls.</p>
                           </div>
                         </div>
                       </div>

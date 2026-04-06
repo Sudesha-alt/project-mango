@@ -629,7 +629,7 @@ RULES:
 - EXACTLY 11 players per team. Max 4 overseas per XI.
 - ONLY pick players from the official squads above. Do NOT invent players.
 - buzz_score: -100 to +100. Positive = good form, Negative = injury/poor form.
-- buzz_reason: specific facts from source data or general IPL knowledge.
+- buzz_reason: specific facts from 2023-2026 source data or recent IPL knowledge. Do NOT reference pre-2023 stats.
 - team1={team1}, team2={team2}
 
 Source data:
@@ -679,9 +679,11 @@ async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_i
         f"deep-{uuid.uuid4().hex[:8]}",
         """You are the sharpest cricket betting analyst alive. You write match previews that read like a friend who's watched every ball of every IPL season explaining the match over drinks. You're brutally honest, data-driven, and never hedge unless the data genuinely says it's close.
 
+CRITICAL DATA CONSTRAINT: You must ONLY use cricket data from the years 2023 to 2026. Do NOT reference any player stats, records, or events from before 2023. The IPL mega-auction happened before IPL 2025, so all team compositions changed — historical team stats before 2023 are irrelevant. Only reference players from the official IPL 2026 squads provided.
+
 Your style:
 - Direct, conversational, opinionated
-- Every claim backed by a specific stat or recent event
+- Every claim backed by a specific stat or recent event from 2023-2026
 - Short punchy sections with bold titles
 - Win probability is your final word — no wishy-washy "could go either way"
 - Confidence level is honest: low-medium for genuinely close games, high only when data is overwhelming"""
@@ -740,7 +742,8 @@ Return a JSON object with this EXACT structure:
 
 RULES:
 - Include 6-10 factors covering: venue/conditions, H2H, form, injuries, key matchups, bowling depth, batting depth, spin/pace advantage, toss impact
-- Every factor MUST reference specific stats or recent events from the data
+- Every factor MUST reference specific stats or recent events from 2023-2026 ONLY. Do NOT cite pre-2023 data.
+- Only reference players who are in the official IPL 2026 squads provided above.
 - Win probabilities must add to 100
 - Be opinionated. If one team is better, say so. Don't be safe.
 - Tag each factor with which team it favors"""
@@ -793,7 +796,9 @@ async def claude_live_analysis(match_info: dict, live_data: dict, algo_probs: di
         f"live-analysis-{uuid.uuid4().hex[:8]}",
         """You are a live cricket match analyst providing real-time betting insights. 
 Be sharp, data-driven, and reference specific player performances happening NOW.
-Never hedge — give clear directional advice."""
+Never hedge — give clear directional advice.
+
+CRITICAL DATA CONSTRAINT: Only reference cricket data from 2023-2026. Do NOT cite any player stats, records, or historical performances from before 2023. Only reference players from official IPL 2026 squads."""
     )
 
     prompt = f"""Analyze this LIVE IPL 2026 match. Give me a real-time prediction update.
@@ -953,10 +958,13 @@ async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_in
         """You are an elite IPL cricket analyst providing REAL-TIME win predictions.
 You have deep knowledge of IPL player form, career stats, and T20 match dynamics.
 Given live scorecard data, remaining batting/bowling lineups, consider:
-- Each player's recent IPL form and career T20 stats
+- Each player's recent IPL form and career T20 stats FROM 2023-2026 ONLY
 - Batting depth and known finishing ability of yet-to-bat players
 - Bowling options remaining and their death overs record
 - Match phase, pitch behavior, required rate, and momentum
+
+CRITICAL DATA CONSTRAINT: Only utilize cricket data from the years 2023 to 2026. Do NOT reference any stats, records, or career data from before 2023. Only reference players from the official IPL 2026 squads provided. The mega-auction reshuffled all teams — pre-2023 team compositions are irrelevant.
+
 Give a REALISTIC win probability for BOTH teams (must add to 100). Be decisive."""
     )
 
@@ -996,9 +1004,9 @@ CRR: {sm_data.get('crr', 0)} | RRR: {sm_data.get('rrr', 'N/A')}
 === RECENT BALLS (momentum indicator) ===
 {recent_text}
 
-IMPORTANT: Consider the FULL SQUADS of both teams. Assess the remaining batting depth, available bowling changes, and each player's known IPL form and career record. Give realistic win probabilities for BOTH teams.
+IMPORTANT: Consider the FULL SQUADS of both teams. Assess the remaining batting depth, available bowling changes, and each player's known IPL form and career record FROM 2023-2026 ONLY. Do NOT reference pre-2023 stats or players not in the 2026 squads. Give realistic win probabilities for BOTH teams.
 
-Also provide HISTORICAL FACTORS for {t1_short} (all values 0 to 1, based on your IPL knowledge):
+Also provide HISTORICAL FACTORS for {t1_short} (all values 0 to 1, based on your IPL 2023-2026 knowledge):
 
 Return JSON:
 {{
@@ -1013,10 +1021,10 @@ Return JSON:
   "momentum": "BATTING" or "BOWLING" or "EVEN",
   "confidence": "Low" or "Medium" or "High",
   "historical_factors": {{
-    "h2h_win_pct": number (0-1, {t1_short}'s head-to-head win rate vs {t2_short} in IPL history),
-    "venue_win_pct": number (0-1, {t1_short}'s win rate at {venue} or similar venues),
-    "recent_form_pct": number (0-1, {t1_short}'s win rate in last 5-8 IPL matches),
-    "toss_advantage_pct": number (0-1, toss winner's advantage at this venue type)
+    "h2h_win_pct": number (0-1, {t1_short}'s head-to-head win rate vs {t2_short} in IPL 2023-2026 only),
+    "venue_win_pct": number (0-1, {t1_short}'s win rate at {venue} or similar venues in 2023-2026),
+    "recent_form_pct": number (0-1, {t1_short}'s win rate in last 5-8 IPL 2026 matches),
+    "toss_advantage_pct": number (0-1, toss winner's advantage at this venue type in 2023-2026)
   }}
 }}"""
 

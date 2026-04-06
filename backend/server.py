@@ -36,6 +36,7 @@ from services.beta_prediction_engine import run_beta_prediction
 from services.consultant_engine import run_consultation, build_features
 from services.cricdata_service import fetch_live_ipl_details, fetch_venue_stats_from_cricapi
 from services.pre_match_predictor import compute_prediction
+from services.live_predictor import compute_live_prediction
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -280,306 +281,7 @@ class ChatRequest(BaseModel):
     market_pct_team2: Optional[float] = None   # 0-100 probability %
 
 # ─── LIVE MATCH (on-demand via button) ───────────────────────
-
-def compute_weighted_prediction(sm_data: dict, claude_prediction: dict, match_info: dict) -> dict:
-    """
-    Weighted Probability Prediction using the formula:
-    P(win) = alpha × H + (1 - alpha) × L
-
-    H = Historical (from Claude): 0.40×H2H + 0.25×venue + 0.20×form + 0.15×toss
-    L = Live (7 granular factors):
-        0.20×crr_pressure + 0.15×wickets_in_hand + 0.15×recent_wicket_penalty
-      + 0.15×batter_confidence + 0.10×new_batsman + 0.10×bowler_threat
-      + 0.15×phase_momentum
-    """
-    if not sm_data or not claude_prediction:
-        return None
-
-    current_score = sm_data.get("current_score", {})
-    runs = current_score.get("runs", 0)
-    wickets = current_score.get("wickets", 0)
-    overs = current_score.get("overs", 0)
-    innings = sm_data.get("current_innings", 1)
-    crr = sm_data.get("crr", 0) or 0
-    rrr = sm_data.get("rrr") or 0
-    recent_balls = sm_data.get("recent_balls", [])
-
-    # Step 1: Dynamic Weight alpha
-    balls_bowled = int(overs) * 6 + round((overs % 1) * 10)
-    if innings == 2:
-        balls_bowled += 120
-    total_match_balls = 240
-    balls_remaining = max(0, total_match_balls - balls_bowled)
-    alpha = balls_remaining / total_match_balls
-
-    # Step 2: Historical Win Probability (H) from Claude
-    hf = claude_prediction.get("historical_factors", {})
-    h2h = float(hf.get("h2h_win_pct", 0.5))
-    venue_pct = float(hf.get("venue_win_pct", 0.5))
-    form_pct = float(hf.get("recent_form_pct", 0.5))
-    toss_pct = float(hf.get("toss_advantage_pct", 0.5))
-    H = 0.40 * h2h + 0.25 * venue_pct + 0.20 * form_pct + 0.15 * toss_pct
-
-    # ── Step 3: Live Win Probability (L) — 8 granular factors ──
-    # Extract target for 2nd innings calculations
-    target = current_score.get("target") or sm_data.get("target")
-    if target and isinstance(target, str):
-        try:
-            target = int(target)
-        except ValueError:
-            target = None
-
-    innings_balls_bowled = int(overs) * 6 + round((overs % 1) * 10)
-    innings_balls_remaining = max(0, 120 - innings_balls_bowled)
-
-    # Factor 1: CRR/RRR Pressure (weight 0.15) — NON-LINEAR for 2nd innings
-    if innings == 2 and rrr and rrr > 0:
-        ratio = crr / rrr
-        # Non-linear sigmoid-like mapping:
-        # ratio >= 1.3 → 0.95 (well ahead), 1.0 → 0.50 (on track),
-        # 0.8 → 0.15 (behind), <= 0.6 → 0.03 (very behind)
-        import math
-        crr_pressure = 1.0 / (1.0 + math.exp(-8 * (ratio - 1.0)))
-    else:
-        # 1st innings: phase-aware expected run rate
-        if overs <= 6:
-            expected_rpo = 7.5   # powerplay par
-        elif overs <= 15:
-            expected_rpo = 8.0   # middle overs par
-        else:
-            expected_rpo = 10.0  # death overs par
-        par_at_over = expected_rpo * overs if overs > 0 else 1
-        crr_pressure = min(1.0, runs / max(1, par_at_over))
-
-    # Factor 2: Wickets in Hand (weight 0.10)
-    wickets_remaining = max(0, 10 - wickets)
-    wickets_in_hand_ratio = wickets_remaining / 10
-
-    # Factor 3: Recent Wickets Penalty (weight 0.10)
-    recent_wicket_count = 0
-    last_12 = recent_balls[-12:] if recent_balls else []
-    for i, b in enumerate(last_12):
-        if isinstance(b, str) and b.upper() == "W":
-            recent_wicket_count += 1
-    if recent_wicket_count == 0:
-        recent_wicket_penalty = 1.0
-    elif recent_wicket_count == 1:
-        recent_wicket_penalty = 0.60
-    elif recent_wicket_count == 2:
-        recent_wicket_penalty = 0.25
-    else:
-        recent_wicket_penalty = 0.05
-
-    # Factor 4: Batter Confidence (weight 0.10)
-    # Considers: strike rate (sample-size adjusted), batting position, boundaries, match pressure
-    active_batsmen = sm_data.get("active_batsmen", [])
-    if active_batsmen:
-        total_confidence = 0
-        for bat in active_batsmen:
-            sr = bat.get("strike_rate", 0) or 0
-            balls_faced = bat.get("balls", 0) or 0
-            fours = bat.get("fours", 0) or 0
-            sixes = bat.get("sixes", 0) or 0
-            bat_sort = bat.get("sort", 5)  # batting position
-
-            # SR factor with sample-size discount: SR is less reliable on fewer balls
-            raw_sr_factor = min(1.0, max(0, (sr - 60) / 120))
-            # Discount: full weight only after 20+ balls
-            sample_discount = min(1.0, balls_faced / 20)
-            sr_factor = raw_sr_factor * (0.3 + 0.7 * sample_discount)
-
-            # Batting position factor: top order (1-4) = higher base, lower order = lower
-            if bat_sort <= 3:
-                position_factor = 1.0
-            elif bat_sort <= 5:
-                position_factor = 0.85
-            elif bat_sort <= 7:
-                position_factor = 0.65
-            else:
-                position_factor = 0.45  # tailenders
-
-            # Boundary quality: sixes weighted more
-            boundary_score = min(1.0, (fours + sixes * 1.5) / 8)
-
-            bat_conf = 0.45 * sr_factor + 0.30 * position_factor + 0.25 * boundary_score
-            total_confidence += bat_conf
-
-        batter_confidence = total_confidence / len(active_batsmen)
-
-        # Pressure discount: when RRR is extreme, "confidence" from slogging is unreliable
-        if innings == 2 and rrr and rrr > 12:
-            pressure_discount = max(0.3, 1.0 - (rrr - 12) / 15)
-            batter_confidence *= pressure_discount
-        batter_confidence = min(1.0, max(0, batter_confidence))
-    else:
-        batter_confidence = 0.25  # fallback low when no data
-
-    # Factor 5: New Batsman Factor (weight 0.05)
-    if active_batsmen:
-        min_balls_faced = min((bat.get("balls", 0) or 0) for bat in active_batsmen)
-        if min_balls_faced < 3:
-            new_batsman_factor = 0.20
-        elif min_balls_faced < 8:
-            new_batsman_factor = 0.45
-        elif min_balls_faced < 15:
-            new_batsman_factor = 0.70
-        else:
-            new_batsman_factor = 1.0
-    else:
-        new_batsman_factor = 0.4
-
-    # Factor 6: Bowler Threat (weight 0.05)
-    active_bowler = sm_data.get("active_bowler")
-    if active_bowler:
-        bowl_econ = active_bowler.get("economy", 8) or 8
-        bowl_wkts = active_bowler.get("wickets", 0) or 0
-        econ_factor = max(0, min(1.0, 1.0 - (bowl_econ - 4) / 12))
-        wkt_factor = min(1.0, bowl_wkts / 3)
-        bowler_threat_raw = 0.6 * econ_factor + 0.4 * wkt_factor
-        bowler_threat = max(0, 1.0 - bowler_threat_raw)
-    else:
-        bowler_threat = 0.4  # slightly negative when no data
-
-    # Factor 7: Phase Momentum (weight 0.10)
-    last_6 = recent_balls[-6:] if recent_balls else []
-    recent_runs = 0
-    for b in last_6:
-        if isinstance(b, (int, float)):
-            recent_runs += b
-        elif isinstance(b, str) and b.isdigit():
-            recent_runs += int(b)
-    # In 2nd innings, compare to RRR-based par, not flat 8
-    if innings == 2 and rrr and rrr > 0:
-        par_runs_6_balls = rrr  # need to score at RRR per over
-    else:
-        par_runs_6_balls = 8
-    if last_6:
-        phase_momentum = min(1.0, recent_runs / max(1, par_runs_6_balls))
-    else:
-        # No recent ball data: use CRR vs par as proxy
-        phase_momentum = crr_pressure * 0.5 if innings == 2 else 0.5
-
-    # Factor 8: Chase Feasibility (weight 0.35) — ONLY active in 2nd innings
-    # Combines: how achievable is the target given runs needed, balls left, wickets?
-    if innings == 2 and target and target > 0:
-        runs_needed = max(0, target - runs)
-        # Required rate feasibility: RRR > 15 is near impossible, 12+ is very hard
-        if innings_balls_remaining > 0:
-            actual_rrr = (runs_needed / innings_balls_remaining) * 6
-        else:
-            actual_rrr = 99
-        # Sigmoid: centered at 10 RPO (achievable), drops sharply past 12-14
-        import math
-        rrr_feasibility = 1.0 / (1.0 + math.exp(1.2 * (actual_rrr - 10)))
-
-        # Wicket-adjusted: fewer wickets + high RRR = exponentially harder
-        if runs_needed > 0 and wickets_remaining > 0:
-            runs_per_wicket_needed = runs_needed / wickets_remaining
-            # High RRR amplifies the wicket pressure
-            rrr_multiplier = max(1.0, actual_rrr / 8.0)
-            adjusted_rpw = runs_per_wicket_needed * rrr_multiplier
-            wicket_sustainability = max(0, 1.0 - (adjusted_rpw - 15) / 50)
-        elif wickets_remaining == 0:
-            wicket_sustainability = 0.0
-        else:
-            wicket_sustainability = 1.0
-
-        chase_feasibility = 0.55 * rrr_feasibility + 0.45 * wicket_sustainability
-        chase_feasibility = max(0, min(1.0, chase_feasibility))
-    else:
-        # 1st innings: no chase feasibility, use score trajectory instead
-        # How good is the score vs par at this stage?
-        if overs > 0:
-            par_score = 8.5 * overs  # ~8.5 rpo is a strong T20 score
-            chase_feasibility = min(1.0, runs / max(1, par_score))
-        else:
-            chase_feasibility = 0.5
-
-    # ── Compose L ──
-    # In 2nd innings, chase feasibility dominates (0.48 weight)
-    # When chase is near-impossible (CF < 0.25), suppress other factors —
-    # they're irrelevant noise when the game is effectively decided.
-    if innings == 2:
-        other_L = (0.12 * crr_pressure
-                   + 0.08 * wickets_in_hand_ratio
-                   + 0.08 * recent_wicket_penalty
-                   + 0.08 * batter_confidence
-                   + 0.04 * new_batsman_factor
-                   + 0.04 * bowler_threat
-                   + 0.08 * phase_momentum)
-        cf_component = 0.48 * chase_feasibility
-
-        # Chase severity multiplier: when CF is very low, suppress other factors
-        if chase_feasibility < 0.25:
-            severity = chase_feasibility / 0.25  # 0→0, 0.25→1
-            other_L *= severity  # shrink other factors toward 0
-
-        L = other_L + cf_component
-    else:
-        L = (0.20 * crr_pressure
-             + 0.15 * wickets_in_hand_ratio
-             + 0.10 * recent_wicket_penalty
-             + 0.15 * batter_confidence
-             + 0.10 * new_batsman_factor
-             + 0.10 * bowler_threat
-             + 0.10 * phase_momentum
-             + 0.10 * chase_feasibility)
-
-    # Step 4: Final Score
-    # L is computed from the BATTING team's perspective.
-    # H is from TEAM1's perspective (Claude historical factors).
-    # Normalize L to team1's perspective before combining.
-    team1 = match_info.get("team1", "Team A")
-    batting_team = sm_data.get("batting_team", team1)
-
-    if batting_team.lower() in team1.lower():
-        L_team1 = L  # team1 is batting, L already from their perspective
-    else:
-        L_team1 = 1.0 - L  # team1 is bowling, invert L
-
-    final_score = (alpha * H + (1 - alpha) * L_team1) * 100
-    final_score = round(max(0, min(100, final_score)), 1)
-
-    team1_pct = final_score
-    team2_pct = round(100 - final_score, 1)
-
-    # Build context strings for UI tooltips
-    active_bat_names = [b.get("name", "?") for b in active_batsmen] if active_batsmen else []
-    bowler_name = active_bowler.get("name", "?") if active_bowler else None
-
-    return {
-        "team1_pct": team1_pct,
-        "team2_pct": team2_pct,
-        "alpha": round(alpha, 3),
-        "H": round(H, 4),
-        "L": round(L, 4),
-        "final_score": final_score,
-        "breakdown": {
-            "h2h_win_pct": round(h2h, 3),
-            "venue_win_pct": round(venue_pct, 3),
-            "recent_form_pct": round(form_pct, 3),
-            "toss_advantage_pct": round(toss_pct, 3),
-            "crr_pressure": round(crr_pressure, 3),
-            "wickets_in_hand_ratio": round(wickets_in_hand_ratio, 3),
-            "recent_wicket_penalty": round(recent_wicket_penalty, 3),
-            "batter_confidence": round(batter_confidence, 3),
-            "new_batsman_factor": round(new_batsman_factor, 3),
-            "bowler_threat": round(bowler_threat, 3),
-            "phase_momentum": round(phase_momentum, 3),
-            "chase_feasibility": round(chase_feasibility, 3),
-        },
-        "live_context": {
-            "active_batsmen": active_bat_names,
-            "active_bowler": bowler_name,
-            "crr": round(crr, 2),
-            "rrr": round(rrr, 2) if rrr else None,
-            "recent_wickets_in_12": recent_wicket_count,
-            "runs_needed": max(0, target - runs) if (innings == 2 and target) else None,
-            "balls_left_innings": innings_balls_remaining,
-        },
-        "balls_remaining": balls_remaining,
-        "innings": innings,
-    }
+# Live prediction now handled by services/live_predictor.py (6-factor model)
 
 
 
@@ -746,8 +448,11 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
         team1_odds = calculate_odds_from_probability(probs["ensemble"])
         team2_odds = calculate_odds_from_probability(1 - probs["ensemble"])
 
-    # ── Weighted Probability Prediction ──
-    weighted_pred = compute_weighted_prediction(sm_data, claude_prediction, match_info) if sm_data and claude_prediction else None
+    # ── Weighted Probability Prediction (6-Factor Live Model) ──
+    # Fetch pre-match base probability as anchor
+    pre_match_cached = await db.pre_match_predictions.find_one({"matchId": match_id}, {"_id": 0})
+    pre_match_prob = pre_match_cached.get("prediction", {}).get("team1_win_prob") if pre_match_cached else None
+    weighted_pred = compute_live_prediction(sm_data, claude_prediction, match_info, pre_match_prob=pre_match_prob) if sm_data else None
 
     result = {
         "matchId": match_id,
@@ -872,8 +577,10 @@ async def refresh_claude_prediction(match_id: str):
                       "updatedAt": datetime.now(timezone.utc).isoformat()}}
         )
 
-    # Recompute weighted prediction with new Claude factors
-    weighted_pred = compute_weighted_prediction(sm_data, claude_prediction, match_info) if claude_prediction else None
+    # Recompute weighted prediction with new Claude factors (6-factor model)
+    pre_match_cached = await db.pre_match_predictions.find_one({"matchId": match_id}, {"_id": 0})
+    pre_match_prob = pre_match_cached.get("prediction", {}).get("team1_win_prob") if pre_match_cached else None
+    weighted_pred = compute_live_prediction(sm_data, claude_prediction, match_info, pre_match_prob=pre_match_prob) if sm_data else None
     if weighted_pred:
         cached["weightedPrediction"] = weighted_pred
         live_match_state[match_id] = cached

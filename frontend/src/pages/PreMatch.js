@@ -1,12 +1,16 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useMatchData } from "@/hooks/useMatchData";
 import PlayingXIPerformance from "@/components/PlayingXIPerformance";
 import ConsultantDashboard from "@/components/ConsultantDashboard";
 import PreMatchPredictionBreakdown from "@/components/PreMatchPredictionBreakdown";
 import ClaudeAnalysis from "@/components/ClaudeAnalysis";
+import CombinedPredictionBlock from "@/components/CombinedPredictionBlock";
 import { WinProbabilityChart, AlgorithmRadarChart, PreMatchRadarChart } from "@/components/Charts";
 import { ArrowRight, Spinner, MapPin, CalendarBlank } from "@phosphor-icons/react";
+import axios from "axios";
+
+const API = process.env.REACT_APP_BACKEND_URL + "/api";
 
 export default function PreMatch() {
   const { matchId } = useParams();
@@ -18,6 +22,7 @@ export default function PreMatch() {
   const [claudeLoading, setClaudeLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [predLoading, setPredLoading] = useState(false);
+  const [algoData, setAlgoData] = useState(null);
 
   useEffect(() => {
     const load = async () => {
@@ -33,6 +38,18 @@ export default function PreMatch() {
     if (matchId) load();
   }, [matchId]);
 
+  // Load cached algo prediction for combined block
+  useEffect(() => {
+    const loadAlgo = async () => {
+      try {
+        const res = await axios.get(`${API}/predictions/upcoming`);
+        const match = (res.data.predictions || []).find(p => p.matchId === matchId);
+        if (match) setAlgoData(match);
+      } catch (e) { /* ignore */ }
+    };
+    if (matchId) loadAlgo();
+  }, [matchId]);
+
   const handlePredict = async () => {
     setPredLoading(true);
     const res = await fetchMatchPrediction(matchId);
@@ -42,7 +59,6 @@ export default function PreMatch() {
 
   const handleClaudeAnalysis = async () => {
     setClaudeLoading(true);
-    // Clear cache to force fresh analysis
     await clearClaudeAnalysis(matchId);
     const res = await fetchClaudeAnalysis(matchId, true);
     if (res) setClaudeData(res);
@@ -58,6 +74,11 @@ export default function PreMatch() {
     if (matchId && matchInfo) loadCached();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matchId, matchInfo]);
+
+  // Listen for algo prediction updates from the breakdown component
+  const handleAlgoUpdate = useCallback((data) => {
+    if (data) setAlgoData(data);
+  }, []);
 
   const team1 = matchInfo?.team1 || "Team A";
   const team2 = matchInfo?.team2 || "Team B";
@@ -91,10 +112,18 @@ export default function PreMatch() {
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
             <div className="lg:col-span-8 space-y-4">
-              {/* Section 1: Algorithm-Based Prediction (11-factor) */}
-              <PreMatchPredictionBreakdown matchId={matchId} team1={t1Short} team2={t2Short} />
+              {/* Combined Prediction Block — Algorithm + Claude + Average */}
+              <CombinedPredictionBlock
+                algoData={algoData}
+                claudeData={claudeData}
+                team1={t1Short}
+                team2={t2Short}
+              />
 
-              {/* Section 2: Claude Opus Deep Analysis */}
+              {/* Algorithm-Based Prediction (5-factor) */}
+              <PreMatchPredictionBreakdown matchId={matchId} team1={t1Short} team2={t2Short} onDataUpdate={handleAlgoUpdate} />
+
+              {/* Claude Opus Deep Analysis */}
               <ClaudeAnalysis
                 data={claudeData}
                 matchInfo={matchInfo}
