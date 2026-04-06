@@ -100,10 +100,26 @@ async def fetch_match_news(team1: str, team2: str) -> list:
     """Fetch latest news articles related to the match teams using DuckDuckGo search."""
     articles = []
     try:
+        # Use short team names for better search relevance
+        short_names = {
+            "Royal Challengers Bengaluru": "RCB",
+            "Mumbai Indians": "MI",
+            "Chennai Super Kings": "CSK",
+            "Kolkata Knight Riders": "KKR",
+            "Rajasthan Royals": "RR",
+            "Sunrisers Hyderabad": "SRH",
+            "Punjab Kings": "PBKS",
+            "Gujarat Titans": "GT",
+            "Lucknow Super Giants": "LSG",
+            "Delhi Capitals": "DC",
+        }
+        t1_q = short_names.get(team1, team1)
+        t2_q = short_names.get(team2, team2)
+
         # Use text search as DDG news endpoint may timeout
         with DDGS() as ddgs:
             results = list(ddgs.text(
-                f"{team1} vs {team2} IPL 2026 latest news preview",
+                f"{t1_q} vs {t2_q} IPL 2026 cricket match preview news",
                 max_results=8,
             ))
             for item in results:
@@ -119,7 +135,7 @@ async def fetch_match_news(team1: str, team2: str) -> list:
         if len(articles) < 5:
             with DDGS() as ddgs:
                 extra = list(ddgs.text(
-                    f"IPL 2026 {team1} {team2} team news injuries playing XI",
+                    f"IPL 2026 {t1_q} {t2_q} cricket team news injuries",
                     max_results=5,
                 ))
                 for item in extra:
