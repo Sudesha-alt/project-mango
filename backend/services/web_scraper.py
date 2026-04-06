@@ -97,54 +97,71 @@ async def search_player_data(team1: str, team2: str, venue: str) -> str:
 
 
 async def fetch_match_news(team1: str, team2: str) -> list:
-    """Fetch latest news articles related to the match teams using DuckDuckGo search."""
-    articles = []
-    try:
-        # Use short team names for better search relevance
-        short_names = {
-            "Royal Challengers Bengaluru": "RCB",
-            "Mumbai Indians": "MI",
-            "Chennai Super Kings": "CSK",
-            "Kolkata Knight Riders": "KKR",
-            "Rajasthan Royals": "RR",
-            "Sunrisers Hyderabad": "SRH",
-            "Punjab Kings": "PBKS",
-            "Gujarat Titans": "GT",
-            "Lucknow Super Giants": "LSG",
-            "Delhi Capitals": "DC",
-        }
-        t1_q = short_names.get(team1, team1)
-        t2_q = short_names.get(team2, team2)
+    """Fetch latest news articles related to the match teams using newsdata.io API."""
+    import os
+    import httpx
+    api_key = os.environ.get("NEWSDATA_API_KEY", "")
+    if not api_key:
+        logger.warning("NEWSDATA_API_KEY not set, skipping news fetch")
+        return []
 
-        # Use text search as DDG news endpoint may timeout
-        with DDGS() as ddgs:
-            results = list(ddgs.text(
-                f"{t1_q} vs {t2_q} IPL 2026 cricket match preview news",
-                max_results=8,
-            ))
-            for item in results:
+    articles = []
+    short_names = {
+        "Royal Challengers Bengaluru": "RCB",
+        "Mumbai Indians": "MI",
+        "Chennai Super Kings": "CSK",
+        "Kolkata Knight Riders": "KKR",
+        "Rajasthan Royals": "RR",
+        "Sunrisers Hyderabad": "SRH",
+        "Punjab Kings": "PBKS",
+        "Gujarat Titans": "GT",
+        "Lucknow Super Giants": "LSG",
+        "Delhi Capitals": "DC",
+    }
+    t1_short = short_names.get(team1, team1)
+    t2_short = short_names.get(team2, team2)
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            # First search: match-specific
+            resp = await client.get(
+                "https://newsdata.io/api/1/latest",
+                params={
+                    "apikey": api_key,
+                    "q": f"{t1_short} vs {t2_short} IPL 2026 Cricket",
+                    "language": "en",
+                }
+            )
+            data = resp.json()
+            for item in (data.get("results") or []):
                 articles.append({
                     "title": item.get("title", ""),
-                    "body": item.get("body", "")[:300],
-                    "url": item.get("href", ""),
-                    "source": _extract_source(item.get("href", "")),
-                    "date": "",
+                    "body": (item.get("description") or "")[:300],
+                    "url": item.get("link", ""),
+                    "source": item.get("source_name", "") or item.get("source_id", ""),
+                    "date": item.get("pubDate", ""),
+                    "image": item.get("image_url", ""),
                 })
 
-        # Also search for team form/injury news
-        if len(articles) < 5:
-            with DDGS() as ddgs:
-                extra = list(ddgs.text(
-                    f"IPL 2026 {t1_q} {t2_q} cricket team news injuries",
-                    max_results=5,
-                ))
-                for item in extra:
+            # Second search: broader IPL news if not enough results
+            if len(articles) < 3:
+                resp2 = await client.get(
+                    "https://newsdata.io/api/1/latest",
+                    params={
+                        "apikey": api_key,
+                        "q": "IPL 2026 Cricket",
+                        "language": "en",
+                    }
+                )
+                data2 = resp2.json()
+                for item in (data2.get("results") or []):
                     articles.append({
                         "title": item.get("title", ""),
-                        "body": item.get("body", "")[:300],
-                        "url": item.get("href", ""),
-                        "source": _extract_source(item.get("href", "")),
-                        "date": "",
+                        "body": (item.get("description") or "")[:300],
+                        "url": item.get("link", ""),
+                        "source": item.get("source_name", "") or item.get("source_id", ""),
+                        "date": item.get("pubDate", ""),
+                        "image": item.get("image_url", ""),
                     })
 
     except Exception as e:
@@ -154,21 +171,8 @@ async def fetch_match_news(team1: str, team2: str) -> list:
     seen = set()
     unique = []
     for a in articles:
-        if a["title"] and a["title"] not in seen:
+        if a.get("title") and a["title"] not in seen:
             seen.add(a["title"])
             unique.append(a)
 
     return unique[:10]
-
-
-def _extract_source(url: str) -> str:
-    """Extract domain name from URL for source display."""
-    try:
-        from urllib.parse import urlparse
-        domain = urlparse(url).netloc
-        # Remove www. prefix
-        if domain.startswith("www."):
-            domain = domain[4:]
-        return domain
-    except Exception:
-        return ""

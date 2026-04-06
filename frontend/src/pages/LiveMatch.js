@@ -12,8 +12,8 @@ import PlayingXI from "@/components/PlayingXI";
 import BetaPrediction from "@/components/BetaPrediction";
 import ConsultantDashboard from "@/components/ConsultantDashboard";
 import CricApiLivePanel from "@/components/CricApiLivePanel";
-import ClaudeLiveAnalysis from "@/components/ClaudeLiveAnalysis";
 import WeatherCard from "@/components/WeatherCard";
+import NewsCard from "@/components/NewsCard";
 import { WifiHigh, WifiSlash, Lightning, Spinner, UserCircle, ArrowsClockwise, CheckCircle, Warning, Info } from "@phosphor-icons/react";
 
 export default function LiveMatch() {
@@ -31,8 +31,6 @@ export default function LiveMatch() {
   const [activeTab, setActiveTab] = useState("consult");
   const [probHistory, setProbHistory] = useState([]);
   const [bettingOdds, setBettingOdds] = useState(null);
-  const [claudeLive, setClaudeLive] = useState(null);
-  const [claudeLiveLoading, setClaudeLiveLoading] = useState(false);
   const [refreshingClaude, setRefreshingClaude] = useState(false);
   const [showFormula, setShowFormula] = useState(false);
   const [checkingStatus, setCheckingStatus] = useState(false);
@@ -94,13 +92,6 @@ export default function LiveMatch() {
     setBettingOdds(odds);
   };
 
-  const handleClaudeLive = async () => {
-    setClaudeLiveLoading(true);
-    const res = await fetchClaudeLive(matchId);
-    if (res) setClaudeLive(res);
-    setClaudeLiveLoading(false);
-  };
-
   const handleRefreshClaude = async () => {
     setRefreshingClaude(true);
     const res = await refreshClaudePrediction(matchId);
@@ -160,7 +151,6 @@ export default function LiveMatch() {
 
   const rightTabs = [
     { key: "consult", label: "Consult" },
-    { key: "claude", label: "Claude" },
     { key: "liveapi", label: "Live API" },
     { key: "models", label: "Models" },
     { key: "odds", label: "Odds" },
@@ -265,7 +255,7 @@ export default function LiveMatch() {
               <p className="text-xs text-[#71717A] mb-4">{matchState?.status || "The match hasn't started yet or has already been completed."}</p>
               {matchState?.source && (
                 <span className="text-[10px] px-2 py-0.5 rounded bg-[#1E1E1E] text-[#A1A1AA] font-mono">
-                  Verified via {matchState.source === "web_search" ? "GPT-5.1 Web Search" : matchState.source}
+                  Verified via {matchState.source === "web_search" ? "Claude Opus + Web Search" : matchState.source}
                 </span>
               )}
             </div>
@@ -658,12 +648,15 @@ export default function LiveMatch() {
                   </div>
                 )}
 
+                {/* Match News */}
+                <NewsCard matchId={matchId} />
+
                 <BallLog balls={balls} />
                 <WinProbabilityChart data={probHistory} team1={t1Short} team2={t2Short} />
 
                 {matchState?.aiPrediction && (
                   <div className="bg-[#141414] border border-white/10 rounded-md p-4" data-testid="ai-analysis">
-                    <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-[#A1A1AA] mb-2" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>GPT Analysis</h4>
+                    <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-[#A1A1AA] mb-2" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>AI Analysis</h4>
                     <p className="text-sm text-[#A1A1AA]">{matchState.aiPrediction.analysis}</p>
                     {matchState.aiPrediction.keyFactors?.length > 0 && (
                       <div className="flex flex-wrap gap-2 mt-2">
@@ -692,9 +685,6 @@ export default function LiveMatch() {
 
                 {activeTab === "consult" && (
                   <ConsultantDashboard matchId={matchId} team1={t1Short} team2={t2Short} fetchConsultation={fetchConsultation} sendChat={sendChat} />
-                )}
-                {activeTab === "claude" && (
-                  <ClaudeLiveAnalysis data={claudeLive} loading={claudeLiveLoading} onFetch={handleClaudeLive} />
                 )}
                 {activeTab === "liveapi" && (
                   <CricApiLivePanel />

@@ -655,7 +655,7 @@ Source data:
 
 # ─── Claude Deep Narrative Analysis (NEW) ─────────────────────
 
-async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_info: dict, squads: dict = None) -> dict:
+async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_info: dict, squads: dict = None, news: list = None) -> dict:
     """
     Claude Opus: Generate a rich, narrative match analysis in the style of an expert cricket pundit.
     This is the "Claude Analysis" section — separate from the algorithm-based prediction.
@@ -685,6 +685,18 @@ async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_i
 
     squad_section = f"\n=== OFFICIAL IPL 2026 SQUADS (MUST reference only these players) ===\n{squad_block}" if squad_block else ""
 
+    # Build news section for Claude
+    news_section = ""
+    if news:
+        news_lines = []
+        for article in news[:5]:
+            title = article.get("title", "")
+            body = article.get("body", "")[:200]
+            if title:
+                news_lines.append(f"  - {title}" + (f": {body}" if body else ""))
+        if news_lines:
+            news_section = "\n=== LATEST NEWS (consider injuries, form updates, team changes) ===\n" + "\n".join(news_lines) + "\n"
+
     chat = _get_claude_chat(
         f"deep-{uuid.uuid4().hex[:8]}",
         """You are the sharpest cricket betting analyst alive. You write match previews that read like a friend who's watched every ball of every IPL season explaining the match over drinks. You're brutally honest, data-driven, and never hedge unless the data genuinely says it's close.
@@ -710,6 +722,7 @@ Match #{match_num} | Venue: {venue} | Date: {date_str}
 === PLAYER DATA ===
 {player_data[:5000]}
 {squad_section}
+{news_section}
 === END DATA ===
 
 Return a JSON object with this EXACT structure:
@@ -864,7 +877,7 @@ Return JSON:
 
 # ─── Claude SportMonks Live Win Prediction ────────────────────
 
-async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_info: dict, squads: dict = None, weather: dict = None) -> dict:
+async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_info: dict, squads: dict = None, weather: dict = None, news: list = None) -> dict:
     """
     Claude Opus: Generate a live win prediction using rich SportMonks data.
     Passes full batting card, bowling card, yet-to-bat, yet-to-bowl lineups,
@@ -982,6 +995,18 @@ async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_in
     time_ist = match_info.get("timeIST", "")
     match_date_text = f"Match Date: {match_dt}" + (f" ({time_ist} IST)" if time_ist else "")
 
+    # News context
+    news_text = "No recent news available"
+    if news:
+        news_lines = []
+        for article in news[:5]:
+            title = article.get("title", "")
+            body = article.get("body", "")[:150]
+            if title:
+                news_lines.append(f"  - {title}" + (f": {body}" if body else ""))
+        if news_lines:
+            news_text = "\n".join(news_lines)
+
     chat = _get_claude_chat(
         f"sm-live-pred-{uuid.uuid4().hex[:8]}",
         """You are an elite IPL cricket analyst providing REAL-TIME win predictions.
@@ -1036,6 +1061,9 @@ CRR: {sm_data.get('crr', 0)} | RRR: {sm_data.get('rrr', 'N/A')}
 
 === WEATHER CONDITIONS (affects dew, swing, player fatigue) ===
 {weather_text}
+
+=== LATEST NEWS & CONTEXT (injuries, form updates, team changes) ===
+{news_text}
 
 === ALGORITHM PROBABILITIES (for reference only, use your own analysis) ===
 {json.dumps(algo_probs, indent=2, default=str)[:800]}

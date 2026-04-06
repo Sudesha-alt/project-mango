@@ -299,9 +299,32 @@ async def get_schedule():
     matches = await db.ipl_schedule.find({}, {"_id": 0}).sort("match_number", 1).to_list(100)
     if not matches:
         return {"matches": [], "loaded": False}
-    live = [m for m in matches if m.get("status", "").lower() in ["live", "in progress"]]
-    upcoming = [m for m in matches if m.get("status", "").lower() in ["upcoming", "scheduled"]]
-    completed = [m for m in matches if m.get("status", "").lower() in ["completed", "result"]]
+
+    # Auto-classify based on both status field AND date
+    now = datetime.now(timezone.utc)
+    live = []
+    upcoming = []
+    completed = []
+    for m in matches:
+        status_lower = m.get("status", "").lower()
+        if status_lower in ["live", "in progress"]:
+            live.append(m)
+        elif status_lower in ["completed", "result"]:
+            completed.append(m)
+        else:
+            # Check if match date has passed (treat past-dated "upcoming" as completed)
+            dt_str = m.get("dateTimeGMT", "")
+            if dt_str:
+                try:
+                    match_dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+                    # Match is > 6 hours past start time → treat as completed
+                    if (now - match_dt).total_seconds() > 6 * 3600:
+                        completed.append(m)
+                        continue
+                except Exception:
+                    pass
+            upcoming.append(m)
+
     return {
         "matches": matches,
         "loaded": True,
@@ -511,11 +534,14 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
         match_city = venue.split(",")[-1].strip() if "," in venue else venue
     match_weather = await fetch_weather_for_venue(match_city) if match_city else None
 
-    # ── Claude Win Prediction (pass full SportMonks data + squads + weather) ──
+    # ── Fetch news for match context ──
+    match_news = await fetch_match_news(team1, team2)
+
+    # ── Claude Win Prediction (pass full SportMonks data + squads + weather + news) ──
     claude_prediction = None
     if sm_data:
         claude_prediction = await claude_sportmonks_prediction(
-            sm_data, probs, match_info, squads=match_squads, weather=match_weather
+            sm_data, probs, match_info, squads=match_squads, weather=match_weather, news=match_news
         )
 
     # ── Use Claude's probabilities as the single source of truth ──
@@ -652,8 +678,10 @@ async def refresh_claude_prediction(match_id: str):
         v = match_info.get("venue", "")
         refresh_city = v.split(",")[-1].strip() if "," in v else v
     refresh_weather = await fetch_weather_for_venue(refresh_city) if refresh_city else None
+    # Fetch news for Claude context
+    refresh_news = await fetch_match_news(match_info.get("team1", ""), match_info.get("team2", ""))
     claude_prediction = await claude_sportmonks_prediction(
-        sm_data, old_probs, match_info, squads=match_squads, weather=refresh_weather
+        sm_data, old_probs, match_info, squads=match_squads, weather=refresh_weather, news=refresh_news
     )
 
     if claude_prediction and not claude_prediction.get("error"):
@@ -1940,7 +1968,9 @@ async def api_claude_analysis(match_id: str, background_tasks: BackgroundTasks =
 
     # Run Claude deep analysis (this takes time due to web scraping + Claude)
     match_squads = await _get_squads_for_match(team1, team2)
-    analysis = await claude_deep_match_analysis(team1, team2, venue, match_info, squads=match_squads)
+    # Fetch news for Claude context
+    match_news = await fetch_match_news(team1, team2)
+    analysis = await claude_deep_match_analysis(team1, team2, venue, match_info, squads=match_squads, news=match_news)
 
     # Cache in DB
     result = {
