@@ -1,0 +1,124 @@
+{
+  "summary": "Iteration 31 - Live Predictor 4 Fixes testing complete. All 32 backend tests passed. All 4 fixes verified: (1) Non-linear alpha curve with piecewise decay 0.85→0.20→0.05, (2) Rebalanced H weights with H2H reduced to 0.10 and venue/form increased, (3) Squad strength differential at 0.22 weight, (4) Venue-specific par scores (wankhede:178, chinnaswamy:195, chepauk:158). Frontend displays Alpha/H/L summary boxes, H breakdown with 5 factors, L breakdown with 6 factors, and venue profile correctly.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "passed_tests": [
+    "Backend: compute_alpha returns 0.85 at 0 balls (pre-game)",
+    "Backend: compute_alpha returns ~0.525 at 60 balls (mid inn1)",
+    "Backend: compute_alpha returns ~0.20 at 120 balls (end inn1)",
+    "Backend: compute_alpha returns ~0.125 at 180 balls (mid inn2)",
+    "Backend: compute_alpha returns 0.05 at 240 balls (end match)",
+    "Backend: Alpha never goes below 0.05",
+    "Backend: H weights sum to 1.0 (0.22+0.10+0.28+0.25+0.15)",
+    "Backend: H2H weight is 0.10 (reduced from 0.40)",
+    "Backend: Venue weight is 0.28",
+    "Backend: Form weight is 0.25",
+    "Backend: compute_squad_strength_differential function exists",
+    "Backend: Squad strength returns 0.5 for empty data",
+    "Backend: Squad strength returns ~0.5 for equal teams",
+    "Backend: Squad strength weight is 0.22 in H calculation",
+    "Backend: VENUE_PAR_SCORES dictionary exists with 14 venues",
+    "Backend: Wankhede par is 178",
+    "Backend: Chinnaswamy par is 195",
+    "Backend: Chepauk par is 158",
+    "Backend: All venue profiles have par, bat_first_win_pct, dew_risk",
+    "Backend: get_venue_profile returns correct profile for known venues",
+    "Backend: get_venue_profile returns default (par:170) for unknown venues",
+    "Backend: compute_live_prediction returns alpha in response",
+    "Backend: compute_live_prediction returns H and L in response",
+    "Backend: compute_live_prediction returns H_breakdown with 5 factors",
+    "Backend: compute_live_prediction returns L_breakdown with 6 factors",
+    "Backend: compute_live_prediction returns venue_profile",
+    "Backend: API health check returns version 4.1.0",
+    "Backend: server.py imports compute_live_prediction",
+    "Backend: server.py passes xi_data (cached_xi) to compute_live_prediction",
+    "Backend: fetch-live endpoint exists",
+    "Backend: fetch-live returns weightedPrediction with alpha/H/L",
+    "Backend: match state endpoint works",
+    "Frontend: LiveMatch page loads with data-testid='live-match-page'",
+    "Frontend: Fetch Live Scores button works",
+    "Frontend: Weighted Prediction panel displays",
+    "Frontend: Alpha/H/L summary boxes display (Alpha: 0.731, H: 58.3%, L: 45.1%)",
+    "Frontend: H breakdown shows Squad Strength (0.22), Venue (0.28), Form (0.25), Toss (0.15), H2H (0.10)",
+    "Frontend: L breakdown shows Score vs Par (0.30), Wickets (0.25), Recent Rate (0.15), Bowlers (0.15), Pre-match (0.10), Context (0.05)",
+    "Frontend: Venue profile shows Par, Bat 1st %, Dew risk",
+    "Frontend: Dual Prediction Models section displays",
+    "Frontend: Claude Opus Prediction panel displays",
+    "Frontend: Model Consensus indicator shows HIGH CONSENSUS",
+    "Frontend: Formula info button opens modal with P(win) = alpha × H + (1-alpha) × L"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_iteration31_live_predictor_fixes.py",
+    "/app/test_reports/pytest/iteration31_live_predictor_fixes_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "live_predictor.py correctly implements non-linear alpha curve with piecewise decay",
+    "H weights correctly sum to 1.0: squad(0.22) + h2h(0.10) + venue(0.28) + form(0.25) + toss(0.15)",
+    "compute_squad_strength_differential uses sigmoid function for balanced output",
+    "VENUE_PAR_SCORES contains 14 venues with par, bat_first_win_pct, dew_risk",
+    "server.py line 456 passes cached_xi to compute_live_prediction",
+    "LiveMatch.js displays all H and L breakdown factors with correct weights"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration31_live_predictor_fixes.py"
+  ],
+  "success_rate": {
+    "backend": "100% (32/32 tests passed)",
+    "frontend": "100% (all UI components verified)"
+  },
+  "test_credentials": "No authentication required - open access app",
+  "seed_data_creation": "None - used existing live match ipl2026_071 (KKR vs PBKS)",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 31 features verified. The live predictor now uses alpha-blended H×L model with: (1) Non-linear alpha decay 0.85→0.20→0.05, (2) H weights: squad 0.22, h2h 0.10, venue 0.28, form 0.25, toss 0.15, (3) Squad strength from Playing XI at 0.22 weight, (4) Venue-specific par scores. Match ipl2026_071 (KKR vs PBKS at Eden Gardens) was used for live testing. The formula P(win) = alpha × H + (1-alpha) × L is displayed in the UI with full breakdown.",
+  "feature_verification": {
+    "fix_1_nonlinear_alpha": {
+      "status": "WORKING",
+      "description": "Non-linear alpha curve with piecewise decay",
+      "verification": "compute_alpha(0,1)=0.85, compute_alpha(120,1)=0.20, compute_alpha(240,2)=0.05"
+    },
+    "fix_2_rebalanced_h_weights": {
+      "status": "WORKING",
+      "description": "H2H reduced from 0.40 to 0.10, venue/form increased",
+      "verification": "H = 0.22×squad + 0.10×h2h + 0.28×venue + 0.25×form + 0.15×toss"
+    },
+    "fix_3_squad_strength": {
+      "status": "WORKING",
+      "description": "Squad strength differential at 0.22 weight using Playing XI",
+      "verification": "compute_squad_strength_differential returns 0.5 for empty/equal data"
+    },
+    "fix_4_venue_par_scores": {
+      "status": "WORKING",
+      "description": "Venue-specific par scores replacing hardcoded 165",
+      "verification": "wankhede:178, chinnaswamy:195, chepauk:158, default:170"
+    },
+    "frontend_alpha_h_l_display": {
+      "status": "WORKING",
+      "description": "Alpha/H/L summary boxes in LiveMatch page",
+      "verification": "Screenshot shows Alpha: 0.731, H: 58.3%, L: 45.1%"
+    },
+    "frontend_h_breakdown": {
+      "status": "WORKING",
+      "description": "H breakdown with 5 factors and weights",
+      "verification": "Squad Strength (0.22), Venue (0.28), Form (0.25), Toss (0.15), H2H (0.10)"
+    },
+    "frontend_l_breakdown": {
+      "status": "WORKING",
+      "description": "L breakdown with 6 factors and weights",
+      "verification": "Score vs Par (0.30), Wickets (0.25), Recent Rate (0.15), Bowlers (0.15), Pre-match (0.10), Context (0.05)"
+    },
+    "frontend_venue_profile": {
+      "status": "WORKING",
+      "description": "Venue profile with par, bat_first_win_pct, dew_risk",
+      "verification": "Screenshot shows Par: 175, Bat 1st: 46%, Dew: high"
+    }
+  }
+}

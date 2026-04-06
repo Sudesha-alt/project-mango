@@ -389,7 +389,7 @@ export default function LiveMatch() {
                         <div className="bg-[#141414] border border-[#007AFF]/30 rounded-md p-4 space-y-3" data-testid="weighted-prediction">
                           <div className="flex items-center justify-between">
                             <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-[#007AFF]" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
-                              Algorithm (6-Factor)
+                              Algorithm (Alpha x H+L)
                             </h4>
                             <button onClick={() => setShowFormula(!showFormula)} data-testid="formula-info-btn"
                               className="w-5 h-5 rounded-full border border-[#007AFF]/40 text-[#007AFF] text-[10px] font-bold flex items-center justify-center hover:bg-[#007AFF]/10 transition-colors">
@@ -409,57 +409,103 @@ export default function LiveMatch() {
                             </div>
                           </div>
 
-                          {/* Breakdown — 6 Factor Model */}
-                          <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2.5 space-y-1" data-testid="live-factors-breakdown">
-                            <div className="flex items-center justify-between mb-1">
-                              <p className="text-[9px] text-[#525252] uppercase">6-Factor Live Model</p>
-                              <span className="text-[8px] px-1.5 py-0.5 rounded bg-[#007AFF]/15 text-[#007AFF] font-bold">
-                                L = {((weightedPred.L || 0) * 100).toFixed(1)}%
-                              </span>
+                          {/* Alpha × H + (1-alpha) × L Breakdown */}
+                          <div className="space-y-2">
+                            {/* Alpha / H / L summary */}
+                            <div className="grid grid-cols-3 gap-2 text-center">
+                              <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2">
+                                <p className="text-[8px] text-[#525252] uppercase">Alpha</p>
+                                <p className="text-sm font-black font-mono text-[#FFCC00]">{weightedPred.alpha}</p>
+                              </div>
+                              <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2">
+                                <p className="text-[8px] text-[#525252] uppercase">H (Historical)</p>
+                                <p className="text-sm font-black font-mono text-[#FFCC00]">{((weightedPred.H || 0) * 100).toFixed(1)}%</p>
+                              </div>
+                              <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2">
+                                <p className="text-[8px] text-[#525252] uppercase">L (Live)</p>
+                                <p className="text-sm font-black font-mono text-[#34C759]">{((weightedPred.L || 0) * 100).toFixed(1)}%</p>
+                              </div>
                             </div>
-                            {[
-                              { label: "Score vs Par", val: weightedPred.breakdown?.score_vs_par, w: "0.30", color: (weightedPred.breakdown?.score_vs_par || 0) < 0.3 ? "#FF3B30" : (weightedPred.breakdown?.score_vs_par || 0) < 0.6 ? "#FF9500" : "#34C759" },
-                              { label: "Wickets in Hand", val: weightedPred.breakdown?.wickets_in_hand, w: "0.25", color: (weightedPred.breakdown?.wickets_in_hand || 0) < 0.4 ? "#FF3B30" : "#34C759" },
-                              { label: "Recent Over Rate", val: weightedPred.breakdown?.recent_over_rate, w: "0.15", color: (weightedPred.breakdown?.recent_over_rate || 0) < 0.3 ? "#FF3B30" : "#34C759" },
-                              { label: "Bowlers Remaining", val: weightedPred.breakdown?.bowlers_remaining, w: "0.15", color: "#FFCC00" },
-                              { label: "Pre-match Base", val: weightedPred.breakdown?.pre_match_base, w: "0.10", color: "#007AFF" },
-                              { label: "Situation Context", val: weightedPred.breakdown?.match_situation_context, w: "0.05", color: "#A855F7" },
-                            ].map(f => (
-                              <div key={f.label} className="flex items-center justify-between text-[10px]">
-                                <span className="text-[#737373]">{f.label} <span className="text-[#525252]">({f.w})</span></span>
-                                <div className="flex items-center gap-2">
-                                  <div className="w-16 h-1 bg-[#1E1E1E] rounded-full overflow-hidden">
-                                    <div className="h-full rounded-full" style={{ width: `${(f.val || 0) * 100}%`, backgroundColor: f.color }} />
+
+                            {/* H Breakdown */}
+                            <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2.5 space-y-1">
+                              <p className="text-[9px] text-[#FFCC00] uppercase mb-1">Historical Factors (H) — weight: {weightedPred.alpha}</p>
+                              {[
+                                { label: "Squad Strength", val: weightedPred.H_breakdown?.squad_strength, w: "0.22", color: "#007AFF" },
+                                { label: "Venue Win %", val: weightedPred.H_breakdown?.venue_win_pct, w: "0.28", color: "#34C759" },
+                                { label: "Recent Form", val: weightedPred.H_breakdown?.recent_form_pct, w: "0.25", color: "#34C759" },
+                                { label: "Toss Adv.", val: weightedPred.H_breakdown?.toss_advantage_pct, w: "0.15", color: "#A855F7" },
+                                { label: "H2H", val: weightedPred.H_breakdown?.h2h_win_pct, w: "0.10", color: "#FF9500" },
+                              ].map(f => (
+                                <div key={f.label} className="flex items-center justify-between text-[10px]">
+                                  <span className="text-[#737373]">{f.label} <span className="text-[#525252]">({f.w})</span></span>
+                                  <div className="flex items-center gap-2">
+                                    <div className="w-16 h-1 bg-[#1E1E1E] rounded-full overflow-hidden">
+                                      <div className="h-full rounded-full" style={{ width: `${(f.val || 0) * 100}%`, backgroundColor: f.color }} />
+                                    </div>
+                                    <span className="font-mono text-[#A3A3A3] w-10 text-right">{((f.val || 0) * 100).toFixed(0)}%</span>
                                   </div>
-                                  <span className="font-mono text-[#A3A3A3] w-10 text-right">{((f.val || 0) * 100).toFixed(0)}%</span>
                                 </div>
-                              </div>
-                            ))}
-                            {/* Live context: who's at crease & bowling */}
-                            {weightedPred.live_context && (
-                              <div className="mt-1.5 pt-1.5 border-t border-[#262626] space-y-0.5">
-                                {weightedPred.live_context.active_batsmen?.length > 0 && (
-                                  <p className="text-[9px] text-[#A3A3A3]">
-                                    <span className="text-[#525252]">Batting:</span> {weightedPred.live_context.active_batsmen.join(" & ")}
-                                  </p>
-                                )}
-                                {weightedPred.live_context.active_bowler && (
-                                  <p className="text-[9px] text-[#A3A3A3]">
-                                    <span className="text-[#525252]">Bowling:</span> {weightedPred.live_context.active_bowler}
-                                  </p>
-                                )}
-                                <div className="flex gap-3 text-[9px] font-mono">
-                                  <span className="text-[#34C759]">CRR {weightedPred.live_context.crr}</span>
-                                  {weightedPred.live_context.rrr && (
-                                    <span className="text-[#FF9500]">RRR {weightedPred.live_context.rrr}</span>
-                                  )}
-                                  {weightedPred.live_context.runs_needed && (
-                                    <span className="text-[#FF3B30]">Need {weightedPred.live_context.runs_needed} off {weightedPred.live_context.balls_left_innings}b</span>
-                                  )}
+                              ))}
+                            </div>
+
+                            {/* L Breakdown */}
+                            <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2.5 space-y-1" data-testid="live-factors-breakdown">
+                              <p className="text-[9px] text-[#34C759] uppercase mb-1">Live Factors (L) — weight: {(1 - (weightedPred.alpha || 0)).toFixed(3)}</p>
+                              {[
+                                { label: "Score vs Par", val: weightedPred.L_breakdown?.score_vs_par, w: "0.30", color: (weightedPred.L_breakdown?.score_vs_par || 0) < 0.3 ? "#FF3B30" : (weightedPred.L_breakdown?.score_vs_par || 0) < 0.6 ? "#FF9500" : "#34C759" },
+                                { label: "Wickets in Hand", val: weightedPred.L_breakdown?.wickets_in_hand, w: "0.25", color: (weightedPred.L_breakdown?.wickets_in_hand || 0) < 0.4 ? "#FF3B30" : "#34C759" },
+                                { label: "Recent Over Rate", val: weightedPred.L_breakdown?.recent_over_rate, w: "0.15", color: (weightedPred.L_breakdown?.recent_over_rate || 0) < 0.3 ? "#FF3B30" : "#34C759" },
+                                { label: "Bowlers Remaining", val: weightedPred.L_breakdown?.bowlers_remaining, w: "0.15", color: "#FFCC00" },
+                                { label: "Pre-match Base", val: weightedPred.L_breakdown?.pre_match_base, w: "0.10", color: "#007AFF" },
+                                { label: "Situation Context", val: weightedPred.L_breakdown?.match_situation_context, w: "0.05", color: "#A855F7" },
+                              ].map(f => (
+                                <div key={f.label} className="flex items-center justify-between text-[10px]">
+                                  <span className="text-[#737373]">{f.label} <span className="text-[#525252]">({f.w})</span></span>
+                                  <div className="flex items-center gap-2">
+                                    <div className="w-16 h-1 bg-[#1E1E1E] rounded-full overflow-hidden">
+                                      <div className="h-full rounded-full" style={{ width: `${(f.val || 0) * 100}%`, backgroundColor: f.color }} />
+                                    </div>
+                                    <span className="font-mono text-[#A3A3A3] w-10 text-right">{((f.val || 0) * 100).toFixed(0)}%</span>
+                                  </div>
                                 </div>
-                              </div>
-                            )}
+                              ))}
+                            </div>
                           </div>
+
+                          {/* Venue Profile */}
+                          {weightedPred.venue_profile && (
+                            <div className="flex items-center gap-3 text-[9px] text-[#525252] font-mono">
+                              <span>Par: {weightedPred.venue_profile.par_20}</span>
+                              <span>Bat 1st: {Math.round((weightedPred.venue_profile.bat_first_win_pct || 0.48) * 100)}%</span>
+                              <span>Dew: {weightedPred.venue_profile.dew_risk}</span>
+                            </div>
+                          )}
+
+                          {/* Live context: who's at crease & bowling */}
+                          {weightedPred.live_context && (
+                            <div className="mt-1.5 pt-1.5 border-t border-[#262626] space-y-0.5">
+                              {weightedPred.live_context.active_batsmen?.length > 0 && (
+                                <p className="text-[9px] text-[#A3A3A3]">
+                                  <span className="text-[#525252]">Batting:</span> {weightedPred.live_context.active_batsmen.join(" & ")}
+                                </p>
+                              )}
+                              {weightedPred.live_context.active_bowler && (
+                                <p className="text-[9px] text-[#A3A3A3]">
+                                  <span className="text-[#525252]">Bowling:</span> {weightedPred.live_context.active_bowler}
+                                </p>
+                              )}
+                              <div className="flex gap-3 text-[9px] font-mono">
+                                <span className="text-[#34C759]">CRR {weightedPred.live_context.crr}</span>
+                                {weightedPred.live_context.rrr && (
+                                  <span className="text-[#FF9500]">RRR {weightedPred.live_context.rrr}</span>
+                                )}
+                                {weightedPred.live_context.runs_needed && (
+                                  <span className="text-[#FF3B30]">Need {weightedPred.live_context.runs_needed} off {weightedPred.live_context.balls_left_innings}b</span>
+                                )}
+                              </div>
+                            </div>
+                          )}
 
                           {/* Chase Analysis */}
                           {livePred?.chase_analysis && (
@@ -550,32 +596,23 @@ export default function LiveMatch() {
                     {showFormula && (
                       <div className="bg-[#0A0A0A] border border-[#007AFF]/20 rounded-md p-5 space-y-3 relative" data-testid="formula-modal">
                         <button onClick={() => setShowFormula(false)} className="absolute top-3 right-3 text-[#737373] hover:text-white text-sm">x</button>
-                        <h4 className="text-sm font-bold text-[#007AFF] uppercase tracking-wider" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>6-Factor Live Prediction Model</h4>
+                        <h4 className="text-sm font-bold text-[#007AFF] uppercase tracking-wider" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>Alpha-Blended H x L Model</h4>
                         <div className="space-y-2 text-[11px] text-[#A3A3A3] leading-relaxed font-mono">
-                          <p className="text-white font-bold">P(win) = 0.30×ScoreVsPar + 0.25×Wickets + 0.15×RecentRate + 0.15×Bowlers + 0.10×PreMatch + 0.05×Context</p>
+                          <p className="text-white font-bold">P(win) = alpha x H + (1 - alpha) x L</p>
                           <div>
-                            <p className="text-[#34C759] font-bold mb-1">Score vs Par Score (30%)</p>
-                            <p>Compares batting team's score to phase-adjusted par. Uses sigmoid mapping for smooth transitions.</p>
+                            <p className="text-[#FFCC00] font-bold mb-1">Alpha (Stage-Aware Decay)</p>
+                            <p>Pre-game: 0.85 | End 1st innings: 0.20 | End match: 0.05</p>
+                            <p className="text-[#525252]">Historical weight drops fast once live data arrives. Piecewise linear by innings.</p>
                           </div>
                           <div>
-                            <p className="text-[#34C759] font-bold mb-1">Wickets in Hand (25%)</p>
-                            <p>Non-linear wicket ratio with phase context. Losing wickets early hurts more; few wickets late with high RRR = critical.</p>
+                            <p className="text-[#FFCC00] font-bold mb-1">H (Historical/Structural)</p>
+                            <p>H = 0.22xSquad + 0.10xH2H + 0.28xVenue + 0.25xForm + 0.15xToss</p>
+                            <p className="text-[#525252]">Squad strength is #1 predictor. H2H reduced to 10% (research-aligned). Venue+Home is structural.</p>
                           </div>
                           <div>
-                            <p className="text-[#FFCC00] font-bold mb-1">Recent Over Rate (15%)</p>
-                            <p>Scoring rate in last 12 balls vs required rate. Penalized if wickets fell recently.</p>
-                          </div>
-                          <div>
-                            <p className="text-[#FFCC00] font-bold mb-1">Bowlers Remaining (15%)</p>
-                            <p>Bowling team's remaining quality bowling options. More options = harder for batting team.</p>
-                          </div>
-                          <div>
-                            <p className="text-[#007AFF] font-bold mb-1">Pre-match Base (10%)</p>
-                            <p>Anchored to pre-match algorithm prediction as a stabilizer.</p>
-                          </div>
-                          <div>
-                            <p className="text-[#A855F7] font-bold mb-1">Match Situation Context (5%)</p>
-                            <p>New batsman vulnerability, death over pressure, momentum from last 6 balls.</p>
+                            <p className="text-[#34C759] font-bold mb-1">L (Live 6-Factor)</p>
+                            <p>L = 0.30xScoreVsPar + 0.25xWickets + 0.15xRecentRate + 0.15xBowlers + 0.10xPreMatch + 0.05xContext</p>
+                            <p className="text-[#525252]">Score vs par uses venue-specific par scores. All factors from batting team's perspective.</p>
                           </div>
                         </div>
                       </div>
