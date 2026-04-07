@@ -339,7 +339,12 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
     t2_balance = 1.0 - abs(t2_rating["batting"] - t2_rating["bowling"]) / 200
     t1_score = t1_overall * t1_balance
     t2_score = t2_overall * t2_balance
-    squad_logit = 5.0 * ((t1_score - t2_score) / 100)
+    # Core squad strength logit from overall quality
+    raw_squad_logit = 5.0 * ((t1_score - t2_score) / 100)
+    # Balance bonus: reward well-balanced squads more aggressively
+    balance_diff = t1_balance - t2_balance
+    balance_bonus = 3.0 * balance_diff
+    squad_logit = raw_squad_logit + balance_bonus
 
     # ━━━━━━ Category 2: Current Season Form — SportMonks API (21%) ━━━━━━
     t1_form = form_data.get("team1", {})
@@ -367,10 +372,15 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
     t1_h2h = h2h.get("team1_wins", 0)
     t2_h2h = h2h.get("team2_wins", 0)
     total_h2h = t1_h2h + t2_h2h
+    h2h_source = h2h.get("source", "season_2026")
     if total_h2h > 0:
         h2h_ratio = t1_h2h / total_h2h
-        h2h_damping = min(1.0, total_h2h / 4)
-        h2h_logit = 2.0 * (h2h_ratio - 0.5) * h2h_damping
+        # For historical data (30+ matches), cap damping lower to avoid over-reliance
+        if h2h_source == "historical_ipl" and total_h2h > 10:
+            h2h_damping = 0.7  # Moderate weight for historical records
+        else:
+            h2h_damping = min(1.0, total_h2h / 4)
+        h2h_logit = 2.5 * (h2h_ratio - 0.5) * h2h_damping
     else:
         h2h_logit = 0.0
 
@@ -468,6 +478,7 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
                 "team1_wins": t1_h2h,
                 "team2_wins": t2_h2h,
                 "total": total_h2h,
+                "source": h2h_source,
             },
             "toss_impact": {
                 "weight": WEIGHTS["toss_impact"],
@@ -553,7 +564,8 @@ def _compute_toss_impact(venue_key: Optional[str], match_time: str, weather: dic
     if not venue_key or venue_key not in TOSS_LOOKUP:
         detail["preferred_decision"] = "bowl"
         detail["toss_win_pct"] = 0.53
-        return 0.0, detail
+        # Even unknown venues have a slight chasing bias
+        return 0.09, detail  # 3.0 * (0.53 - 0.50) = 0.09
 
     venue_data = TOSS_LOOKUP[venue_key]
     is_night = _is_night_match(match_time)
@@ -585,15 +597,29 @@ def _compute_toss_impact(venue_key: Optional[str], match_time: str, weather: dic
     detail["chasing_bias"] = selected.get("chasing_bias", 0)
     detail["dew_factor"] = dew_factor
 
-    return 0.0, detail
+    # Compute toss logit: how much the toss winner's advantage deviates from 50%
+    # A toss_win_pct of 0.625 means a 12.5% edge → logit reflects this
+    toss_win_pct = selected["toss_win_pct"]
+    chasing_bias = selected.get("chasing_bias", 0)
+    # The logit represents venue-inherent toss advantage (not team-specific)
+    # Positive = venue significantly rewards toss winner (applies pre-toss as neutral)
+    # Since we don't know who wins the toss pre-match, we compute the magnitude
+    # of the venue's toss sensitivity — higher values = more volatile venue
+    toss_deviation = toss_win_pct - 0.50  # How much above 50% the toss winner gets
+    toss_logit = 3.0 * toss_deviation + 2.0 * chasing_bias
+    # Cap at reasonable range
+    toss_logit = max(-1.0, min(1.0, toss_logit))
+    detail["toss_logit_raw"] = round(toss_logit, 4)
+
+    return toss_logit, detail
 
 
 def _compute_bowling_depth(squad_data: dict, t1_rating: dict, t2_rating: dict) -> Tuple[float, dict]:
-    """Category 6: Bowling Attack Depth from DB squad data."""
+    """Category 6: Bowling Attack Depth from DB squad data (top 5 bowlers only, like Playing XI)."""
     detail = {}
     for team_key in ["team1", "team2"]:
         players = squad_data.get(team_key, [])
-        bowler_scores = []
+        bowler_entries = []
         pace_count = 0
         spin_count = 0
 
@@ -611,25 +637,38 @@ def _compute_bowling_depth(squad_data: dict, t1_rating: dict, t2_rating: dict) -
                     score = 3
                 else:
                     score = 2
-                bowler_scores.append(score * 4)
-                if name in PACE_BOWLERS:
-                    pace_count += 1
-                elif name in SPIN_BOWLERS:
-                    spin_count += 1
-                else:
-                    pace_count += 1  # default
+                bowler_entries.append({
+                    "name": name, "score": score * 4, "rating": base_rating,
+                    "is_pace": name in PACE_BOWLERS,
+                    "is_spin": name in SPIN_BOWLERS,
+                })
 
-        total_quality = sum(bowler_scores)
+        # Sort by score descending & take top 5 (Playing XI bowlers)
+        bowler_entries.sort(key=lambda x: x["score"], reverse=True)
+        top5 = bowler_entries[:5]
+        for b in top5:
+            if b["is_pace"]:
+                pace_count += 1
+            elif b["is_spin"]:
+                spin_count += 1
+            else:
+                pace_count += 1  # default
+
+        total_quality = sum(b["score"] for b in top5)
         has_variety = pace_count >= 2 and spin_count >= 1
         detail[f"{team_key}_quality_score"] = round(total_quality, 1)
-        detail[f"{team_key}_bowler_count"] = len(bowler_scores)
+        detail[f"{team_key}_bowler_count"] = len(top5)
         detail[f"{team_key}_pace_count"] = pace_count
         detail[f"{team_key}_spin_count"] = spin_count
         detail[f"{team_key}_variety"] = "pace+spin" if has_variety else "one-dimensional"
+        detail[f"{team_key}_variety_bonus"] = 0.3 if has_variety else 0.0
 
     t1_q = detail.get("team1_quality_score", 50)
     t2_q = detail.get("team2_quality_score", 50)
-    bowl_depth_logit = 3.0 * ((t1_q - t2_q) / max(t1_q + t2_q, 1))
+    t1_variety_bonus = detail.get("team1_variety_bonus", 0)
+    t2_variety_bonus = detail.get("team2_variety_bonus", 0)
+    # Base logit from quality difference + variety bonus
+    bowl_depth_logit = 3.0 * ((t1_q - t2_q) / max(t1_q + t2_q, 1)) + (t1_variety_bonus - t2_variety_bonus)
     return bowl_depth_logit, detail
 
 

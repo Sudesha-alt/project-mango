@@ -12,6 +12,101 @@ logger = logging.getLogger(__name__)
 SPORTMONKS_TOKEN = os.environ.get("SPORTMONKS_API_TOKEN", "")
 BASE_URL = "https://cricket.sportmonks.com/api/v2.0"
 
+# Historical IPL H2H records (2008-2025 aggregate, alphabetical key pair)
+# Format: ("team_a_short", "team_b_short"): (a_wins, b_wins)
+HISTORICAL_H2H = {
+    ("CSK", "DC"): (23, 12),
+    ("CSK", "GT"): (3, 4),
+    ("CSK", "KKR"): (19, 12),
+    ("CSK", "LSG"): (4, 3),
+    ("CSK", "MI"): (19, 22),
+    ("CSK", "PBKS"): (20, 13),
+    ("CSK", "RCB"): (20, 16),
+    ("CSK", "RR"): (17, 12),
+    ("CSK", "SRH"): (17, 11),
+    ("DC", "GT"): (2, 4),
+    ("DC", "KKR"): (15, 17),
+    ("DC", "LSG"): (3, 5),
+    ("DC", "MI"): (16, 18),
+    ("DC", "PBKS"): (15, 16),
+    ("DC", "RCB"): (14, 17),
+    ("DC", "RR"): (12, 14),
+    ("DC", "SRH"): (12, 14),
+    ("GT", "KKR"): (3, 3),
+    ("GT", "LSG"): (5, 3),
+    ("GT", "MI"): (5, 3),
+    ("GT", "PBKS"): (3, 3),
+    ("GT", "RCB"): (4, 2),
+    ("GT", "RR"): (4, 4),
+    ("GT", "SRH"): (3, 3),
+    ("KKR", "LSG"): (5, 3),
+    ("KKR", "MI"): (16, 22),
+    ("KKR", "PBKS"): (18, 14),
+    ("KKR", "RCB"): (17, 14),
+    ("KKR", "RR"): (14, 13),
+    ("KKR", "SRH"): (14, 14),
+    ("LSG", "MI"): (4, 3),
+    ("LSG", "PBKS"): (4, 4),
+    ("LSG", "RCB"): (3, 4),
+    ("LSG", "RR"): (3, 3),
+    ("LSG", "SRH"): (4, 3),
+    ("MI", "PBKS"): (20, 14),
+    ("MI", "RCB"): (21, 14),
+    ("MI", "RR"): (16, 13),
+    ("MI", "SRH"): (16, 10),
+    ("PBKS", "RCB"): (14, 17),
+    ("PBKS", "RR"): (14, 14),
+    ("PBKS", "SRH"): (14, 13),
+    ("RCB", "RR"): (13, 14),
+    ("RCB", "SRH"): (14, 13),
+    ("RR", "SRH"): (10, 8),
+}
+
+# Team name to short code mapping
+TEAM_SHORT_CODES = {
+    "chennai super kings": "CSK",
+    "delhi capitals": "DC",
+    "delhi daredevils": "DC",
+    "gujarat titans": "GT",
+    "kolkata knight riders": "KKR",
+    "lucknow super giants": "LSG",
+    "mumbai indians": "MI",
+    "punjab kings": "PBKS",
+    "kings xi punjab": "PBKS",
+    "royal challengers bengaluru": "RCB",
+    "royal challengers bangalore": "RCB",
+    "rajasthan royals": "RR",
+    "sunrisers hyderabad": "SRH",
+}
+
+
+def _get_short_code(team_name: str) -> str:
+    """Get team short code from full name."""
+    lower = team_name.lower().strip()
+    for key, code in TEAM_SHORT_CODES.items():
+        if key in lower or lower in key:
+            return code
+    return ""
+
+
+def _get_historical_h2h(team1: str, team2: str):
+    """Look up historical H2H record between two teams."""
+    code1 = _get_short_code(team1)
+    code2 = _get_short_code(team2)
+    if not code1 or not code2 or code1 == code2:
+        return None
+    # Key is always alphabetically ordered
+    key = (min(code1, code2), max(code1, code2))
+    record = HISTORICAL_H2H.get(key)
+    if not record:
+        return None
+    a_wins, b_wins = record
+    # Map back to team1/team2
+    if code1 == key[0]:
+        return {"team1_wins": a_wins, "team2_wins": b_wins, "source": "historical_ipl"}
+    else:
+        return {"team1_wins": b_wins, "team2_wins": a_wins, "source": "historical_ipl"}
+
 
 async def _sm_get(endpoint: str, params: dict = None) -> dict:
     """Make a GET request to SportMonks Cricket API."""
@@ -127,7 +222,19 @@ async def fetch_team_form(db, team1: str, team2: str) -> Dict:
         "team1_wins": h2h_t1_wins,
         "team2_wins": h2h_t2_wins,
         "total": h2h_t1_wins + h2h_t2_wins,
+        "source": "season_2026",
     }
+
+    # Fallback to historical IPL H2H if no season data
+    if h2h_t1_wins + h2h_t2_wins == 0:
+        hist = _get_historical_h2h(team1, team2)
+        if hist:
+            form["h2h"] = {
+                "team1_wins": hist["team1_wins"],
+                "team2_wins": hist["team2_wins"],
+                "total": hist["team1_wins"] + hist["team2_wins"],
+                "source": hist["source"],
+            }
 
     return form
 

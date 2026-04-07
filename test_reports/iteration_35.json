@@ -1,0 +1,73 @@
+{
+  "summary": "Iteration 35 - Testing Fixed Pre-Match Prediction Categories: H2H Historical Fallback, Toss Impact, Bowling Depth (Top 5), and Balance. All 10 backend tests passed. All fixes verified working correctly.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "passed_tests": [
+    "API health check passes (version 4.1.0)",
+    "RR vs MI H2H uses historical_ipl source with 13-16 record (total=29)",
+    "PBKS vs RR H2H uses historical_ipl source with 14-14 record (total=28)",
+    "Toss Impact returns non-zero logit_contribution (0.0338 for Mohali night)",
+    "Toss Impact toss_win_pct is 0.625 for Mohali night venue",
+    "Bowling Depth uses top 5 bowlers only (team1_bowler_count=5, team2_bowler_count=5)",
+    "Squad Strength includes balance values (team1_balance=0.99, team2_balance=0.986)",
+    "All 8 categories present with weights and logit_contributions",
+    "Prediction probability in valid range (48.3% - 51.7%)",
+    "DC vs GT H2H uses historical_ipl source with total=6"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_iteration35_h2h_toss_bowling.py",
+    "/app/test_reports/pytest/iteration35_h2h_toss_bowling_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "H2H historical fallback correctly implemented in form_service.py with HISTORICAL_H2H dictionary",
+    "Toss Impact now returns actual logit based on toss_win_pct (was hardcoded to 0.0 before)",
+    "Bowling Depth correctly uses top 5 bowlers only (was using full 25-man squad before)",
+    "Balance bonus correctly applied in squad_logit calculation with balance_diff * 3.0"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration35_h2h_toss_bowling.py"
+  ],
+  "success_rate": {
+    "backend": "100% (10/10 tests passed)",
+    "frontend": "N/A (backend-only testing requested)"
+  },
+  "test_credentials": "No authentication required - open access app",
+  "seed_data_creation": "Used existing seeded schedule and squad data",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 35 complete. All pre-match prediction category fixes verified: (1) H2H now uses historical IPL H2H data when no season data exists (source='historical_ipl'), (2) Toss Impact returns non-zero logit_contribution based on venue-specific toss_win_pct, (3) Bowling Depth uses top 5 bowlers only (bowler_count=5), (4) Balance is reflected in squad_strength factor with team1_balance/team2_balance values. All 8 categories produce meaningful non-zero values.",
+  "feature_verification": {
+    "h2h_historical_fallback": {
+      "status": "WORKING",
+      "description": "H2H uses HISTORICAL_H2H dictionary when no season data exists. RR vs MI: 13-16, PBKS vs RR: 14-14, DC vs GT: 2-4"
+    },
+    "toss_impact_non_zero": {
+      "status": "WORKING",
+      "description": "Toss Impact returns actual logit based on toss_win_pct. Mohali night: toss_win_pct=0.625, logit_contribution=0.0338"
+    },
+    "bowling_depth_top5": {
+      "status": "WORKING",
+      "description": "Bowling Depth uses top 5 bowlers only (not full 25-man squad). Both teams show bowler_count=5"
+    },
+    "balance_in_squad_strength": {
+      "status": "WORKING",
+      "description": "Balance values present in squad_strength factor. team1_balance=0.99, team2_balance=0.986"
+    },
+    "all_8_categories": {
+      "status": "WORKING",
+      "description": "All 8 categories (squad_strength, current_form, venue_pitch_home, h2h, toss_impact, bowling_depth, conditions, momentum) present with weights and logit_contributions"
+    },
+    "prediction_probability": {
+      "status": "WORKING",
+      "description": "Prediction returns valid probability between 1-99% with model='8-category-v2'"
+    }
+  }
+}
