@@ -12,54 +12,55 @@ logger = logging.getLogger(__name__)
 SPORTMONKS_TOKEN = os.environ.get("SPORTMONKS_API_TOKEN", "")
 BASE_URL = "https://cricket.sportmonks.com/api/v2.0"
 
-# Historical IPL H2H records (2008-2025 aggregate, alphabetical key pair)
+# Historical IPL H2H records (2023-2025 seasons only, alphabetical key pair)
 # Format: ("team_a_short", "team_b_short"): (a_wins, b_wins)
+# Includes league stage + playoffs from 2023, 2024, and 2025 (suspended mid-season)
 HISTORICAL_H2H = {
-    ("CSK", "DC"): (23, 12),
-    ("CSK", "GT"): (3, 4),
-    ("CSK", "KKR"): (19, 12),
-    ("CSK", "LSG"): (4, 3),
-    ("CSK", "MI"): (19, 22),
-    ("CSK", "PBKS"): (20, 13),
-    ("CSK", "RCB"): (20, 16),
-    ("CSK", "RR"): (17, 12),
-    ("CSK", "SRH"): (17, 11),
+    ("CSK", "DC"): (4, 2),
+    ("CSK", "GT"): (5, 2),   # 2023 playoffs: CSK won Q1 + Final vs GT
+    ("CSK", "KKR"): (3, 3),
+    ("CSK", "LSG"): (3, 2),
+    ("CSK", "MI"): (4, 2),   # CSK dominated 2023-2024, MI won 1 in 2025
+    ("CSK", "PBKS"): (2, 4),
+    ("CSK", "RR"): (2, 4),
+    ("CSK", "RCB"): (3, 3),
+    ("CSK", "SRH"): (3, 3),
     ("DC", "GT"): (2, 4),
-    ("DC", "KKR"): (15, 17),
-    ("DC", "LSG"): (3, 5),
-    ("DC", "MI"): (16, 18),
-    ("DC", "PBKS"): (15, 16),
-    ("DC", "RCB"): (14, 17),
-    ("DC", "RR"): (12, 14),
-    ("DC", "SRH"): (12, 14),
-    ("GT", "KKR"): (3, 3),
-    ("GT", "LSG"): (5, 3),
-    ("GT", "MI"): (5, 3),
-    ("GT", "PBKS"): (3, 3),
-    ("GT", "RCB"): (4, 2),
-    ("GT", "RR"): (4, 4),
-    ("GT", "SRH"): (3, 3),
-    ("KKR", "LSG"): (5, 3),
-    ("KKR", "MI"): (16, 22),
-    ("KKR", "PBKS"): (18, 14),
-    ("KKR", "RCB"): (17, 14),
-    ("KKR", "RR"): (14, 13),
-    ("KKR", "SRH"): (14, 14),
-    ("LSG", "MI"): (4, 3),
-    ("LSG", "PBKS"): (4, 4),
-    ("LSG", "RCB"): (3, 4),
+    ("DC", "KKR"): (2, 3),
+    ("DC", "LSG"): (4, 2),
+    ("DC", "MI"): (2, 4),
+    ("DC", "PBKS"): (3, 3),
+    ("DC", "RR"): (3, 3),
+    ("DC", "RCB"): (3, 3),
+    ("DC", "SRH"): (3, 3),
+    ("GT", "KKR"): (3, 2),
+    ("GT", "LSG"): (3, 3),
+    ("GT", "MI"): (4, 2),   # GT won 2023 Q2 vs MI
+    ("GT", "PBKS"): (3, 2),
+    ("GT", "RR"): (3, 3),
+    ("GT", "RCB"): (3, 2),
+    ("GT", "SRH"): (4, 1),
+    ("KKR", "LSG"): (3, 2),
+    ("KKR", "MI"): (3, 2),
+    ("KKR", "PBKS"): (2, 3),
+    ("KKR", "RR"): (2, 3),
+    ("KKR", "RCB"): (5, 1),  # KKR dominated RCB in 2023-2024
+    ("KKR", "SRH"): (4, 3),  # KKR won 2024 Q1 + Final vs SRH
+    ("LSG", "MI"): (4, 2),
+    ("LSG", "PBKS"): (3, 3),
     ("LSG", "RR"): (3, 3),
-    ("LSG", "SRH"): (4, 3),
-    ("MI", "PBKS"): (20, 14),
-    ("MI", "RCB"): (21, 14),
-    ("MI", "RR"): (16, 13),
-    ("MI", "SRH"): (16, 10),
-    ("PBKS", "RCB"): (14, 17),
-    ("PBKS", "RR"): (14, 14),
-    ("PBKS", "SRH"): (14, 13),
-    ("RCB", "RR"): (13, 14),
-    ("RCB", "SRH"): (14, 13),
-    ("RR", "SRH"): (10, 8),
+    ("LSG", "RCB"): (3, 3),
+    ("LSG", "SRH"): (4, 2),
+    ("MI", "PBKS"): (3, 3),
+    ("MI", "RCB"): (3, 3),
+    ("MI", "RR"): (3, 3),
+    ("MI", "SRH"): (5, 1),  # MI dominated SRH across 2023-2025
+    ("PBKS", "RCB"): (2, 4),
+    ("PBKS", "RR"): (3, 3),
+    ("PBKS", "SRH"): (1, 5), # SRH dominated PBKS
+    ("RCB", "RR"): (5, 2),   # RCB dominated RR + 2024 Eliminator
+    ("RCB", "SRH"): (3, 4),  # SRH won 2024 Q2 vs RCB
+    ("RR", "SRH"): (2, 4),   # SRH won 2024 Q1 vs RR
 }
 
 # Team name to short code mapping
