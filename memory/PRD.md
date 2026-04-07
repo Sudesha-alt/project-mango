@@ -1,69 +1,64 @@
-# The Lucky 11 — IPL 2026 Cricket Prediction Engine
+# The Lucky 11 — IPL 2026 Cricket Prediction Platform
 
-## Overview
-Real-time IPL 2026 prediction platform using dual models (8-Category Algorithm + Claude Opus AI), official squad rosters, SportMonks live scoring, Open-Meteo weather, and newsdata.io news.
+## Original Problem Statement
+Build a full-stack cricket prediction app for IPL 2026 with an 8-category math model, Claude Opus narrative predictions, live scoring, and advanced prediction weighting.
 
-## Tech Stack
-- **Frontend**: React + Shadcn/UI + Phosphor Icons
-- **Backend**: FastAPI + MongoDB
-- **AI**: Claude Opus (Anthropic) via Emergent Integrations
-- **Data**: SportMonks (live scores), Open-Meteo (weather, free), newsdata.io (news)
+## Core Architecture
+- **Frontend**: React + Tailwind CSS + Shadcn UI
+- **Backend**: FastAPI + MongoDB (Motor)
+- **Integrations**: Claude Opus (Anthropic), SportMonks API, NewsData.io, Open-Meteo Weather
 
-## Core Design Principles
-- **NO web scraping** — all data from DB squads, APIs, or official sources
-- **Squad data ONLY from ipl_squads collection** (user-provided IPL 2026 rosters)
-- **Expected XI from squad roster only** (not scraped)
-- **Weather from Open-Meteo** (free, no API key)
-- **News from newsdata.io** (API key required)
+## What's Been Implemented
 
-## 8-Category Pre-Match Model (v2)
-| Category | Weight |
-|---|---|
-| Squad Strength & Balance | 25% |
-| Current Season Form (DB) | 21% |
-| Venue + Pitch + Home Adv | 18% |
-| Head-to-Head | 11% |
-| Toss Impact (venue-specific) | 9% |
-| Bowling Depth & Balance | 8% |
-| Conditions (weather/dew) | 5% |
-| Momentum (last 2 matches) | 3% |
+### Pre-Match Prediction (8-Category Model)
+1. Squad Strength & Balance (25%)
+2. Current Season Form (21%) — from DB completed matches
+3. Venue + Pitch + Home Advantage (18%)
+4. Head-to-Head (11%) — recency-weighted
+5. Toss Impact (9%) — venue-specific with dew
+6. Bowling Attack Depth (8%)
+7. Conditions/Weather (5%) — Open-Meteo real data
+8. Team Momentum (3%) — last 2 match W/L
 
-**Removed**: Key Player Matchups, Injuries & Availability
+### Live Match Prediction
+- **Alpha-Blended H×L Model**: P(win) = alpha × H + (1-alpha) × L
+- **Phase-Based Dynamic Weighting** (Algo vs Claude):
+  - Post-Toss: Algo 70% / Claude 30%
+  - Mid 1st Innings: 40% / 60%
+  - End 1st Innings: 20% / 80%
+  - Mid 2nd Innings: 10% / 90%
+  - Late game: 0% / 100%
+- **Combined Prediction**: Blends Algorithm and Claude based on phase
+- **User Inputs**: Gut Feeling (3% weight) + Current Betting Odds (7% weight)
+- Claude receives gut feeling text + betting odds for context
 
-## Architecture
-```
-/app/backend/
-├── server.py                          # FastAPI routes + DB
-├── services/
-│   ├── pre_match_predictor.py         # 8-category model (no scraping)
-│   ├── live_predictor.py              # Alpha-blended live model
-│   ├── form_service.py                # Form + Momentum + Expected XI
-│   ├── ai_service.py                  # Claude Opus (no scraped data)
-│   ├── sportmonks_service.py          # Live scoring
-│   ├── weather_service.py             # Open-Meteo weather
-│   ├── schedule_data.py               # Official IPL 2026 schedule
-│   ├── web_scraper.py                 # newsdata.io news
-│   ├── probability_engine.py          # Ensemble probability
-│   └── consultant_engine.py           # Betting consultant
+### Data Sources
+- Squad data from `ipl_squads` DB collection (NO scraping)
+- SportMonks API for live scores, lineups, results
+- Open-Meteo for weather conditions
+- NewsData.io for match context/news
+- `/schedule/sync-results` endpoint syncs real match winners from SportMonks
 
-/app/frontend/src/
-├── pages/
-│   ├── PreMatch.js                    # 8-factor breakdown + weather + news
-│   ├── LiveMatch.js                   # Live match (no duplicate Claude tab)
-│   ├── MatchSelector.js               # Homepage with 58/12 split
-├── components/
-│   ├── WeatherCard.js                 # Weather display
-│   ├── NewsCard.js                    # News articles
-│   ├── PreMatchPredictionBreakdown.js # 8-factor bars
-```
+### Key Endpoints
+- `POST /api/matches/{id}/pre-match-predict` — 8-category prediction
+- `POST /api/matches/{id}/fetch-live` — Live data + Claude + Combined prediction
+- `POST /api/matches/{id}/refresh-claude-prediction` — Re-run Claude with cached data
+- `POST /api/schedule/sync-results` — Sync match winners from SportMonks
 
-## Key Fixes (This Session)
-- Fixed schedule filter: future-dated matches ALWAYS go to upcoming (regardless of DB status)
-- Auto-scrape date guard: prevents marking future matches as completed
-- Re-seeded official schedule (70 matches from PDF)
+## Completed Tasks (Apr 2026)
+- [x] 8-category prediction model (no scraping)
+- [x] NewsData.io integration for match context
+- [x] Open-Meteo weather integration
+- [x] Fixed auto-scrape bug for future dates
+- [x] Renamed to "The Lucky 11"
+- [x] SportMonks results sync — populates winner data for completed matches
+- [x] H2H, Form, Momentum now return real values (not zeros)
+- [x] Phase-based dynamic weighting (5 phases: Algo vs Claude)
+- [x] Gut Feeling (3%) + Betting Odds (7%) user inputs on LiveMatch
+- [x] Combined Prediction card with phase indicator
 
 ## Backlog
-- P2: Shareable prediction card
-- P2: Celery migration for background jobs
-- P3: Prediction accuracy leaderboard
-- Refactoring: server.py split into route modules
+- [ ] P2: Shareable prediction card functionality
+- [ ] P2: Celery migration for background jobs
+- [ ] P3: Prediction accuracy leaderboard
+- [ ] Refactor: Break server.py into modular routers
