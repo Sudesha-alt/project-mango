@@ -412,3 +412,88 @@ async def check_fixture_status(team1: str, team2: str) -> dict:
         "is_finished": status.lower() in ["finished", "aban.", "cancelled", "no result"],
         "is_live": status.lower() in ["1st innings", "2nd innings", "innings break", "int.", "live", "ns"],
     }
+
+
+
+async def fetch_recent_fixtures(league_id: int = 1, season_id: int = None) -> list:
+    """Fetch recent/completed fixtures from SportMonks for IPL 2026.
+    league_id 1 = IPL in SportMonks."""
+    params = {
+        "include": "localteam,visitorteam,runs,tosswon",
+        "sort": "-starting_at",
+    }
+    if season_id:
+        params["filter[season_id]"] = season_id
+
+    # Try fetching by league
+    data = await _get(f"leagues/{league_id}/fixtures", params)
+    fixtures = data.get("data", [])
+
+    if not fixtures:
+        # Fallback: fetch all recent fixtures
+        data = await _get("fixtures", {
+            "include": "localteam,visitorteam,runs,tosswon",
+            "sort": "-starting_at",
+            "filter[status]": "Finished",
+        })
+        fixtures = data.get("data", [])
+
+    results = []
+    for raw in fixtures:
+        parsed = parse_fixture_result(raw)
+        if parsed:
+            results.append(parsed)
+
+    return results
+
+
+def parse_fixture_result(raw: dict) -> dict:
+    """Parse a SportMonks fixture into a match result for DB storage."""
+    if not raw:
+        return None
+
+    local = raw.get("localteam", {}) or {}
+    visitor = raw.get("visitorteam", {}) or {}
+    status = (raw.get("status") or "").lower()
+
+    # Only process finished matches
+    if status not in ("finished", "aban.", "no result"):
+        return None
+
+    winner_team_id = raw.get("winner_team_id")
+    winner = None
+    if winner_team_id:
+        if winner_team_id == local.get("id"):
+            winner = local.get("name", "")
+        elif winner_team_id == visitor.get("id"):
+            winner = visitor.get("name", "")
+
+    # Extract scores from runs
+    runs_data = raw.get("runs", []) or []
+    team1_score = ""
+    team2_score = ""
+    for r in runs_data:
+        if isinstance(r, dict):
+            tid = r.get("team_id")
+            score_str = f"{r.get('score', 0)}/{r.get('wickets', 0)} ({r.get('overs', 0)})"
+            if tid == local.get("id"):
+                team1_score = score_str
+            elif tid == visitor.get("id"):
+                team2_score = score_str
+
+    toss_won = raw.get("tosswon", {}) or {}
+
+    return {
+        "fixture_id": raw.get("id"),
+        "team1": local.get("name", ""),
+        "team2": visitor.get("name", ""),
+        "team1_code": (local.get("code") or "")[:5],
+        "team2_code": (visitor.get("code") or "")[:5],
+        "winner": winner,
+        "status": "completed",
+        "note": raw.get("note", ""),
+        "team1_score": team1_score,
+        "team2_score": team2_score,
+        "toss_won_by": toss_won.get("name", ""),
+        "starting_at": raw.get("starting_at", ""),
+    }

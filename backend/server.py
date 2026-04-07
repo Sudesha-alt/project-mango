@@ -34,7 +34,7 @@ from services.ai_service import (
     claude_deep_match_analysis, claude_live_analysis,
     claude_sportmonks_prediction
 )
-from services.sportmonks_service import fetch_live_match, check_fixture_status, fetch_livescores_ipl, parse_fixture, fetch_fixture_details
+from services.sportmonks_service import fetch_live_match, check_fixture_status, fetch_livescores_ipl, parse_fixture, fetch_fixture_details, fetch_recent_fixtures
 from services.beta_prediction_engine import run_beta_prediction
 from services.consultant_engine import run_consultation, build_features
 from services.cricdata_service import fetch_live_ipl_details, fetch_venue_stats_from_cricapi
@@ -85,7 +85,7 @@ async def root():
     squad_count = await db.ipl_squads.count_documents({})
     now_ist = datetime.now(IST).strftime("%I:%M %p IST")
     return {
-        "message": "The Lucky 11 API",
+        "message": "Predictability API",
         "version": "4.1.0",
         "dataSource": "Claude Opus + Web Scraping",
         "scheduleLoaded": schedule_count > 0,
@@ -201,6 +201,70 @@ async def seed_official_schedule(force: bool = False):
         doc.pop("_id", None)
 
     return {"status": "loaded", "count": len(docs), "source": "official_pdf"}
+
+
+@api_router.post("/schedule/sync-results")
+async def sync_results_from_sportmonks():
+    """Fetch actual match results from SportMonks and update DB schedule with winners."""
+    results = await fetch_recent_fixtures()
+    if not results:
+        return {"status": "no_results", "message": "No completed fixtures found from SportMonks"}
+
+    updated = 0
+    for result in results:
+        sm_t1 = (result.get("team1", "") or "").lower()
+        sm_t2 = (result.get("team2", "") or "").lower()
+        winner = result.get("winner", "")
+
+        if not winner:
+            continue
+
+        # Find matching schedule entry by fuzzy team name matching
+        async for match in db.ipl_schedule.find({}, {"_id": 0}):
+            db_t1 = (match.get("team1", "") or "").lower()
+            db_t2 = (match.get("team2", "") or "").lower()
+
+            # Check if both teams match (order-independent)
+            t1_words = [w for w in sm_t1.split() if len(w) > 3]
+            t2_words = [w for w in sm_t2.split() if len(w) > 3]
+            db_t1_match = any(w in db_t1 for w in t1_words) or any(w in sm_t1 for w in db_t1.split() if len(w) > 3)
+            db_t2_match = any(w in db_t2 for w in t2_words) or any(w in sm_t2 for w in db_t2.split() if len(w) > 3)
+
+            fwd = db_t1_match and db_t2_match
+            rev_t1_match = any(w in db_t1 for w in t2_words) or any(w in sm_t2 for w in db_t1.split() if len(w) > 3)
+            rev_t2_match = any(w in db_t2 for w in t1_words) or any(w in sm_t1 for w in db_t2.split() if len(w) > 3)
+            rev = rev_t1_match and rev_t2_match
+
+            if (fwd or rev) and match.get("status", "").lower() != "upcoming":
+                # Match found - update with result
+                # Map SportMonks winner name to our DB team name
+                db_winner = None
+                winner_lower = winner.lower()
+                for team_field in ["team1", "team2"]:
+                    db_team = (match.get(team_field, "") or "").lower()
+                    if any(w in db_team for w in winner_lower.split() if len(w) > 3) or \
+                       any(w in winner_lower for w in db_team.split() if len(w) > 3):
+                        db_winner = match.get(team_field)
+                        break
+
+                if db_winner and not match.get("winner"):
+                    await db.ipl_schedule.update_one(
+                        {"matchId": match.get("matchId")},
+                        {"$set": {
+                            "winner": db_winner,
+                            "status": "completed",
+                            "result": result.get("note", ""),
+                            "team1_score": result.get("team1_score", ""),
+                            "team2_score": result.get("team2_score", ""),
+                            "toss_won_by": result.get("toss_won_by", ""),
+                        }}
+                    )
+                    updated += 1
+                    logger.info(f"Synced result: {match.get('matchId')} -> winner: {db_winner}")
+                break
+
+    return {"status": "synced", "updated": updated, "total_fixtures": len(results)}
+
 
 
 # ─── WEATHER API ─────────────────────────────────────────────
@@ -2414,7 +2478,7 @@ async def auto_scrape_live_matches():
 
 @app.on_event("startup")
 async def startup():
-    logger.info("The Lucky 11 starting up...")
+    logger.info("Predictability starting up...")
     # Schedule match promotion at 4:00 PM and 7:00 PM IST daily
     scheduler.add_job(promote_matches_to_live, CronTrigger(hour=16, minute=0), id="promote_4pm", replace_existing=True)
     scheduler.add_job(promote_matches_to_live, CronTrigger(hour=19, minute=0), id="promote_7pm", replace_existing=True)

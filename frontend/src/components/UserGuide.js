@@ -13,7 +13,7 @@ const SECTIONS = [
     content: [
       {
         q: "What does this app do?",
-        a: "The Lucky 11 is an AI-powered IPL 2026 prediction engine. It uses an 8-category algorithm, Claude Opus AI analysis, real-time weather data, and official squad rosters to give you clear win probabilities and match insights."
+        a: "Predictability is an AI-powered IPL 2026 prediction engine. It uses an 8-category algorithm, Claude Opus AI analysis, real-time weather data, and official squad rosters to give you clear win probabilities and match insights."
       },
       {
         q: "How do I start?",
@@ -232,7 +232,7 @@ export default function UserGuide() {
         <div className="flex items-center justify-between px-5 py-4 border-b border-[#262626]">
           <div>
             <h2 className="text-lg font-black uppercase tracking-tight" style={{ fontFamily: "'Barlow Condensed'" }}>
-              How to Use The Lucky 11
+              How to Use Predictability
             </h2>
             <p className="text-[10px] text-[#737373] mt-0.5">Your guide to making smarter IPL betting decisions</p>
           </div>
