@@ -208,15 +208,21 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
 
         {/* Cat 3: Venue + Home (18%) */}
         <FactorBar label="Venue + Pitch + Home" weight={factors.venue_pitch_home?.weight || 0.18} logit={factors.venue_pitch_home?.logit_contribution || 0} icon={House}
-          tooltip="Home ground advantage (IPL avg 57.91%). Neutral venue = no bonus."
+          tooltip={`Pitch: ${factors.venue_pitch_home?.pitch_type || "unknown"}. Avg 1st inn: ${factors.venue_pitch_home?.avg_first_innings || "?"}. Bat 1st win: ${factors.venue_pitch_home?.batting_first_win_pct || "?"}%. Pace: ${factors.venue_pitch_home?.pace_assist || "?"}. Spin: ${factors.venue_pitch_home?.spin_assist || "?"}.`}
           team1={t1} team2={t2}
-          team1Detail={`${factors.venue_pitch_home?.team1_home ? "HOME GROUND" : "Away"}`}
-          team2Detail={`${factors.venue_pitch_home?.team2_home ? "HOME GROUND" : "Away"}`}
+          team1Detail={factors.venue_pitch_home?.team1_home ? "HOME" : "Away"}
+          team2Detail={factors.venue_pitch_home?.team2_home ? "HOME" : "Away"}
         />
+        {factors.venue_pitch_home?.pitch_type && (
+          <div className="flex items-center justify-between text-[10px] -mt-1.5 mb-1.5 px-1">
+            <span className="text-[#007AFF]/80">{factors.venue_pitch_home?.pitch_type} | Avg {factors.venue_pitch_home?.avg_first_innings || "?"}</span>
+            <span className="text-[#A3A3A3]">Pace {factors.venue_pitch_home?.pace_assist} | Spin {factors.venue_pitch_home?.spin_assist}</span>
+          </div>
+        )}
 
         {/* Cat 4: H2H (11%) */}
         <FactorBar label="Head-to-Head" weight={factors.h2h?.weight || 0.11} logit={factors.h2h?.logit_contribution || 0} icon={Scales}
-          tooltip="H2H from IPL 2026 completed matches. Damped by sample size."
+          tooltip={`H2H from ${factors.h2h?.source === "historical_ipl" ? "IPL 2023-2025" : "IPL 2026 season"}. ${factors.h2h?.total || 0} total matches.`}
           team1={t1} team2={t2}
           team1Detail={`${factors.h2h?.team1_wins || 0} wins`}
           team2Detail={`${factors.h2h?.team2_wins || 0} wins (${factors.h2h?.total || 0} total)`}

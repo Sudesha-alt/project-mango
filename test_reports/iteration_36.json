@@ -1,0 +1,87 @@
+{
+  "summary": "Iteration 36 - Testing Venue + Pitch + Home Factor Fixes. All 11 backend tests passed. Frontend verification confirmed HOME/Away labels and pitch info display correctly.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "passed_tests": [
+    "API health check passes (version 4.1.0)",
+    "RR at Barsapara (Guwahati) shows team1_home=true (secondary home ground)",
+    "PBKS at Mohali shows team1_home=true",
+    "DC at Arun Jaitley (Delhi) shows team1_home=true",
+    "Venue + Pitch + Home factor returns non-zero logit_contribution",
+    "Pitch data present: pitch_type, avg_first_innings, batting_first_win_pct, pace_assist, spin_assist",
+    "H2H uses reasonable data range (total=6 for DC vs GT, not 20+)",
+    "Toss Impact returns non-zero logit_contribution",
+    "Bowling Depth shows bowler_count=5 for each team",
+    "All 8 categories present with weights and logit_contributions",
+    "Prediction probability in valid range with model='8-category-v2'"
+  ],
+  "frontend_verification": {
+    "home_away_labels": "VERIFIED - HOME/Away labels display correctly in Venue + Pitch + Home factor",
+    "pitch_info_line": "VERIFIED - Pitch type, avg first innings, pace/spin assist values display below venue factor",
+    "matches_tested": [
+      "ipl2026_013 (RR vs MI at Guwahati) - RR shows HOME",
+      "ipl2026_017 (PBKS vs SRH at Mohali) - PBKS shows HOME",
+      "ipl2026_014 (DC vs GT at Delhi) - DC shows HOME"
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration36_venue_pitch_home.py",
+    "/app/test_reports/pytest/iteration36_venue_pitch_home_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "HOME_GROUNDS now correctly uses lists for secondary venues (e.g., rajasthan royals: ['sawai_mansingh', 'barsapara'])",
+    "_is_home() correctly checks if venue_key is in the team's home venues list",
+    "TOSS_LOOKUP includes complete pitch data for all venues including barsapara (Guwahati)",
+    "Frontend PreMatchPredictionBreakdown.js correctly displays HOME/Away labels and pitch info line"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration36_venue_pitch_home.py"
+  ],
+  "success_rate": {
+    "backend": "100% (11/11 tests passed)",
+    "frontend": "100% (all UI elements verified)"
+  },
+  "test_credentials": "No authentication required - open access app",
+  "seed_data_creation": "Used existing seeded schedule and squad data",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 36 complete. All venue/pitch/home fixes verified: (1) Secondary home grounds work correctly (RR at Guwahati shows HOME), (2) Pitch data (pitch_type, avg_first_innings, pace_assist, spin_assist) present in API response and displayed in UI, (3) HOME/Away labels display correctly in frontend, (4) H2H uses reasonable data range (5-7 matches for recent seasons), (5) All 8 categories produce meaningful values.",
+  "feature_verification": {
+    "secondary_home_grounds": {
+      "status": "WORKING",
+      "description": "RR at Barsapara (Guwahati) correctly shows team1_home=true. HOME_GROUNDS uses lists for secondary venues."
+    },
+    "pitch_data_in_api": {
+      "status": "WORKING",
+      "description": "All pitch fields present: pitch_type='pace-friendly', avg_first_innings=171, batting_first_win_pct=44%, pace_assist=0.6, spin_assist=0.3"
+    },
+    "home_away_labels_ui": {
+      "status": "WORKING",
+      "description": "Frontend displays HOME/Away labels in Venue + Pitch + Home factor section"
+    },
+    "pitch_info_line_ui": {
+      "status": "WORKING",
+      "description": "Frontend displays pitch info line below venue factor: 'pace-friendly | Avg 171' and 'Pace 0.6 | Spin 0.3'"
+    },
+    "h2h_reasonable_range": {
+      "status": "WORKING",
+      "description": "H2H total matches in reasonable range (6 for DC vs GT, not 20+)"
+    },
+    "toss_impact_nonzero": {
+      "status": "WORKING",
+      "description": "Toss Impact returns non-zero logit_contribution based on venue-specific toss_win_pct"
+    },
+    "bowling_depth_top5": {
+      "status": "WORKING",
+      "description": "Bowling Depth uses top 5 bowlers only (bowler_count=5 for each team)"
+    }
+  }
+}

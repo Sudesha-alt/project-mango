@@ -42,6 +42,11 @@ TOSS_LOOKUP = {
     "wankhede": {
         "city": "mumbai",
         "default_decision": "bowl",
+        "pitch_type": "batting-friendly",
+        "avg_first_innings": 175,
+        "batting_first_win_pct": 0.42,
+        "pace_assist": 0.4,
+        "spin_assist": 0.3,
         "conditions": {
             "night":     {"preferred": "bowl", "toss_win_pct": 0.65, "chasing_bias": 0.15, "weight": "HIGH"},
             "day":       {"preferred": "bat",  "toss_win_pct": 0.535, "chasing_bias": 0.0,  "weight": "MED"},
@@ -51,6 +56,11 @@ TOSS_LOOKUP = {
     "chepauk": {
         "city": "chennai",
         "default_decision": "bat",
+        "pitch_type": "spin-friendly",
+        "avg_first_innings": 162,
+        "batting_first_win_pct": 0.55,
+        "pace_assist": 0.2,
+        "spin_assist": 0.8,
         "conditions": {
             "normal":    {"preferred": "bat",  "toss_win_pct": 0.60, "chasing_bias": 0.0,  "weight": "HIGH"},
             "dry":       {"preferred": "bat",  "toss_win_pct": 0.65, "chasing_bias": 0.0,  "weight": "VERY HIGH"},
@@ -59,6 +69,11 @@ TOSS_LOOKUP = {
     "chinnaswamy": {
         "city": "bangalore",
         "default_decision": "bowl",
+        "pitch_type": "high-scoring",
+        "avg_first_innings": 183,
+        "batting_first_win_pct": 0.40,
+        "pace_assist": 0.5,
+        "spin_assist": 0.2,
         "conditions": {
             "high_scoring": {"preferred": "bowl", "toss_win_pct": 0.575, "chasing_bias": 0.12, "weight": "HIGH"},
             "dew":          {"preferred": "bowl", "toss_win_pct": 0.65,  "chasing_bias": 0.12, "weight": "VERY HIGH"},
@@ -67,6 +82,11 @@ TOSS_LOOKUP = {
     "narendra_modi": {
         "city": "ahmedabad",
         "default_decision": "bowl",
+        "pitch_type": "balanced",
+        "avg_first_innings": 170,
+        "batting_first_win_pct": 0.47,
+        "pace_assist": 0.4,
+        "spin_assist": 0.5,
         "conditions": {
             "black_soil": {"preferred": "bat",  "toss_win_pct": 0.58, "chasing_bias": 0.0,  "weight": "MED"},
             "red_soil":   {"preferred": "bowl", "toss_win_pct": 0.60, "chasing_bias": 0.0,  "weight": "MED"},
@@ -76,6 +96,11 @@ TOSS_LOOKUP = {
     "eden_gardens": {
         "city": "kolkata",
         "default_decision": "bowl",
+        "pitch_type": "balanced",
+        "avg_first_innings": 172,
+        "batting_first_win_pct": 0.43,
+        "pace_assist": 0.5,
+        "spin_assist": 0.4,
         "conditions": {
             "night":      {"preferred": "bowl", "toss_win_pct": 0.625, "chasing_bias": 0.10, "weight": "HIGH"},
             "spin":       {"preferred": "bat",  "toss_win_pct": 0.55,  "chasing_bias": 0.0,  "weight": "MED"},
@@ -84,6 +109,11 @@ TOSS_LOOKUP = {
     "arun_jaitley": {
         "city": "delhi",
         "default_decision": "bat",
+        "pitch_type": "slow-low",
+        "avg_first_innings": 168,
+        "batting_first_win_pct": 0.51,
+        "pace_assist": 0.3,
+        "spin_assist": 0.6,
         "conditions": {
             "slow":       {"preferred": "bat",  "toss_win_pct": 0.58, "chasing_bias": 0.0,  "weight": "HIGH"},
             "small":      {"preferred": "bowl", "toss_win_pct": 0.55, "chasing_bias": 0.0,  "weight": "MED"},
@@ -92,6 +122,11 @@ TOSS_LOOKUP = {
     "rajiv_gandhi": {
         "city": "hyderabad",
         "default_decision": "bowl",
+        "pitch_type": "pace-friendly",
+        "avg_first_innings": 176,
+        "batting_first_win_pct": 0.44,
+        "pace_assist": 0.7,
+        "spin_assist": 0.2,
         "conditions": {
             "night":      {"preferred": "bowl", "toss_win_pct": 0.60, "chasing_bias": 0.08, "weight": "HIGH"},
         },
@@ -99,6 +134,11 @@ TOSS_LOOKUP = {
     "mohali": {
         "city": "mohali",
         "default_decision": "bowl",
+        "pitch_type": "pace-friendly",
+        "avg_first_innings": 173,
+        "batting_first_win_pct": 0.45,
+        "pace_assist": 0.7,
+        "spin_assist": 0.2,
         "conditions": {
             "night":      {"preferred": "bowl", "toss_win_pct": 0.625, "chasing_bias": 0.0, "weight": "HIGH"},
         },
@@ -106,6 +146,11 @@ TOSS_LOOKUP = {
     "sawai_mansingh": {
         "city": "jaipur",
         "default_decision": "bowl",
+        "pitch_type": "spin-friendly",
+        "avg_first_innings": 167,
+        "batting_first_win_pct": 0.48,
+        "pace_assist": 0.3,
+        "spin_assist": 0.7,
         "conditions": {
             "night":      {"preferred": "bowl", "toss_win_pct": 0.56, "chasing_bias": 0.06, "weight": "MED"},
         },
@@ -113,6 +158,11 @@ TOSS_LOOKUP = {
     "ekana": {
         "city": "lucknow",
         "default_decision": "bowl",
+        "pitch_type": "balanced",
+        "avg_first_innings": 169,
+        "batting_first_win_pct": 0.46,
+        "pace_assist": 0.5,
+        "spin_assist": 0.4,
         "conditions": {
             "night":      {"preferred": "bowl", "toss_win_pct": 0.57, "chasing_bias": 0.07, "weight": "MED"},
         },
@@ -120,6 +170,11 @@ TOSS_LOOKUP = {
     "barsapara": {
         "city": "guwahati",
         "default_decision": "bowl",
+        "pitch_type": "pace-friendly",
+        "avg_first_innings": 171,
+        "batting_first_win_pct": 0.44,
+        "pace_assist": 0.6,
+        "spin_assist": 0.3,
         "conditions": {
             "night": {"preferred": "bowl", "toss_win_pct": 0.55, "chasing_bias": 0.05, "weight": "MED"},
         },
@@ -127,6 +182,11 @@ TOSS_LOOKUP = {
     "hpca": {
         "city": "dharamshala",
         "default_decision": "bowl",
+        "pitch_type": "batting-friendly",
+        "avg_first_innings": 178,
+        "batting_first_win_pct": 0.42,
+        "pace_assist": 0.5,
+        "spin_assist": 0.2,
         "conditions": {
             "night": {"preferred": "bowl", "toss_win_pct": 0.56, "chasing_bias": 0.06, "weight": "MED"},
         },
@@ -134,6 +194,11 @@ TOSS_LOOKUP = {
     "shaheed_veer_narayan": {
         "city": "raipur",
         "default_decision": "bowl",
+        "pitch_type": "balanced",
+        "avg_first_innings": 166,
+        "batting_first_win_pct": 0.48,
+        "pace_assist": 0.4,
+        "spin_assist": 0.4,
         "conditions": {
             "night": {"preferred": "bowl", "toss_win_pct": 0.54, "chasing_bias": 0.04, "weight": "LOW"},
         },
@@ -157,19 +222,19 @@ VENUE_ALIASES = {
     "shaheed_veer_narayan": ["shaheed", "raipur"],
 }
 
-# Home ground mapping
+# Home ground mapping (primary + secondary venues)
 HOME_GROUNDS = {
-    "mumbai indians": "wankhede",
-    "chennai super kings": "chepauk",
-    "royal challengers bengaluru": "chinnaswamy",
-    "royal challengers bangalore": "chinnaswamy",
-    "gujarat titans": "narendra_modi",
-    "kolkata knight riders": "eden_gardens",
-    "delhi capitals": "arun_jaitley",
-    "sunrisers hyderabad": "rajiv_gandhi",
-    "punjab kings": "mohali",
-    "rajasthan royals": "sawai_mansingh",
-    "lucknow super giants": "ekana",
+    "mumbai indians": ["wankhede"],
+    "chennai super kings": ["chepauk"],
+    "royal challengers bengaluru": ["chinnaswamy"],
+    "royal challengers bangalore": ["chinnaswamy"],
+    "gujarat titans": ["narendra_modi"],
+    "kolkata knight riders": ["eden_gardens"],
+    "delhi capitals": ["arun_jaitley"],
+    "sunrisers hyderabad": ["rajiv_gandhi"],
+    "punjab kings": ["mohali", "hpca"],
+    "rajasthan royals": ["sawai_mansingh", "barsapara"],
+    "lucknow super giants": ["ekana"],
 }
 
 
@@ -293,8 +358,8 @@ def _match_venue(venue_str: str) -> Optional[str]:
 
 
 def _is_home(team_name: str, venue_key: str) -> bool:
-    team_home = HOME_GROUNDS.get(team_name.lower().strip())
-    return team_home == venue_key if team_home else False
+    team_venues = HOME_GROUNDS.get(team_name.lower().strip(), [])
+    return venue_key in team_venues if team_venues else False
 
 
 def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
@@ -365,7 +430,37 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
         home_logit = 0.45
     elif is_t2_home:
         home_logit = -0.45
-    venue_logit = home_logit
+
+    # Pitch-based advantage: compare team bowling strength vs venue pitch type
+    pitch_logit = 0.0
+    venue_info = TOSS_LOOKUP.get(venue_key, {}) if venue_key else {}
+    pitch_type = venue_info.get("pitch_type", "balanced")
+    avg_first_innings = venue_info.get("avg_first_innings", 170)
+    batting_first_win_pct = venue_info.get("batting_first_win_pct", 0.47)
+    pace_assist = venue_info.get("pace_assist", 0.4)
+    spin_assist = venue_info.get("spin_assist", 0.4)
+
+    if remapped_squads.get("team1") and remapped_squads.get("team2"):
+        # Count pace vs spin bowlers in each team's top 5
+        t1_pace, t1_spin, t2_pace, t2_spin = 0, 0, 0, 0
+        for team_key, counters in [("team1", []), ("team2", [])]:
+            players = remapped_squads.get(team_key, [])
+            bowlers = [p for p in players if p.get("role") in ("Bowler", "All-rounder")]
+            bowlers_rated = sorted(bowlers, key=lambda p: STAR_PLAYERS.get(p.get("name",""), 65), reverse=True)[:5]
+            pace = sum(1 for p in bowlers_rated if p.get("name", "") in PACE_BOWLERS or p.get("name", "") not in SPIN_BOWLERS)
+            spin = sum(1 for p in bowlers_rated if p.get("name", "") in SPIN_BOWLERS)
+            if team_key == "team1":
+                t1_pace, t1_spin = pace, spin
+            else:
+                t2_pace, t2_spin = pace, spin
+
+        # Pitch favors team whose bowling mix matches the surface
+        t1_pitch_fit = t1_pace * pace_assist + t1_spin * spin_assist
+        t2_pitch_fit = t2_pace * pace_assist + t2_spin * spin_assist
+        if t1_pitch_fit + t2_pitch_fit > 0:
+            pitch_logit = 2.0 * ((t1_pitch_fit - t2_pitch_fit) / max(t1_pitch_fit + t2_pitch_fit, 1))
+
+    venue_logit = home_logit + pitch_logit
 
     # ━━━━━━ Category 4: Head-to-Head (11%) ━━━━━━
     h2h = form_data.get("h2h", {})
@@ -468,9 +563,16 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
                 "logit_contribution": round(WEIGHTS["venue_pitch_home"] * venue_logit, 4),
                 "venue": venue_str,
                 "venue_key": venue_key,
+                "pitch_type": pitch_type,
+                "avg_first_innings": avg_first_innings,
+                "batting_first_win_pct": round(batting_first_win_pct * 100, 1),
+                "pace_assist": pace_assist,
+                "spin_assist": spin_assist,
                 "team1_home": is_t1_home,
                 "team2_home": is_t2_home,
                 "home_team": "team1" if is_t1_home else ("team2" if is_t2_home else "neutral"),
+                "home_logit": round(home_logit, 3),
+                "pitch_logit": round(pitch_logit, 3),
             },
             "h2h": {
                 "weight": WEIGHTS["h2h"],
