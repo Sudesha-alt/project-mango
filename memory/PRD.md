@@ -11,14 +11,14 @@ Build a full-stack cricket prediction app for IPL 2026 with an 8-category math m
 ## What's Been Implemented
 
 ### Pre-Match Prediction (8-Category Model)
-1. Squad Strength & Balance (25%)
-2. Current Season Form (21%) — from DB completed matches
+1. Squad Strength & Balance (25%) — top 6 batsmen + top 5 bowlers, balance bonus
+2. Current Season Form (21%) — from DB completed matches with winners
 3. Venue + Pitch + Home Advantage (18%)
-4. Head-to-Head (11%) — recency-weighted
-5. Toss Impact (9%) — venue-specific with dew
-6. Bowling Attack Depth (8%)
+4. Head-to-Head (11%) — Historical IPL H2H fallback (2008-2025 aggregate for all 10 teams)
+5. Toss Impact (9%) — venue-specific toss_win_pct with dew, non-zero logit
+6. Bowling Attack Depth (8%) — top 5 bowlers with pace/spin variety bonus
 7. Conditions/Weather (5%) — Open-Meteo real data
-8. Team Momentum (3%) — last 2 match W/L
+8. Team Momentum (3%) — last 2 match W/L (skips matches without winner)
 
 ### Live Match Prediction
 - **Alpha-Blended H×L Model**: P(win) = alpha × H + (1-alpha) × L
@@ -56,6 +56,10 @@ Build a full-stack cricket prediction app for IPL 2026 with an 8-category math m
 - [x] Phase-based dynamic weighting (5 phases: Algo vs Claude)
 - [x] Gut Feeling (3%) + Betting Odds (7%) user inputs on LiveMatch
 - [x] Combined Prediction card with phase indicator
+- [x] Fixed H2H: Historical IPL fallback data for all 10 team pairs
+- [x] Fixed Toss Impact: Now returns non-zero logit from venue toss_win_pct
+- [x] Fixed Bowling Depth: Top 5 bowlers only (not full 25-man squad)
+- [x] Fixed Balance: Enhanced balance bonus in squad strength calculation
 
 ## Backlog
 - [ ] P2: Shareable prediction card functionality
