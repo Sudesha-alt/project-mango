@@ -270,28 +270,32 @@ async def get_schedule():
         return {"matches": [], "loaded": False}
 
     # Auto-classify based on both status field AND date
+    # CRITICAL: Date always overrides DB status for future matches
     now = datetime.now(timezone.utc)
     live = []
     upcoming = []
     completed = []
     for m in matches:
         status_lower = m.get("status", "").lower()
-        if status_lower in ["live", "in progress"]:
+        dt_str = m.get("dateTimeGMT", "")
+        match_dt = None
+        if dt_str:
+            try:
+                match_dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+            except Exception:
+                pass
+
+        # Future-dated match = always upcoming (regardless of DB status)
+        if match_dt and match_dt > now:
+            upcoming.append(m)
+        elif status_lower in ["live", "in progress"]:
             live.append(m)
+        elif match_dt and (now - match_dt).total_seconds() > 6 * 3600:
+            # Match date passed > 6 hours ago → completed
+            completed.append(m)
         elif status_lower in ["completed", "result"]:
             completed.append(m)
         else:
-            # Check if match date has passed (treat past-dated "upcoming" as completed)
-            dt_str = m.get("dateTimeGMT", "")
-            if dt_str:
-                try:
-                    match_dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
-                    # Match is > 6 hours past start time → treat as completed
-                    if (now - match_dt).total_seconds() > 6 * 3600:
-                        completed.append(m)
-                        continue
-                except Exception:
-                    pass
             upcoming.append(m)
 
     return {
@@ -984,12 +988,25 @@ async def refresh_live_status():
             await db.ipl_schedule.update_one({"matchId": mid}, {"$set": {"status": "completed", "result": score}})
             newly_completed.append({"matchId": mid, "team1": match.get("team1"), "team2": match.get("team2"), "result": score})
         else:
-            # Not found anywhere — mark completed
-            await db.ipl_schedule.update_one({"matchId": mid}, {"$set": {
-                "status": "completed", "completedAt": datetime.now(timezone.utc).isoformat(),
-            }})
-            newly_completed.append({"matchId": mid, "team1": match.get("team1"), "team2": match.get("team2"), "result": "Match ended (no longer live)"})
-            logger.info(f"Match {mid} marked completed: not found on any live source")
+            # Only mark completed if match date is actually in the past
+            dt_str = match.get("dateTimeGMT", "")
+            is_past = False
+            if dt_str:
+                try:
+                    mdt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+                    is_past = (datetime.now(timezone.utc) - mdt).total_seconds() > 6 * 3600
+                except Exception:
+                    pass
+            if is_past:
+                await db.ipl_schedule.update_one({"matchId": mid}, {"$set": {
+                    "status": "completed", "completedAt": datetime.now(timezone.utc).isoformat(),
+                }})
+                newly_completed.append({"matchId": mid, "team1": match.get("team1"), "team2": match.get("team2"), "result": "Match ended (no longer live)"})
+                logger.info(f"Match {mid} marked completed: not found on any live source")
+            else:
+                # Future match — reset to upcoming, not completed
+                await db.ipl_schedule.update_one({"matchId": mid}, {"$set": {"status": "Upcoming"}})
+                logger.info(f"Match {mid} reset to Upcoming: future date, not live")
 
     return {
         "checked": len(current_live),
