@@ -39,7 +39,7 @@ from services.beta_prediction_engine import run_beta_prediction
 from services.consultant_engine import run_consultation, build_features
 from services.cricdata_service import fetch_live_ipl_details, fetch_venue_stats_from_cricapi
 from services.pre_match_predictor import compute_prediction
-from services.live_predictor import compute_live_prediction
+from services.live_predictor import compute_live_prediction, compute_combined_prediction, detect_match_phase
 from services.weather_service import fetch_weather_for_venue
 from services.schedule_data import get_schedule_documents, TEAM_SHORT_CODES, CITY_STADIUMS
 from services.web_scraper import fetch_match_news
@@ -411,6 +411,8 @@ class FetchLiveRequest(BaseModel):
     betting_team1_pct: Optional[float] = None   # 0-100 probability %
     betting_team2_pct: Optional[float] = None   # 0-100 probability %
     betting_confidence: Optional[float] = None  # 0-100
+    gut_feeling: Optional[str] = None           # User's gut feeling text
+    current_betting_odds: Optional[float] = None  # 0-100, team1 implied probability from market
 
 class BetaPredictRequest(BaseModel):
     market_team1_pct: Optional[float] = None    # 0-100 probability %
@@ -574,11 +576,12 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
     # ── Fetch news for match context ──
     match_news = await fetch_match_news(team1, team2)
 
-    # ── Claude Win Prediction (pass full SportMonks data + squads + weather + news) ──
+    # ── Claude Win Prediction (pass full SportMonks data + squads + weather + news + user context) ──
     claude_prediction = None
     if sm_data:
         claude_prediction = await claude_sportmonks_prediction(
-            sm_data, probs, match_info, squads=match_squads, weather=match_weather, news=match_news
+            sm_data, probs, match_info, squads=match_squads, weather=match_weather, news=match_news,
+            gut_feeling=body.gut_feeling, betting_odds_pct=body.current_betting_odds
         )
 
     # ── Use Claude's probabilities as the single source of truth ──
@@ -615,6 +618,15 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
     cached_xi = pre_match_cached.get("playing_xi") if pre_match_cached else None
     weighted_pred = compute_live_prediction(sm_data, claude_prediction, match_info, pre_match_prob=pre_match_prob, xi_data=cached_xi) if sm_data else None
 
+    # ── Phase-Based Combined Prediction (Algo vs Claude dynamic blend) ──
+    combined_pred = compute_combined_prediction(
+        algo_pred=weighted_pred,
+        claude_pred=claude_prediction,
+        sm_data=sm_data,
+        gut_feeling=body.gut_feeling,
+        betting_odds_pct=body.current_betting_odds,
+    ) if (weighted_pred or claude_prediction) else None
+
     result = {
         "matchId": match_id,
         "team1": team1, "team1Short": t1_short,
@@ -630,8 +642,13 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
             "team2Pct": body.betting_team2_pct,
             "confidence": body.betting_confidence,
         },
+        "userInputs": {
+            "gut_feeling": body.gut_feeling,
+            "current_betting_odds": body.current_betting_odds,
+        },
         "claudePrediction": claude_prediction,
         "weightedPrediction": weighted_pred,
+        "combinedPrediction": combined_pred,
         "momentum": calculate_momentum(ball_objects),
         "ballHistory": ball_objects,
         "batsmen": [
@@ -757,10 +774,24 @@ async def refresh_claude_prediction(match_id: str):
         cached["weightedPrediction"] = weighted_pred
         live_match_state[match_id] = cached
 
+    # Recompute combined prediction (phase-based blend)
+    user_inputs = cached.get("userInputs", {})
+    combined_pred = compute_combined_prediction(
+        algo_pred=weighted_pred,
+        claude_pred=claude_prediction,
+        sm_data=sm_data,
+        gut_feeling=user_inputs.get("gut_feeling"),
+        betting_odds_pct=user_inputs.get("current_betting_odds"),
+    ) if (weighted_pred or claude_prediction) else None
+    if combined_pred:
+        cached["combinedPrediction"] = combined_pred
+        live_match_state[match_id] = cached
+
     return {
         "matchId": match_id,
         "claudePrediction": claude_prediction,
         "weightedPrediction": weighted_pred,
+        "combinedPrediction": combined_pred,
         "probabilities": cached.get("probabilities", {}),
         "refreshedAt": datetime.now(timezone.utc).isoformat(),
     }

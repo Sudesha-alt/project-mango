@@ -1,5 +1,5 @@
 """
-Live Match Prediction Engine — Alpha-Blended H×L Model
+Live Match Prediction Engine — Alpha-Blended H×L Model + Phase-Based Weighting
 
 Formula: P(win) = alpha × H + (1 - alpha) × L
 
@@ -12,6 +12,13 @@ L = Live factors (6-factor model):
 
 Alpha = Stage-aware non-linear decay:
     Pre-game: 0.85 → End inn1: 0.20 → End inn2: 0.05
+
+Phase-Based Dynamic Weighting (Algorithm vs Claude):
+    Post-Toss:       Algo 70% / Claude 30%
+    Mid 1st Innings:  Algo 40% / Claude 60%
+    End 1st Innings:  Algo 20% / Claude 80%
+    Mid 2nd Innings:  Algo 10% / Claude 90%
+    Late game:        Algo 0%  / Claude 100%
 """
 import math
 import logging
@@ -366,4 +373,134 @@ def compute_live_prediction(sm_data: dict, claude_prediction: dict,
             "total_balls_bowled": total_balls_bowled,
         },
         "innings": innings,
+    }
+
+
+# ── Phase Detection & Dynamic Algo/Claude Weighting ──
+
+PHASE_WEIGHTS = {
+    "pre_game":       {"algo": 0.70, "claude": 0.30, "label": "Post-Toss"},
+    "mid_1st_inn":    {"algo": 0.40, "claude": 0.60, "label": "Mid 1st Innings"},
+    "end_1st_inn":    {"algo": 0.20, "claude": 0.80, "label": "End 1st Innings"},
+    "mid_2nd_inn":    {"algo": 0.10, "claude": 0.90, "label": "Mid 2nd Innings"},
+    "late_game":      {"algo": 0.00, "claude": 1.00, "label": "Late Game"},
+}
+
+
+def detect_match_phase(sm_data: dict) -> str:
+    """Detect match phase from live data for dynamic weighting."""
+    if not sm_data:
+        return "pre_game"
+
+    innings = sm_data.get("current_innings", 1)
+    current_score = sm_data.get("current_score", {})
+    overs = current_score.get("overs", 0)
+
+    if innings == 1:
+        if overs <= 0.1:
+            return "pre_game"
+        elif overs < 12:
+            return "mid_1st_inn"
+        else:
+            return "end_1st_inn"
+    else:  # 2nd innings
+        if overs < 12:
+            return "mid_2nd_inn"
+        else:
+            return "late_game"
+
+
+def compute_combined_prediction(
+    algo_pred: dict,
+    claude_pred: dict,
+    sm_data: dict,
+    gut_feeling: str = None,
+    betting_odds_pct: float = None,
+) -> dict:
+    """
+    Combine Algorithm and Claude predictions using phase-based dynamic weights.
+    Optionally integrates gut feeling (3%) and betting odds (7%).
+
+    Weights:
+      Post-Toss:       Algo 70% / Claude 30%
+      Mid 1st Innings: Algo 40% / Claude 60%
+      End 1st Innings: Algo 20% / Claude 80%
+      Mid 2nd Innings: Algo 10% / Claude 90%
+      Late game:       Algo 0%  / Claude 100%
+
+    If gut_feeling or betting_odds are provided, their combined weight (up to 10%)
+    is carved out proportionally from the algo/claude split.
+    """
+    phase = detect_match_phase(sm_data)
+    weights = PHASE_WEIGHTS[phase]
+    algo_w = weights["algo"]
+    claude_w = weights["claude"]
+    phase_label = weights["label"]
+
+    # Get team1 win % from both models
+    algo_t1_pct = float(algo_pred.get("team1_pct", 50)) if algo_pred else 50.0
+    claude_t1_pct = float(claude_pred.get("team1_win_pct", 50)) if claude_pred and not claude_pred.get("error") else 50.0
+
+    # Gut feeling and betting odds adjustments
+    gut_weight = 0.0
+    odds_weight = 0.0
+    gut_t1_adj = 0.0
+    odds_t1_pct = 50.0
+
+    if gut_feeling and gut_feeling.strip():
+        gut_weight = 0.03  # 3% weight
+        # Parse gut feeling for directional bias
+        gut_lower = gut_feeling.lower()
+        # Simple sentiment: look for team references or positive/negative words
+        # This is passed to Claude for narrative, but for math we apply a small nudge
+        positive_words = ["strong", "win", "confident", "dominant", "advantage", "favor", "better"]
+        negative_words = ["weak", "lose", "doubt", "struggle", "poor", "collapse", "under pressure"]
+        # Check if gut feeling leans toward team1 or team2
+        has_positive = any(w in gut_lower for w in positive_words)
+        has_negative = any(w in gut_lower for w in negative_words)
+        if has_positive and not has_negative:
+            gut_t1_adj = 5.0  # Small positive nudge toward team1
+        elif has_negative and not has_positive:
+            gut_t1_adj = -5.0  # Small negative nudge
+        # If both or neither, neutral (0 adj)
+
+    if betting_odds_pct is not None and betting_odds_pct > 0:
+        odds_weight = 0.07  # 7% weight
+        odds_t1_pct = float(betting_odds_pct)
+
+    # Total user input weight
+    user_input_weight = gut_weight + odds_weight
+
+    # Scale down algo/claude proportionally to make room for user inputs
+    if user_input_weight > 0:
+        scale = 1.0 - user_input_weight
+        algo_w *= scale
+        claude_w *= scale
+
+    # Compute combined team1 win %
+    combined_t1 = (
+        algo_w * algo_t1_pct
+        + claude_w * claude_t1_pct
+        + gut_weight * (50.0 + gut_t1_adj)
+        + odds_weight * odds_t1_pct
+    )
+
+    combined_t1 = round(max(1, min(99, combined_t1)), 1)
+    combined_t2 = round(100 - combined_t1, 1)
+
+    return {
+        "team1_pct": combined_t1,
+        "team2_pct": combined_t2,
+        "phase": phase,
+        "phase_label": phase_label,
+        "algo_weight": round(algo_w, 3),
+        "claude_weight": round(claude_w, 3),
+        "gut_weight": round(gut_weight, 3),
+        "odds_weight": round(odds_weight, 3),
+        "algo_t1_pct": round(algo_t1_pct, 1),
+        "claude_t1_pct": round(claude_t1_pct, 1),
+        "gut_feeling": gut_feeling or None,
+        "gut_t1_adj": round(gut_t1_adj, 1),
+        "betting_odds_t1_pct": round(odds_t1_pct, 1) if betting_odds_pct else None,
+        "model": "phase-weighted-v1",
     }

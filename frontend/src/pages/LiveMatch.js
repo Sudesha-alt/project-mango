@@ -35,6 +35,8 @@ export default function LiveMatch() {
   const [showFormula, setShowFormula] = useState(false);
   const [checkingStatus, setCheckingStatus] = useState(false);
   const [matchCompleted, setMatchCompleted] = useState(null);
+  const [gutFeeling, setGutFeeling] = useState("");
+  const [currentBettingOdds, setCurrentBettingOdds] = useState("");
 
   useEffect(() => {
     const load = async () => {
@@ -65,7 +67,12 @@ export default function LiveMatch() {
 
   const handleFetchLive = useCallback(async () => {
     setFetchingLive(true);
-    const data = await fetchLiveData(matchId, bettingOdds);
+    const body = {
+      ...(bettingOdds || {}),
+      gut_feeling: gutFeeling || null,
+      current_betting_odds: currentBettingOdds ? parseFloat(currentBettingOdds) : null,
+    };
+    const data = await fetchLiveData(matchId, body);
     if (data && !data.error) {
       if (data.noLiveMatch) {
         setMatchState(prev => ({
@@ -79,7 +86,7 @@ export default function LiveMatch() {
       }
     }
     setFetchingLive(false);
-  }, [matchId, fetchLiveData, bettingOdds]);
+  }, [matchId, fetchLiveData, bettingOdds, gutFeeling, currentBettingOdds]);
 
   const handleFetchPlayers = useCallback(async () => {
     setFetchingPlayers(true);
@@ -100,6 +107,7 @@ export default function LiveMatch() {
         ...prev,
         claudePrediction: res.claudePrediction,
         weightedPrediction: res.weightedPrediction,
+        combinedPrediction: res.combinedPrediction,
         probabilities: res.probabilities,
       }));
     }
@@ -148,6 +156,7 @@ export default function LiveMatch() {
   const bettingEdge = matchState?.bettingEdge || null;
   const livePred = matchState?.live_prediction;
   const weightedPred = matchState?.weightedPrediction;
+  const combinedPred = matchState?.combinedPrediction;
 
   const rightTabs = [
     { key: "consult", label: "Consult" },
@@ -233,8 +242,35 @@ export default function LiveMatch() {
               )}
               <p className="text-lg font-bold uppercase" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>{t1Short} vs {t2Short}</p>
               {!fetchingLive && (
-                <div className="max-w-sm mx-auto mt-4">
+                <div className="max-w-sm mx-auto mt-4 space-y-3">
                   <BettingOddsInput team1={t1Short} team2={t2Short} onOddsChange={handleOddsChange} currentEdge={bettingEdge} />
+                  {/* Gut Feeling & Betting Odds Inputs */}
+                  <div className="text-left space-y-2" data-testid="user-inputs-section">
+                    <div>
+                      <label className="text-[9px] uppercase tracking-wider text-[#737373] mb-1 block">Gut Feeling (3% weight)</label>
+                      <textarea
+                        data-testid="gut-feeling-input"
+                        value={gutFeeling}
+                        onChange={(e) => setGutFeeling(e.target.value)}
+                        placeholder="e.g. CSK batting looks strong today, Dhoni finisher mode..."
+                        className="w-full bg-[#0A0A0A] border border-white/10 rounded px-3 py-2 text-xs text-white placeholder-[#525252] focus:border-[#007AFF]/50 focus:outline-none resize-none"
+                        rows={2}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[9px] uppercase tracking-wider text-[#737373] mb-1 block">Current Betting Odds — {t1Short} Win % (7% weight)</label>
+                      <input
+                        data-testid="current-betting-odds-input"
+                        type="number"
+                        min="1"
+                        max="99"
+                        value={currentBettingOdds}
+                        onChange={(e) => setCurrentBettingOdds(e.target.value)}
+                        placeholder="e.g. 55 (means 55% implied for team1)"
+                        className="w-full bg-[#0A0A0A] border border-white/10 rounded px-3 py-2 text-xs text-white placeholder-[#525252] focus:border-[#007AFF]/50 focus:outline-none font-mono"
+                      />
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
@@ -330,6 +366,120 @@ export default function LiveMatch() {
                         )}
                       </div>
                     )}
+                  </div>
+                )}
+
+                {/* ═══ COMBINED PREDICTION (Phase-Based Blend) ═══ */}
+                {combinedPred && (
+                  <div className="bg-[#141414] border border-[#FFCC00]/30 rounded-md p-4 space-y-3" data-testid="combined-prediction">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-xs uppercase tracking-[0.2em] font-bold text-[#FFCC00]" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
+                        Combined Prediction
+                      </h3>
+                      <span className="text-[9px] px-2 py-0.5 rounded bg-[#FFCC00]/10 border border-[#FFCC00]/20 text-[#FFCC00] font-bold uppercase">
+                        {combinedPred.phase_label}
+                      </span>
+                    </div>
+                    {/* Big win % */}
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="bg-[#FFCC00]/5 border border-[#FFCC00]/20 rounded px-3 py-3 text-center">
+                        <p className="text-[9px] text-[#FFCC00]/70 uppercase">{t1Short}</p>
+                        <p className="text-3xl font-black font-mono text-[#FFCC00]" style={{ fontFamily: "'Barlow Condensed'" }}>{combinedPred.team1_pct}%</p>
+                      </div>
+                      <div className="bg-[#FFCC00]/5 border border-[#FFCC00]/20 rounded px-3 py-3 text-center">
+                        <p className="text-[9px] text-[#FFCC00]/70 uppercase">{t2Short}</p>
+                        <p className="text-3xl font-black font-mono text-[#FFCC00]" style={{ fontFamily: "'Barlow Condensed'" }}>{combinedPred.team2_pct}%</p>
+                      </div>
+                    </div>
+                    {/* Weight breakdown bar */}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center gap-2 text-[10px]">
+                        <div className="flex-1 h-2 bg-[#1E1E1E] rounded-full overflow-hidden flex">
+                          <div className="h-full bg-[#007AFF] transition-all" style={{ width: `${(combinedPred.algo_weight || 0) * 100}%` }} />
+                          <div className="h-full bg-purple-500 transition-all" style={{ width: `${(combinedPred.claude_weight || 0) * 100}%` }} />
+                          {combinedPred.gut_weight > 0 && <div className="h-full bg-[#22C55E] transition-all" style={{ width: `${combinedPred.gut_weight * 100}%` }} />}
+                          {combinedPred.odds_weight > 0 && <div className="h-full bg-[#FF9500] transition-all" style={{ width: `${combinedPred.odds_weight * 100}%` }} />}
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-3 text-[9px]">
+                        <span className="flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-sm bg-[#007AFF]" /> Algo {Math.round(combinedPred.algo_weight * 100)}%
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-sm bg-purple-500" /> Claude {Math.round(combinedPred.claude_weight * 100)}%
+                        </span>
+                        {combinedPred.gut_weight > 0 && (
+                          <span className="flex items-center gap-1 text-[#22C55E]">
+                            <span className="w-2 h-2 rounded-sm bg-[#22C55E]" /> Gut {Math.round(combinedPred.gut_weight * 100)}%
+                          </span>
+                        )}
+                        {combinedPred.odds_weight > 0 && (
+                          <span className="flex items-center gap-1 text-[#FF9500]">
+                            <span className="w-2 h-2 rounded-sm bg-[#FF9500]" /> Odds {Math.round(combinedPred.odds_weight * 100)}%
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    {/* Source probabilities */}
+                    <div className="grid grid-cols-2 gap-2 text-[10px]">
+                      <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2 text-center">
+                        <p className="text-[8px] text-[#525252] uppercase">Algo says {t1Short}</p>
+                        <p className="font-mono font-bold text-[#007AFF]">{combinedPred.algo_t1_pct}%</p>
+                      </div>
+                      <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2 text-center">
+                        <p className="text-[8px] text-[#525252] uppercase">Claude says {t1Short}</p>
+                        <p className="font-mono font-bold text-purple-400">{combinedPred.claude_t1_pct}%</p>
+                      </div>
+                    </div>
+                    {combinedPred.gut_feeling && (
+                      <div className="bg-[#0A0A0A] border border-[#22C55E]/10 rounded p-2">
+                        <p className="text-[8px] text-[#22C55E] uppercase mb-0.5">Your Gut Feeling</p>
+                        <p className="text-[10px] text-[#A3A3A3] italic">"{combinedPred.gut_feeling}"</p>
+                      </div>
+                    )}
+                    {combinedPred.betting_odds_t1_pct && (
+                      <div className="flex items-center gap-2 text-[9px] text-[#FF9500]">
+                        <span>Market: {t1Short} {combinedPred.betting_odds_t1_pct}%</span>
+                        <span className="text-[#525252]">|</span>
+                        <span>{t2Short} {(100 - combinedPred.betting_odds_t1_pct).toFixed(1)}%</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* ═══ USER INPUTS (Gut Feeling + Betting Odds) ═══ */}
+                {hasLiveData && (
+                  <div className="bg-[#141414] border border-white/10 rounded-md p-4 space-y-3" data-testid="live-user-inputs">
+                    <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-[#A1A1AA]" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
+                      Your Inputs
+                    </h4>
+                    <div className="space-y-2">
+                      <div>
+                        <label className="text-[9px] uppercase tracking-wider text-[#737373] mb-1 block">Gut Feeling (3% weight in combined prediction)</label>
+                        <textarea
+                          data-testid="live-gut-feeling-input"
+                          value={gutFeeling}
+                          onChange={(e) => setGutFeeling(e.target.value)}
+                          placeholder="e.g. MI middle order looks shaky, RCB has momentum..."
+                          className="w-full bg-[#0A0A0A] border border-white/10 rounded px-3 py-2 text-xs text-white placeholder-[#525252] focus:border-[#007AFF]/50 focus:outline-none resize-none"
+                          rows={2}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[9px] uppercase tracking-wider text-[#737373] mb-1 block">Current Betting Odds — {t1Short} Win % (7% weight)</label>
+                        <input
+                          data-testid="live-current-betting-odds-input"
+                          type="number"
+                          min="1"
+                          max="99"
+                          value={currentBettingOdds}
+                          onChange={(e) => setCurrentBettingOdds(e.target.value)}
+                          placeholder="e.g. 55"
+                          className="w-full bg-[#0A0A0A] border border-white/10 rounded px-3 py-2 text-xs text-white placeholder-[#525252] focus:border-[#007AFF]/50 focus:outline-none font-mono"
+                        />
+                      </div>
+                      <p className="text-[9px] text-[#525252]">These inputs are passed to Claude and factored into the Combined Prediction. Click "Fetch Live Scores" or "Refresh Both" after updating.</p>
+                    </div>
                   </div>
                 )}
 

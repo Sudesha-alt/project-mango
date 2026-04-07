@@ -49,9 +49,11 @@ async def fetch_team_form(db, team1: str, team2: str) -> Dict:
 
     for idx, (team, key) in enumerate([(team1, "team1"), (team2, "team2")]):
         team_lower = team.lower()
-        # Find this team's recent results
+        # Find this team's recent results (only matches WITH a winner field)
         team_matches = []
         for m in completed:
+            if not m.get("winner"):
+                continue  # Skip matches without actual results
             t1 = (m.get("team1", "") or "").lower()
             t2 = (m.get("team2", "") or "").lower()
             if team_lower in t1 or team_lower in t2 or t1 in team_lower or t2 in team_lower:
@@ -102,15 +104,16 @@ async def fetch_team_form(db, team1: str, team2: str) -> Dict:
             "nrr": 0,  # NRR requires detailed match data
         }
 
-    # Head-to-Head from completed matches
+    # Head-to-Head from completed matches (only matches with a winner)
     h2h_t1_wins = 0
     h2h_t2_wins = 0
     t1_lower = team1.lower()
     t2_lower = team2.lower()
     for m in completed:
+        if not m.get("winner"):
+            continue
         mt1 = (m.get("team1", "") or "").lower()
         mt2 = (m.get("team2", "") or "").lower()
-        # Check if this match involves both teams
         has_t1 = t1_lower in mt1 or t1_lower in mt2 or mt1 in t1_lower or mt2 in t1_lower
         has_t2 = t2_lower in mt1 or t2_lower in mt2 or mt1 in t2_lower or mt2 in t2_lower
         if has_t1 and has_t2:
@@ -147,6 +150,8 @@ async def fetch_momentum(db, team1: str, team2: str) -> Dict:
         team_lower = team.lower()
         results = []
         for m in completed:
+            if not m.get("winner"):
+                continue  # Skip matches without actual results
             mt1 = (m.get("team1", "") or "").lower()
             mt2 = (m.get("team2", "") or "").lower()
             if team_lower in mt1 or team_lower in mt2 or mt1 in team_lower or mt2 in team_lower:
@@ -155,8 +160,6 @@ async def fetch_momentum(db, team1: str, team2: str) -> Dict:
                     results.append("W")
                 elif winner:
                     results.append("L")
-                else:
-                    results.append("NR")
             if len(results) >= 2:
                 break
         momentum[key] = results[:2]

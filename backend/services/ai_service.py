@@ -884,7 +884,7 @@ Return JSON:
 
 # ─── Claude SportMonks Live Win Prediction ────────────────────
 
-async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_info: dict, squads: dict = None, weather: dict = None, news: list = None) -> dict:
+async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_info: dict, squads: dict = None, weather: dict = None, news: list = None, gut_feeling: str = None, betting_odds_pct: float = None) -> dict:
     """
     Claude Opus: Generate a live win prediction using rich SportMonks data.
     Passes full batting card, bowling card, yet-to-bat, yet-to-bowl lineups,
@@ -1014,6 +1014,13 @@ async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_in
         if news_lines:
             news_text = "\n".join(news_lines)
 
+    # User context (gut feeling + betting odds)
+    user_context_text = ""
+    if gut_feeling and gut_feeling.strip():
+        user_context_text += f"\n=== USER'S GUT FEELING (weigh this as a qualitative signal) ===\n{gut_feeling}\n"
+    if betting_odds_pct is not None and betting_odds_pct > 0:
+        user_context_text += f"\n=== CURRENT BETTING MARKET ODDS ===\n{t1_short} implied probability: {betting_odds_pct}% | {t2_short} implied probability: {round(100 - betting_odds_pct, 1)}%\nNote: Market odds reflect live money flow and crowd sentiment. Factor this into your analysis.\n"
+
     chat = _get_claude_chat(
         f"sm-live-pred-{uuid.uuid4().hex[:8]}",
         """You are an elite IPL cricket analyst providing REAL-TIME win predictions.
@@ -1071,7 +1078,7 @@ CRR: {sm_data.get('crr', 0)} | RRR: {sm_data.get('rrr', 'N/A')}
 
 === LATEST NEWS & CONTEXT (injuries, form updates, team changes) ===
 {news_text}
-
+{user_context_text}
 === ALGORITHM PROBABILITIES (for reference only, use your own analysis) ===
 {json.dumps(algo_probs, indent=2, default=str)[:800]}
 
