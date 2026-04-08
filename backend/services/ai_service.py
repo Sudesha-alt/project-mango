@@ -1023,17 +1023,19 @@ async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_in
 
     chat = _get_claude_chat(
         f"sm-live-pred-{uuid.uuid4().hex[:8]}",
-        """You are an elite IPL cricket analyst providing REAL-TIME win predictions.
-You have deep knowledge of IPL player form, career stats, and T20 match dynamics.
-Given live scorecard data, remaining batting/bowling lineups, consider:
-- Each player's recent IPL form and career T20 stats FROM 2023-2026 ONLY
-- Batting depth and known finishing ability of yet-to-bat players
-- Bowling options remaining and their death overs record
-- Match phase, pitch behavior, required rate, and momentum
+        """You are an elite IPL cricket analyst giving a LIVE match verdict to a friend who's watching the game. 
+You talk like a real cricket expert — conversational, bold, data-driven. You reference SPECIFIC player names, exact numbers from the scorecard, run rates, balls remaining, bowling figures. 
 
-CRITICAL DATA CONSTRAINT: Only utilize cricket data from the years 2023 to 2026. Do NOT reference any stats, records, or career data from before 2023. Only reference players from the official IPL 2026 squads provided. The mega-auction reshuffled all teams — pre-2023 team compositions are irrelevant.
+Write your analysis as ONE flowing narrative — no bullet points, no section headers. Start with the bottom line (who wins), then explain WHY using the live match data, then end with a specific verdict (predicted margin + probability).
 
-YOUR PRIMARY JOB: State clearly WHO WILL WIN this match and WHY. Do not hedge or sit on the fence. Pick a winner with conviction. Give a REALISTIC win probability for BOTH teams (must add to 100). Be decisive and bold."""
+Style guide (follow this tone exactly):
+- "Bottom line: [TEAM] should win this [comfortably/in a close finish]. Here's the real reasoning:"
+- Reference actual scorecard numbers: "X needs 53 off 24 balls — that's 13.25 per over"
+- Name specific players and their figures: "Rashid Khan was devastating — 3/17 in 4 overs"
+- Identify the one wildcard/threat: "KL Rahul (87* off 47) is the one wildcard"
+- End with: "Verdict: [TEAM] wins by [margin]. There's roughly a [X]% chance [OTHER TEAM] pulls off [scenario]."
+
+CRITICAL: Only use IPL 2023-2026 data. Only reference players from the provided squads. Be decisive — never say "too close to call." Always pick a winner."""
     )
 
     prompt = f"""LIVE MATCH: {team1} ({t1_short}) vs {team2} ({t2_short}) at {venue}
@@ -1082,30 +1084,26 @@ CRR: {sm_data.get('crr', 0)} | RRR: {sm_data.get('rrr', 'N/A')}
 === ALGORITHM PROBABILITIES (for reference only, use your own analysis) ===
 {json.dumps(algo_probs, indent=2, default=str)[:800]}
 
-IMPORTANT: Consider the FULL SQUADS of both teams. Assess the remaining batting depth, available bowling changes, and each player's known IPL form and career record FROM 2023-2026 ONLY. Do NOT reference pre-2023 stats or players not in the 2026 squads.
+IMPORTANT: Consider the FULL SQUADS of both teams. Look at who's still to bat, who's bowled their quota, and the match equation. Use ONLY IPL 2023-2026 knowledge. Reference actual player names and their current match figures.
 
-YOU MUST CLEARLY STATE WHO WILL WIN. Do not say "could go either way" or "too close to call." Pick the team that has the higher probability and explain exactly why they will win. Be bold and specific — reference actual player names and match situations.
+Write your analysis as a FLOWING NARRATIVE — like you're explaining to a cricket-savvy friend. Do NOT use section headers or bullet points. Start with the bottom line, explain the reasoning with specific numbers, identify the key threat/wildcard, and end with a decisive verdict.
 
-Also provide HISTORICAL FACTORS for {t1_short} (all values 0 to 1, based on your IPL 2023-2026 knowledge):
+Also provide HISTORICAL FACTORS for {t1_short} (values 0 to 1):
 
 Return JSON:
 {{
   "{t1_short}_win_pct": number (0-100),
   "{t2_short}_win_pct": number (0-100, must equal 100 - {t1_short}_win_pct),
   "predicted_winner": "{t1_short}" or "{t2_short}",
-  "winner_verdict": "A single decisive sentence: '[TEAM] WILL WIN because...' — be specific and bold",
-  "headline": "1 bold sentence prediction (e.g. 'CSK to chase down 180 with 2 overs to spare')",
-  "reasoning": "3-5 sentences. Reference specific players' form, batting depth, bowling options, match phase, required rate. End with a clear conclusion on who wins.",
-  "batting_depth_assessment": "Remaining batters and their known finishing ability",
-  "bowling_assessment": "Remaining bowling options and their death overs record",
-  "key_matchup": "The single most critical player or matchup right now",
+  "analysis": "Your FULL narrative analysis as one flowing text. 4-8 sentences. Start: 'Bottom line: [TEAM] should win this [how]. Here's the real reasoning:' Then reference specific scorecard numbers, player figures, run rates, balls remaining. Identify the one wildcard. End: 'Verdict: [TEAM] wins by [margin]. There's roughly a [X]% chance [OTHER TEAM] pulls off [scenario].'",
+  "key_player": "The single most impactful player right now and why",
   "momentum": "BATTING" or "BOWLING" or "EVEN",
   "confidence": "Low" or "Medium" or "High",
   "historical_factors": {{
-    "h2h_win_pct": number (0-1, {t1_short}'s head-to-head win rate vs {t2_short} in IPL 2023-2026 only),
-    "venue_win_pct": number (0-1, {t1_short}'s win rate at {venue} or similar venues in 2023-2026),
-    "recent_form_pct": number (0-1, {t1_short}'s win rate in last 5-8 IPL 2026 matches),
-    "toss_advantage_pct": number (0-1, toss winner's advantage at this venue type in 2023-2026)
+    "h2h_win_pct": number (0-1),
+    "venue_win_pct": number (0-1),
+    "recent_form_pct": number (0-1),
+    "toss_advantage_pct": number (0-1)
   }}
 }}"""
 

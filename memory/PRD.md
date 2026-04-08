@@ -21,10 +21,14 @@ Build a full-stack cricket prediction app for IPL 2026 with an 8-category math m
 8. Team Momentum (3%)
 
 ### Live Match Prediction
-- **Weighted Model**: Claude's win % passed directly as base anchor (Factor 5) into the 6-factor live model
-- **Phase-Based Dynamic Weighting** (Algo vs Claude blend)
+- **Weighted Model**: Claude's win % fed directly as base anchor (Factor 5)
+- **Phase-Based Dynamic Weighting** (5 phases: Algo vs Claude blend)
 - **Combined Prediction** with Gut Feeling (3%) + Betting Odds (7%)
-- **Claude Opus**: Must state clear winner verdict — no hedging
+- **Claude Opus**: Natural flowing narrative analysis style:
+  - "Bottom line: [TEAM] should win this [how]. Here's the real reasoning:"
+  - References specific scorecard numbers, player figures, run rates
+  - Identifies the key wildcard player
+  - "Verdict: [TEAM] wins by [margin]. There's roughly [X]% chance [OTHER] pulls off [scenario]."
 
 ### Key Endpoints
 - `POST /api/matches/{id}/pre-match-predict`
@@ -34,14 +38,13 @@ Build a full-stack cricket prediction app for IPL 2026 with an 8-category math m
 
 ## Completed Tasks (Apr 2026)
 - [x] 8-category pre-match model
+- [x] Venue + Pitch data with secondary home grounds
+- [x] H2H 2023-2025 IPL data
 - [x] Phase-based dynamic weighting (5 phases)
 - [x] Gut Feeling (3%) + Betting Odds (7%) inputs
-- [x] H2H with 2023-2025 IPL data
-- [x] Venue + Pitch data (type, avg score, pace/spin)
-- [x] Secondary home grounds
-- [x] Claude win % fed directly into weighted model as base anchor
-- [x] Claude forced to give clear winner_verdict (no hedging)
-- [x] Winner verdict displayed prominently on frontend
+- [x] Claude win % fed directly into weighted model
+- [x] Claude narrative-style analysis (conversational, data-driven, decisive)
+- [x] Frontend: flowing analysis display with key player card
 
 ## Backlog
 - [ ] P2: Shareable prediction card

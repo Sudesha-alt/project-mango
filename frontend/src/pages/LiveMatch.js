@@ -687,7 +687,9 @@ export default function LiveMatch() {
                           <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-purple-400" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
                             Claude Opus Prediction
                           </h4>
-                          <p className="text-sm font-bold text-white leading-snug">{claudePred.headline}</p>
+                          <p className="text-sm font-bold text-white leading-snug" data-testid="claude-headline">
+                            {claudePred.headline || (claudePred.analysis ? claudePred.analysis.split('.')[0] + '.' : claudePred.predicted_winner + ' to win')}
+                          </p>
 
                           {/* Winner Verdict */}
                           {claudePred.winner_verdict && (
@@ -726,28 +728,49 @@ export default function LiveMatch() {
                             </span>
                           </div>
 
-                          <p className="text-[11px] text-[#D4D4D4] leading-relaxed">{claudePred.reasoning}</p>
+                          {/* Full Narrative Analysis (new flowing style) */}
+                          {claudePred.analysis && (
+                            <div className="bg-[#0A0A0A] border border-purple-500/10 rounded-md p-4" data-testid="claude-analysis-narrative">
+                              <p className="text-[11px] text-[#D4D4D4] leading-[1.8] whitespace-pre-line">{claudePred.analysis}</p>
+                            </div>
+                          )}
 
-                          <div className="grid grid-cols-1 gap-2">
-                            {claudePred.batting_depth_assessment && (
-                              <div className="bg-[#0A0A0A] border border-white/5 rounded p-2.5">
-                                <p className="text-[9px] text-[#737373] uppercase mb-1">Batting Depth</p>
-                                <p className="text-[10px] text-[#A3A3A3] leading-relaxed">{claudePred.batting_depth_assessment}</p>
-                              </div>
-                            )}
-                            {claudePred.bowling_assessment && (
-                              <div className="bg-[#0A0A0A] border border-white/5 rounded p-2.5">
-                                <p className="text-[9px] text-[#737373] uppercase mb-1">Bowling Options</p>
-                                <p className="text-[10px] text-[#A3A3A3] leading-relaxed">{claudePred.bowling_assessment}</p>
-                              </div>
-                            )}
-                            {claudePred.key_matchup && (
-                              <div className="bg-[#0A0A0A] border border-purple-500/10 rounded p-2.5">
-                                <p className="text-[9px] text-purple-300 uppercase mb-1">Key Matchup</p>
-                                <p className="text-[10px] text-[#D4D4D4]">{claudePred.key_matchup}</p>
-                              </div>
-                            )}
-                          </div>
+                          {/* Fallback: old-style reasoning if no analysis field */}
+                          {!claudePred.analysis && claudePred.reasoning && (
+                            <p className="text-[11px] text-[#D4D4D4] leading-relaxed">{claudePred.reasoning}</p>
+                          )}
+
+                          {/* Key Player */}
+                          {claudePred.key_player && (
+                            <div className="bg-[#0A0A0A] border border-purple-500/10 rounded p-2.5">
+                              <p className="text-[9px] text-purple-300 uppercase mb-1">Key Player</p>
+                              <p className="text-[10px] text-[#D4D4D4]">{claudePred.key_player}</p>
+                            </div>
+                          )}
+
+                          {/* Legacy fields fallback */}
+                          {!claudePred.analysis && (
+                            <div className="grid grid-cols-1 gap-2">
+                              {claudePred.batting_depth_assessment && (
+                                <div className="bg-[#0A0A0A] border border-white/5 rounded p-2.5">
+                                  <p className="text-[9px] text-[#737373] uppercase mb-1">Batting Depth</p>
+                                  <p className="text-[10px] text-[#A3A3A3] leading-relaxed">{claudePred.batting_depth_assessment}</p>
+                                </div>
+                              )}
+                              {claudePred.bowling_assessment && (
+                                <div className="bg-[#0A0A0A] border border-white/5 rounded p-2.5">
+                                  <p className="text-[9px] text-[#737373] uppercase mb-1">Bowling Options</p>
+                                  <p className="text-[10px] text-[#A3A3A3] leading-relaxed">{claudePred.bowling_assessment}</p>
+                                </div>
+                              )}
+                              {claudePred.key_matchup && (
+                                <div className="bg-[#0A0A0A] border border-purple-500/10 rounded p-2.5">
+                                  <p className="text-[9px] text-purple-300 uppercase mb-1">Key Matchup</p>
+                                  <p className="text-[10px] text-[#D4D4D4]">{claudePred.key_matchup}</p>
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
