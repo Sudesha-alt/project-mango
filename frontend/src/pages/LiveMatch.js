@@ -673,6 +673,11 @@ export default function LiveMatch() {
                               <p className="text-xl font-black font-mono text-[#34C759]" style={{ fontFamily: "'Barlow Condensed'" }}>~{livePred.projected_score}</p>
                             </div>
                           )}
+                          {weightedPred?.claude_t1_pct_used != null && (
+                            <div className="text-[9px] text-[#525252] italic mt-1">
+                              Claude {t1Short} {weightedPred.claude_t1_pct_used}% fed as base anchor
+                            </div>
+                          )}
                         </div>
                       )}
 
@@ -683,6 +688,20 @@ export default function LiveMatch() {
                             Claude Opus Prediction
                           </h4>
                           <p className="text-sm font-bold text-white leading-snug">{claudePred.headline}</p>
+
+                          {/* Winner Verdict */}
+                          {claudePred.winner_verdict && (
+                            <div className="bg-purple-500/10 border border-purple-500/30 rounded-md p-3" data-testid="claude-winner-verdict">
+                              <p className="text-[9px] text-purple-300 uppercase mb-1 font-bold tracking-wider">Winner Verdict</p>
+                              <p className="text-sm font-bold text-purple-200 leading-snug">{claudePred.winner_verdict}</p>
+                            </div>
+                          )}
+                          {!claudePred.winner_verdict && claudePred.predicted_winner && (
+                            <div className="bg-purple-500/10 border border-purple-500/30 rounded-md p-3" data-testid="claude-winner-verdict">
+                              <p className="text-[9px] text-purple-300 uppercase mb-1 font-bold tracking-wider">Predicted Winner</p>
+                              <p className="text-sm font-bold text-purple-200">{claudePred.predicted_winner} to win</p>
+                            </div>
+                          )}
 
                           {/* Win probabilities */}
                           <div className="grid grid-cols-2 gap-2">

@@ -1033,7 +1033,7 @@ Given live scorecard data, remaining batting/bowling lineups, consider:
 
 CRITICAL DATA CONSTRAINT: Only utilize cricket data from the years 2023 to 2026. Do NOT reference any stats, records, or career data from before 2023. Only reference players from the official IPL 2026 squads provided. The mega-auction reshuffled all teams — pre-2023 team compositions are irrelevant.
 
-Give a REALISTIC win probability for BOTH teams (must add to 100). Be decisive."""
+YOUR PRIMARY JOB: State clearly WHO WILL WIN this match and WHY. Do not hedge or sit on the fence. Pick a winner with conviction. Give a REALISTIC win probability for BOTH teams (must add to 100). Be decisive and bold."""
     )
 
     prompt = f"""LIVE MATCH: {team1} ({t1_short}) vs {team2} ({t2_short}) at {venue}
@@ -1082,7 +1082,9 @@ CRR: {sm_data.get('crr', 0)} | RRR: {sm_data.get('rrr', 'N/A')}
 === ALGORITHM PROBABILITIES (for reference only, use your own analysis) ===
 {json.dumps(algo_probs, indent=2, default=str)[:800]}
 
-IMPORTANT: Consider the FULL SQUADS of both teams. Assess the remaining batting depth, available bowling changes, and each player's known IPL form and career record FROM 2023-2026 ONLY. Do NOT reference pre-2023 stats or players not in the 2026 squads. Give realistic win probabilities for BOTH teams.
+IMPORTANT: Consider the FULL SQUADS of both teams. Assess the remaining batting depth, available bowling changes, and each player's known IPL form and career record FROM 2023-2026 ONLY. Do NOT reference pre-2023 stats or players not in the 2026 squads.
+
+YOU MUST CLEARLY STATE WHO WILL WIN. Do not say "could go either way" or "too close to call." Pick the team that has the higher probability and explain exactly why they will win. Be bold and specific — reference actual player names and match situations.
 
 Also provide HISTORICAL FACTORS for {t1_short} (all values 0 to 1, based on your IPL 2023-2026 knowledge):
 
@@ -1091,8 +1093,9 @@ Return JSON:
   "{t1_short}_win_pct": number (0-100),
   "{t2_short}_win_pct": number (0-100, must equal 100 - {t1_short}_win_pct),
   "predicted_winner": "{t1_short}" or "{t2_short}",
-  "headline": "1 bold sentence prediction",
-  "reasoning": "3-5 sentences. Reference specific players' form, batting depth, bowling options, match phase, required rate",
+  "winner_verdict": "A single decisive sentence: '[TEAM] WILL WIN because...' — be specific and bold",
+  "headline": "1 bold sentence prediction (e.g. 'CSK to chase down 180 with 2 overs to spare')",
+  "reasoning": "3-5 sentences. Reference specific players' form, batting depth, bowling options, match phase, required rate. End with a clear conclusion on who wins.",
   "batting_depth_assessment": "Remaining batters and their known finishing ability",
   "bowling_assessment": "Remaining bowling options and their death overs record",
   "key_matchup": "The single most critical player or matchup right now",

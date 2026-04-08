@@ -137,6 +137,9 @@ def compute_live_prediction(sm_data: dict, claude_prediction: dict,
     H = 0.22×Squad + 0.10×H2H + 0.28×Venue + 0.25×Form + 0.15×Toss
     L = 6-factor live model
     Alpha = stage-aware non-linear decay (0.85 → 0.05)
+
+    Claude's win % is passed directly as the pre-match base anchor and
+    also blended into the final output via phase-based weighting.
     """
     if not sm_data:
         return None
@@ -276,7 +279,20 @@ def compute_live_prediction(sm_data: dict, claude_prediction: dict,
         bowlers_remaining = 0.5
 
     # Factor 5: Pre-match Base Probability (10%)
-    if pre_match_prob is not None:
+    # Prefer Claude's live win % as the base anchor (most informed signal)
+    claude_t1_pct = None
+    if claude_prediction and not claude_prediction.get("error"):
+        claude_t1_pct = claude_prediction.get("team1_win_pct")
+        if claude_t1_pct is None:
+            # Try team-specific keys
+            t1_short = match_info.get("team1Short", "")
+            claude_t1_pct = claude_prediction.get(f"{t1_short}_win_pct")
+        if claude_t1_pct is not None:
+            claude_t1_pct = float(claude_t1_pct)
+
+    if claude_t1_pct is not None:
+        pre_match_base = max(0.01, min(0.99, claude_t1_pct / 100))
+    elif pre_match_prob is not None:
         pre_match_base = max(0, min(1.0, pre_match_prob / 100))
     else:
         pre_match_base = 0.5
@@ -341,6 +357,7 @@ def compute_live_prediction(sm_data: dict, claude_prediction: dict,
         "L_team1": round(L_team1, 4),
         "final_score": final_score,
         "model": "alpha-HL-v2",
+        "claude_t1_pct_used": round(claude_t1_pct, 1) if claude_t1_pct is not None else None,
         "venue_profile": {
             "venue": venue,
             "par_20": venue_par_20,
