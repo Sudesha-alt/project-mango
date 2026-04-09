@@ -497,3 +497,180 @@ def parse_fixture_result(raw: dict) -> dict:
         "toss_won_by": toss_won.get("name", ""),
         "starting_at": raw.get("starting_at", ""),
     }
+
+
+
+# ── IPL Team Name to SportMonks Team ID mapping ──
+TEAM_SM_IDS = {
+    "chennai super kings": 5,
+    "mumbai indians": 7,
+    "kolkata knight riders": 5,
+    "royal challengers bengaluru": 3,
+    "royal challengers bangalore": 3,
+    "delhi capitals": 6,
+    "punjab kings": 4,
+    "rajasthan royals": 8,
+    "sunrisers hyderabad": 255,
+    "lucknow super giants": 1979,
+    "gujarat titans": 1978,
+}
+
+
+def _parse_lineup(lineup_data: list, team_id: int) -> list:
+    """Extract Playing XI (non-subs) for a specific team from SportMonks lineup data."""
+    xi = []
+    for p in lineup_data:
+        lineup_info = p.get("lineup", {}) or {}
+        if lineup_info.get("team_id") != team_id:
+            continue
+        if lineup_info.get("substitution", False):
+            continue  # Skip impact player subs
+        xi.append({
+            "name": p.get("fullname", ""),
+            "sm_player_id": p.get("id"),
+            "batting_style": p.get("battingstyle", ""),
+            "bowling_style": p.get("bowlingstyle", ""),
+            "is_captain": lineup_info.get("captain", False),
+            "is_wicketkeeper": lineup_info.get("wicketkeeper", False),
+        })
+    return xi
+
+
+async def fetch_playing_xi_from_live(team1: str, team2: str) -> dict:
+    """Fetch Playing XI for both teams from the current live match."""
+    data = await _get("livescores", {
+        "include": "lineup,localteam,visitorteam"
+    })
+    fixtures = data.get("data", [])
+    t1_lower = team1.lower()
+    t2_lower = team2.lower()
+
+    for f in fixtures:
+        lt = f.get("localteam", {})
+        vt = f.get("visitorteam", {})
+        lt_name = (lt.get("name", "") or "").lower()
+        vt_name = (vt.get("name", "") or "").lower()
+
+        match = False
+        if (t1_lower in lt_name or lt_name in t1_lower) and (t2_lower in vt_name or vt_name in t2_lower):
+            match = True
+        elif (t2_lower in lt_name or lt_name in t2_lower) and (t1_lower in vt_name or vt_name in t1_lower):
+            match = True
+
+        if not match:
+            continue
+
+        lineup = f.get("lineup", {})
+        if isinstance(lineup, dict):
+            lineup_data = lineup.get("data", [])
+        elif isinstance(lineup, list):
+            lineup_data = lineup
+        else:
+            lineup_data = []
+
+        if not lineup_data:
+            continue
+
+        lt_id = lt.get("id")
+        vt_id = vt.get("id")
+        lt_xi = _parse_lineup(lineup_data, lt_id)
+        vt_xi = _parse_lineup(lineup_data, vt_id)
+
+        # Map to team1/team2
+        if t1_lower in lt_name or lt_name in t1_lower:
+            return {
+                "team1_xi": lt_xi,
+                "team2_xi": vt_xi,
+                "fixture_id": f.get("id"),
+                "source": "live",
+            }
+        else:
+            return {
+                "team1_xi": vt_xi,
+                "team2_xi": lt_xi,
+                "fixture_id": f.get("id"),
+                "source": "live",
+            }
+
+    return {"team1_xi": [], "team2_xi": [], "source": "not_found"}
+
+
+async def fetch_last_played_xi(team_name: str) -> list:
+    """Fetch the Playing XI for a team from their most recent completed match.
+    
+    Uses the SportMonks fixtures endpoint with lineup include.
+    Returns a list of player dicts (name, batting_style, bowling_style, captain, wk).
+    """
+    # First try live fixtures (today's lineup is most relevant for pre-match)
+    data = await _get("livescores", {
+        "include": "lineup,localteam,visitorteam"
+    })
+    fixtures = data.get("data", [])
+    team_lower = team_name.lower()
+
+    for f in fixtures:
+        lt = f.get("localteam", {})
+        vt = f.get("visitorteam", {})
+        lt_name = (lt.get("name", "") or "").lower()
+        vt_name = (vt.get("name", "") or "").lower()
+
+        team_id = None
+        if team_lower in lt_name or lt_name in team_lower:
+            team_id = lt.get("id")
+        elif team_lower in vt_name or vt_name in team_lower:
+            team_id = vt.get("id")
+
+        if team_id is None:
+            continue
+
+        lineup = f.get("lineup", {})
+        if isinstance(lineup, dict):
+            lineup_data = lineup.get("data", [])
+        elif isinstance(lineup, list):
+            lineup_data = lineup
+        else:
+            lineup_data = []
+
+        xi = _parse_lineup(lineup_data, team_id)
+        if len(xi) >= 11:
+            logger.info(f"Found Playing XI for {team_name} from live match: {len(xi)} players")
+            return xi
+
+    # Fallback: fetch recent finished fixtures
+    data = await _get("fixtures", {
+        "include": "lineup,localteam,visitorteam",
+        "sort": "-starting_at",
+        "filter[status]": "Finished",
+    })
+    fixtures = data.get("data", [])
+
+    for f in fixtures:
+        lt = f.get("localteam", {})
+        vt = f.get("visitorteam", {})
+        lt_name = (lt.get("name", "") or "").lower()
+        vt_name = (vt.get("name", "") or "").lower()
+
+        team_id = None
+        if team_lower in lt_name or lt_name in team_lower:
+            team_id = lt.get("id")
+        elif team_lower in vt_name or vt_name in team_lower:
+            team_id = vt.get("id")
+
+        if team_id is None:
+            continue
+
+        lineup = f.get("lineup", {})
+        if isinstance(lineup, dict):
+            lineup_data = lineup.get("data", [])
+        elif isinstance(lineup, list):
+            lineup_data = lineup
+        else:
+            lineup_data = []
+
+        xi = _parse_lineup(lineup_data, team_id)
+        if len(xi) >= 11:
+            logger.info(f"Found last Playing XI for {team_name} from fixture {f.get('id')}: {len(xi)} players")
+            return xi
+
+    logger.warning(f"Could not find Playing XI for {team_name} from API")
+    return []

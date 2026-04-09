@@ -34,7 +34,7 @@ from services.ai_service import (
     claude_deep_match_analysis, claude_live_analysis,
     claude_sportmonks_prediction
 )
-from services.sportmonks_service import fetch_live_match, check_fixture_status, fetch_livescores_ipl, parse_fixture, fetch_fixture_details, fetch_recent_fixtures
+from services.sportmonks_service import fetch_live_match, check_fixture_status, fetch_livescores_ipl, parse_fixture, fetch_fixture_details, fetch_recent_fixtures, fetch_last_played_xi, fetch_playing_xi_from_live
 from services.beta_prediction_engine import run_beta_prediction
 from services.consultant_engine import run_consultation, build_features
 from services.cricdata_service import fetch_live_ipl_details, fetch_venue_stats_from_cricapi
@@ -1367,15 +1367,72 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
     # Fetch squads from DB (user-provided IPL 2026 rosters)
     match_squads = await _get_squads_for_match(team1, team2)
 
-    # Generate Expected Playing XI from squad (NO scraping)
+    # ── Fetch ACTUAL Playing XI from SportMonks API ──
+    # Try live match first, then last completed match per team
+    api_xi_data = {"team1_xi": [], "team2_xi": [], "source": "none"}
+    try:
+        live_xi = await fetch_playing_xi_from_live(team1, team2)
+        if live_xi.get("team1_xi") and live_xi.get("team2_xi"):
+            api_xi_data = live_xi
+            logger.info(f"Got Playing XI from LIVE match: {len(live_xi['team1_xi'])} + {len(live_xi['team2_xi'])}")
+        else:
+            # Fetch last played XI for each team separately
+            t1_xi = await fetch_last_played_xi(team1)
+            t2_xi = await fetch_last_played_xi(team2)
+            if t1_xi or t2_xi:
+                api_xi_data = {
+                    "team1_xi": t1_xi,
+                    "team2_xi": t2_xi,
+                    "source": "last_match",
+                }
+                logger.info(f"Got Playing XI from last matches: {len(t1_xi)} + {len(t2_xi)}")
+    except Exception as e:
+        logger.warning(f"Failed to fetch Playing XI from API: {e}")
+
+    # ── Filter squad to Playing XI if API data available ──
+    # This ensures predictions use actual 11 players, not 25-man squad
+    prediction_squads = match_squads  # Default: full squad
     xi_data = {}
     squad_names = list(match_squads.keys()) if match_squads else []
-    if len(squad_names) >= 2:
+
+    if api_xi_data.get("team1_xi") and api_xi_data.get("team2_xi") and len(squad_names) >= 2:
+        # Cross-reference API XI names with DB squad for role/stats
+        t1_api_names = {p["name"].lower() for p in api_xi_data["team1_xi"]}
+        t2_api_names = {p["name"].lower() for p in api_xi_data["team2_xi"]}
+
+        t1_filtered = [p for p in match_squads.get(squad_names[0], [])
+                       if p.get("name", "").lower() in t1_api_names]
+        t2_filtered = [p for p in match_squads.get(squad_names[1], [])
+                       if p.get("name", "").lower() in t2_api_names]
+
+        # Only use filtered if we got at least 8 matches (name matching tolerance)
+        if len(t1_filtered) >= 8 and len(t2_filtered) >= 8:
+            prediction_squads = {
+                squad_names[0]: t1_filtered,
+                squad_names[1]: t2_filtered,
+            }
+            logger.info(f"Using API Playing XI: {len(t1_filtered)} + {len(t2_filtered)} players")
+        else:
+            logger.warning(f"API XI match too low ({len(t1_filtered)}, {len(t2_filtered)}), using full squad")
+
+        xi_data = {
+            "team1_xi": [{"name": p.get("name"), "role": p.get("role", ""),
+                          "isCaptain": p.get("isCaptain", False)} for p in t1_filtered] if t1_filtered else
+                        api_xi_data["team1_xi"],
+            "team2_xi": [{"name": p.get("name"), "role": p.get("role", ""),
+                          "isCaptain": p.get("isCaptain", False)} for p in t2_filtered] if t2_filtered else
+                        api_xi_data["team2_xi"],
+            "source": api_xi_data.get("source", "api"),
+            "confidence": "api-verified",
+        }
+    elif len(squad_names) >= 2:
+        # Fallback: generate expected XI from squad roster
         t1_xi = generate_expected_xi(match_squads.get(squad_names[0], []))
         t2_xi = generate_expected_xi(match_squads.get(squad_names[1], []))
         xi_data = {
             "team1_xi": t1_xi,
             "team2_xi": t2_xi,
+            "source": "squad_estimate",
             "confidence": "squad-based",
         }
 
