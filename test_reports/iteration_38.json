@@ -1,0 +1,95 @@
+{
+  "summary": "Iteration 38 - Testing Playing XI Filtering Feature. All 7 backend tests passed. Frontend verification confirmed match list loads (62 matches) and LiveMatch page displays correctly with Combined Prediction, Algorithm, and Claude Analysis sections.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "LiveMatch page",
+        "issues": ["WebSocket connection warning in console (non-blocking)", "Chart dimension warnings for recharts (cosmetic)"]
+      }
+    ]
+  },
+  "passed_tests": [
+    "GET /api/ - Health check returns scheduleLoaded=true, squadsLoaded=true (version 4.1.0)",
+    "POST /api/matches/ipl2026_015/pre-match-predict?force=true - Returns playing_xi with team1_xi and team2_xi (8-11 players each, not full 25-man squad)",
+    "POST /api/matches/ipl2026_015/pre-match-predict?force=true - Returns valid prediction with team1_win_prob and team2_win_prob (1-99% range)",
+    "POST /api/matches/ipl2026_015/pre-match-predict (without force) - Returns cached prediction correctly",
+    "POST /api/matches/ipl2026_015/fetch-live - Returns liveData with isLive=true, claudePrediction, combinedPrediction (match was live during test)",
+    "POST /api/matches/ipl2026_015/refresh-claude-prediction - Returns claudePrediction with team1_win_pct, weightedPrediction, combinedPrediction",
+    "Playing XI filtering logic verified - team1_xi and team2_xi contain filtered players, not full squad"
+  ],
+  "frontend_verification": {
+    "homepage_loads": "VERIFIED - 62 match elements displayed with predictions and Playing XI labels",
+    "live_match_page_loads": "VERIFIED - data-testid='live-match-page' found",
+    "fetch_live_scores_button": "VERIFIED - Button present and functional",
+    "check_status_button": "VERIFIED - Button present",
+    "combined_prediction_section": "VERIFIED - Shows KKR 50.2% vs LSG 49.8% with phase 'MID 1ST INNINGS'",
+    "algorithm_section": "VERIFIED - Algorithm (Alpha x H+L) section displays",
+    "claude_analysis_section": "VERIFIED - Claude Contextual Analysis with verdict displayed",
+    "user_inputs_section": "VERIFIED - Gut feeling and betting odds inputs present",
+    "model_consensus": "VERIFIED - HIGH CONSENSUS indicator showing both models agree"
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration38_playing_xi_filtering.py",
+    "/app/test_reports/pytest/iteration38_playing_xi_filtering_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Playing XI filtering logic in server.py correctly fetches from SportMonks API (live or last_match) and filters DB squad to 8-11 players",
+    "_filter_squads_to_playing_xi() function uses fuzzy name matching with 8-player minimum threshold",
+    "sportmonks_service.py parse_fixture() correctly returns team1_playing_xi and team2_playing_xi (non-subs only)",
+    "Pre-match prediction stores playing_xi with source ('live', 'last_match', 'squad_estimate') and confidence ('api-verified', 'squad-based')"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration38_playing_xi_filtering.py"
+  ],
+  "success_rate": {
+    "backend": "100% (7/7 tests passed)",
+    "frontend": "100% (all UI elements verified)"
+  },
+  "test_credentials": "No authentication required - open access app",
+  "seed_data_creation": "Used existing seeded schedule and squad data",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 38 complete. Playing XI filtering feature verified: (1) Pre-match predict with force=true returns playing_xi with 8-11 players per team (not full 25-man squad), (2) Source field indicates 'live', 'last_match', or 'squad_estimate', (3) Confidence field indicates 'api-verified' or 'squad-based', (4) Fetch-live endpoint returns liveData with claudePrediction and combinedPrediction, (5) Refresh-claude-prediction endpoint works correctly. Match ipl2026_015 (KKR vs LSG) was live during testing showing 40/1 at 5 overs.",
+  "feature_verification": {
+    "playing_xi_filtering": {
+      "status": "WORKING",
+      "description": "Pre-match predict returns playing_xi with team1_xi and team2_xi containing 8-11 players (filtered from full squad)"
+    },
+    "playing_xi_source": {
+      "status": "WORKING",
+      "description": "Source field correctly indicates 'live', 'last_match', or 'squad_estimate'"
+    },
+    "playing_xi_confidence": {
+      "status": "WORKING",
+      "description": "Confidence field correctly indicates 'api-verified' or 'squad-based'"
+    },
+    "fetch_live_endpoint": {
+      "status": "WORKING",
+      "description": "Returns liveData with isLive, claudePrediction with team1_win_pct/team2_win_pct, combinedPrediction with phase-based weights"
+    },
+    "refresh_claude_prediction": {
+      "status": "WORKING",
+      "description": "Returns claudePrediction, weightedPrediction, and combinedPrediction"
+    },
+    "combined_prediction_phase_weights": {
+      "status": "WORKING",
+      "description": "Phase-based weighting working - 'MID 1ST INNINGS' shows Algo 40% / Claude 60%"
+    }
+  },
+  "live_match_observed": {
+    "match_id": "ipl2026_015",
+    "teams": "KKR vs LSG",
+    "venue": "Eden Gardens, Kolkata",
+    "score_observed": "40/1 (5 ov)",
+    "combined_prediction": "KKR 50.2% vs LSG 49.8%",
+    "phase": "MID 1ST INNINGS",
+    "model_consensus": "HIGH - Both models agree (Diff: 0.4%)"
+  }
+}

@@ -76,6 +76,73 @@ async def _get_squads_for_match(team1: str, team2: str) -> dict:
     return squads
 
 
+def _filter_squads_to_playing_xi(match_squads: dict, sm_data: dict, team1: str, team2: str) -> dict:
+    """Filter full DB squads down to the 11 active Playing XI using SportMonks lineup data.
+    Falls back to full squad if lineup data is unavailable or name matching is too low."""
+    if not sm_data or not match_squads:
+        return match_squads
+
+    # Prefer playing_xi (non-subs) over full lineup
+    t1_lineup = sm_data.get("team1_playing_xi") or sm_data.get("team1_lineup", [])
+    t2_lineup = sm_data.get("team2_playing_xi") or sm_data.get("team2_lineup", [])
+
+    if not t1_lineup and not t2_lineup:
+        logger.info("No lineup data in SportMonks response, using full squads")
+        return match_squads
+
+    squad_names = list(match_squads.keys())
+    if len(squad_names) < 2:
+        return match_squads
+
+    # Build name sets from SportMonks lineup (lowercased for fuzzy matching)
+    t1_lineup_names = {p.get("name", "").lower() for p in t1_lineup if p.get("name")}
+    t2_lineup_names = {p.get("name", "").lower() for p in t2_lineup if p.get("name")}
+
+    def _match_player(player_name: str, lineup_names: set) -> bool:
+        """Check if a DB player name matches any lineup name (exact or partial)."""
+        pn = player_name.lower()
+        if pn in lineup_names:
+            return True
+        # Partial match: check if last name matches or name is substring
+        for ln in lineup_names:
+            if pn in ln or ln in pn:
+                return True
+            # Compare last names (common for Indian cricket names)
+            pn_parts = pn.split()
+            ln_parts = ln.split()
+            if len(pn_parts) > 1 and len(ln_parts) > 1 and pn_parts[-1] == ln_parts[-1]:
+                # Also check first initial matches
+                if pn_parts[0][0] == ln_parts[0][0]:
+                    return True
+        return False
+
+    # Filter team1 squad
+    t1_filtered = [p for p in match_squads.get(squad_names[0], [])
+                   if _match_player(p.get("name", ""), t1_lineup_names)]
+    # Filter team2 squad
+    t2_filtered = [p for p in match_squads.get(squad_names[1], [])
+                   if _match_player(p.get("name", ""), t2_lineup_names)]
+
+    # Only use filtered if we matched at least 8 players per team (tolerance for name mismatches)
+    filtered_squads = {}
+    if len(t1_filtered) >= 8 and t1_lineup_names:
+        filtered_squads[squad_names[0]] = t1_filtered
+        logger.info(f"Filtered {squad_names[0]} to {len(t1_filtered)} Playing XI players")
+    else:
+        filtered_squads[squad_names[0]] = match_squads.get(squad_names[0], [])
+        if t1_lineup_names:
+            logger.warning(f"Low XI match for {squad_names[0]} ({len(t1_filtered)}/{len(t1_lineup_names)}), using full squad")
+
+    if len(t2_filtered) >= 8 and t2_lineup_names:
+        filtered_squads[squad_names[1]] = t2_filtered
+        logger.info(f"Filtered {squad_names[1]} to {len(t2_filtered)} Playing XI players")
+    else:
+        filtered_squads[squad_names[1]] = match_squads.get(squad_names[1], [])
+        if t2_lineup_names:
+            logger.warning(f"Low XI match for {squad_names[1]} ({len(t2_filtered)}/{len(t2_lineup_names)}), using full squad")
+
+    return filtered_squads
+
 
 # ─── HEALTH & STATUS ─────────────────────────────────────────
 
@@ -567,6 +634,11 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
     # ── Fetch squads for Claude context ──
     match_squads = await _get_squads_for_match(team1, team2)
 
+    # ── Filter squads to Playing XI using SportMonks lineup data ──
+    live_squads = match_squads  # Default: full squad
+    if sm_data:
+        live_squads = _filter_squads_to_playing_xi(match_squads, sm_data, team1, team2)
+
     # ── Fetch weather for venue ──
     match_city = match_info.get("city", "")
     if not match_city and venue:
@@ -576,11 +648,11 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
     # ── Fetch news for match context ──
     match_news = await fetch_match_news(team1, team2)
 
-    # ── Claude Win Prediction (pass full SportMonks data + squads + weather + news + user context) ──
+    # ── Claude Win Prediction (pass Playing XI squads + weather + news + user context) ──
     claude_prediction = None
     if sm_data:
         claude_prediction = await claude_sportmonks_prediction(
-            sm_data, probs, match_info, squads=match_squads, weather=match_weather, news=match_news,
+            sm_data, probs, match_info, squads=live_squads, weather=match_weather, news=match_news,
             gut_feeling=body.gut_feeling, betting_odds_pct=body.current_betting_odds
         )
 
@@ -728,6 +800,10 @@ async def refresh_claude_prediction(match_id: str):
     match_squads = await _get_squads_for_match(
         match_info.get("team1", ""), match_info.get("team2", "")
     )
+
+    # ── Filter squads to Playing XI using SportMonks lineup data ──
+    live_squads = _filter_squads_to_playing_xi(match_squads, sm_data, match_info.get("team1", ""), match_info.get("team2", ""))
+
     # Fetch weather for Claude context
     refresh_city = match_info.get("city", "")
     if not refresh_city:
@@ -737,7 +813,7 @@ async def refresh_claude_prediction(match_id: str):
     # Fetch news for Claude context
     refresh_news = await fetch_match_news(match_info.get("team1", ""), match_info.get("team2", ""))
     claude_prediction = await claude_sportmonks_prediction(
-        sm_data, old_probs, match_info, squads=match_squads, weather=refresh_weather, news=refresh_news
+        sm_data, old_probs, match_info, squads=live_squads, weather=refresh_weather, news=refresh_news
     )
 
     if claude_prediction and not claude_prediction.get("error"):
@@ -1450,8 +1526,9 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
     momentum_data = await fetch_momentum(db, team1, team2)
 
     # Run 8-category algorithm (no scraping)
+    # Use filtered Playing XI squads if available, otherwise full squad
     prediction = compute_prediction(
-        squad_data=match_squads,
+        squad_data=prediction_squads,
         match_info=match_info,
         weather=prematch_weather,
         form_data=form_data,

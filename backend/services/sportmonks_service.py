@@ -150,14 +150,23 @@ def parse_fixture(raw: dict) -> dict:
         else:
             bowlers_inn2.append(entry)
 
-    # Parse lineup (playing XI)
+    # Parse lineup (playing XI + substitutes)
     lineup_raw = raw.get("lineup", [])
     if isinstance(lineup_raw, dict):
         lineup_raw = lineup_raw.get("data", [])
 
     team1_lineup = []
     team2_lineup = []
+    team1_playing_xi = []
+    team2_playing_xi = []
     for p in lineup_raw:
+        pivot = p.get("lineup", {})
+        if isinstance(pivot, dict):
+            tid = pivot.get("team_id")
+            is_sub = pivot.get("substitution", False)
+        else:
+            tid = None
+            is_sub = False
         player = {
             "id": p.get("id"),
             "name": p.get("fullname", f"{p.get('firstname', '')} {p.get('lastname', '')}".strip()),
@@ -165,23 +174,26 @@ def parse_fixture(raw: dict) -> dict:
             "bowling_style": p.get("bowlingstyle", ""),
             "position": p.get("position", {}).get("name", "") if isinstance(p.get("position"), dict) else "",
             "image": p.get("image_path", ""),
+            "is_sub": is_sub,
         }
-        # We need to figure out which team — check lineup pivot or team_id
-        pivot = p.get("lineup", {})
-        if isinstance(pivot, dict):
-            tid = pivot.get("team_id")
-        else:
-            tid = None
         if tid == team1_id:
             team1_lineup.append(player)
+            if not is_sub:
+                team1_playing_xi.append(player)
         elif tid == team2_id:
             team2_lineup.append(player)
+            if not is_sub:
+                team2_playing_xi.append(player)
         else:
             # Fallback: first 11 to team1, rest to team2
             if len(team1_lineup) < 11:
                 team1_lineup.append(player)
+                if not is_sub:
+                    team1_playing_xi.append(player)
             else:
                 team2_lineup.append(player)
+                if not is_sub:
+                    team2_playing_xi.append(player)
 
     # Build player name map from lineup
     player_names = {}
@@ -284,6 +296,8 @@ def parse_fixture(raw: dict) -> dict:
         "yet_to_bowl": yet_to_bowl,
         "team1_lineup": team1_lineup,
         "team2_lineup": team2_lineup,
+        "team1_playing_xi": team1_playing_xi,
+        "team2_playing_xi": team2_playing_xi,
         "recent_balls": recent_balls,
         "extras": extras,
         "source": "sportmonks",
