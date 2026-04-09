@@ -230,27 +230,41 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
 
         {/* Cat 5: Toss (9%) */}
         <FactorBar label="Toss Impact (Venue)" weight={factors.toss_impact?.weight || 0.09} logit={factors.toss_impact?.logit_contribution || 0} icon={CoinVertical}
-          tooltip={`Venue-specific toss data. Preferred: ${factors.toss_impact?.preferred_decision || "?"}. Dew factor: ${factors.toss_impact?.dew_factor || "none"}.`}
+          tooltip={factors.toss_impact?.dew_impact_text || `Venue toss data. Dew: ${factors.toss_impact?.dew_factor || "none"}.`}
           team1={t1} team2={t2}
           team1Detail={`${factors.toss_impact?.is_night ? "Night" : "Day"} | Dew: ${factors.toss_impact?.dew_factor || "none"}`}
-          team2Detail={`Pref: ${factors.toss_impact?.preferred_decision || "?"}`}
+          team2Detail={`Pref: ${factors.toss_impact?.preferred_decision || "?"} | Win%: ${Math.round((factors.toss_impact?.toss_win_pct || 0.5) * 100)}%`}
         />
+        {factors.toss_impact?.dew_impact_text && (
+          <div className="flex items-center text-[9px] -mt-1.5 mb-1.5 px-1">
+            <span className={`${factors.toss_impact?.dew_factor === "heavy" ? "text-[#FF9500]" : factors.toss_impact?.dew_factor === "moderate" ? "text-[#FFCC00]/80" : "text-[#525252]"}`}>
+              {factors.toss_impact.dew_impact_text}
+            </span>
+          </div>
+        )}
 
         {/* Cat 6: Bowling Depth (8%) */}
         <FactorBar label="Bowling Depth & Balance" weight={factors.bowling_depth?.weight || 0.08} logit={factors.bowling_depth?.logit_contribution || 0} icon={Target}
-          tooltip="Quality bowling overs. Variety (pace+spin) bonus. From squad roster."
+          tooltip={`Venue-weighted bowling quality. Pace assist: ${factors.bowling_depth?.venue_pace_assist || "?"}, Spin assist: ${factors.bowling_depth?.venue_spin_assist || "?"}`}
           team1={t1} team2={t2}
-          team1Detail={`${factors.bowling_depth?.team1_bowler_count || "?"} bowlers (P${factors.bowling_depth?.team1_pace_count || 0} S${factors.bowling_depth?.team1_spin_count || 0})`}
-          team2Detail={`${factors.bowling_depth?.team2_bowler_count || "?"} bowlers (P${factors.bowling_depth?.team2_pace_count || 0} S${factors.bowling_depth?.team2_spin_count || 0})`}
+          team1Detail={`${factors.bowling_depth?.team1_bowler_count || "?"} bowlers (P${factors.bowling_depth?.team1_pace_count || 0} S${factors.bowling_depth?.team1_spin_count || 0}) VQ:${factors.bowling_depth?.team1_venue_quality || "?"}`}
+          team2Detail={`${factors.bowling_depth?.team2_bowler_count || "?"} bowlers (P${factors.bowling_depth?.team2_pace_count || 0} S${factors.bowling_depth?.team2_spin_count || 0}) VQ:${factors.bowling_depth?.team2_venue_quality || "?"}`}
         />
 
         {/* Cat 7: Conditions (5%) */}
         <FactorBar label="Conditions (Weather/Dew)" weight={factors.conditions?.weight || 0.05} logit={factors.conditions?.logit_contribution || 0} icon={CloudSun}
-          tooltip={factors.conditions?.conditions_summary || "Real-time weather data. Dew, swing, spin conditions."}
+          tooltip={factors.conditions?.conditions_edge_text || "Real-time weather data."}
           team1={t1} team2={t2}
           team1Detail={`${factors.conditions?.condition || "?"} | ${factors.conditions?.temperature || "?"}C`}
           team2Detail={`Humidity: ${factors.conditions?.humidity || "?"}% | Dew: ${factors.conditions?.dew_factor || "none"}`}
         />
+        {factors.conditions?.conditions_edge_text && factors.conditions?.conditions_edge_text !== "Conditions relatively neutral for both teams" && (
+          <div className="flex items-center text-[9px] -mt-1.5 mb-1.5 px-1">
+            <span className={`${factors.conditions?.favours_team === "team1" ? "text-[#34C759]" : factors.conditions?.favours_team === "team2" ? "text-[#FF3B30]" : "text-[#525252]"}`}>
+              {factors.conditions.conditions_edge_text}
+            </span>
+          </div>
+        )}
 
         {/* Cat 8: Momentum (3%) */}
         <FactorBar label="Momentum (Last 2)" weight={factors.momentum?.weight || 0.03} logit={factors.momentum?.logit_contribution || 0} icon={Lightning}

@@ -483,7 +483,7 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
     toss_logit, toss_detail = _compute_toss_impact(venue_key, match_time, weather)
 
     # ━━━━━━ Category 6: Bowling Attack Depth (8%) ━━━━━━
-    bowl_depth_logit, bowl_detail = _compute_bowling_depth(remapped_squads, t1_rating, t2_rating)
+    bowl_depth_logit, bowl_detail = _compute_bowling_depth(remapped_squads, t1_rating, t2_rating, venue_key=venue_key)
 
     # ━━━━━━ Category 7: Conditions — Real Weather Data (5%) ━━━━━━
     conditions_logit, conditions_detail = _compute_conditions_from_weather(
@@ -660,14 +660,21 @@ def _compute_squad_ratings(squad_data: dict) -> Tuple:
 
 
 def _compute_toss_impact(venue_key: Optional[str], match_time: str, weather: dict) -> Tuple[float, dict]:
-    """Category 5: Venue-specific toss impact with dew from weather."""
+    """Category 5: Toss impact — dew/chasing bias translated into team-specific advantage.
+    
+    Key insight: Heavy dew = bowling second is harder = chasing team advantage.
+    Pre-toss, we don't know who bats first, but we quantify HOW MUCH toss matters.
+    The team with better batting depth benefits more from chasing (dew advantage).
+    The team with better pace bowling benefits more from bowling first (no dew).
+    """
     detail = {"venue_key": venue_key, "is_night": False, "preferred_decision": "unknown", "toss_win_pct": 0.52}
 
     if not venue_key or venue_key not in TOSS_LOOKUP:
         detail["preferred_decision"] = "bowl"
         detail["toss_win_pct"] = 0.53
-        # Even unknown venues have a slight chasing bias
-        return 0.09, detail  # 3.0 * (0.53 - 0.50) = 0.09
+        detail["dew_factor"] = "none"
+        detail["dew_impact_text"] = "Unknown venue — slight chasing bias assumed"
+        return 0.09, detail
 
     venue_data = TOSS_LOOKUP[venue_key]
     is_night = _is_night_match(match_time)
@@ -699,26 +706,46 @@ def _compute_toss_impact(venue_key: Optional[str], match_time: str, weather: dic
     detail["chasing_bias"] = selected.get("chasing_bias", 0)
     detail["dew_factor"] = dew_factor
 
-    # Compute toss logit: how much the toss winner's advantage deviates from 50%
-    # A toss_win_pct of 0.625 means a 12.5% edge → logit reflects this
     toss_win_pct = selected["toss_win_pct"]
     chasing_bias = selected.get("chasing_bias", 0)
-    # The logit represents venue-inherent toss advantage (not team-specific)
-    # Positive = venue significantly rewards toss winner (applies pre-toss as neutral)
-    # Since we don't know who wins the toss pre-match, we compute the magnitude
-    # of the venue's toss sensitivity — higher values = more volatile venue
-    toss_deviation = toss_win_pct - 0.50  # How much above 50% the toss winner gets
-    toss_logit = 3.0 * toss_deviation + 2.0 * chasing_bias
-    # Cap at reasonable range
-    toss_logit = max(-1.0, min(1.0, toss_logit))
+
+    # Dew impact text for frontend
+    if dew_factor == "heavy":
+        detail["dew_impact_text"] = "Heavy dew — massive chasing advantage. Bowling second extremely difficult. Team batting second favoured."
+        detail["dew_multiplier"] = 1.5
+    elif dew_factor == "moderate":
+        detail["dew_impact_text"] = "Moderate dew — clear chasing advantage. Wet ball makes bowling harder in 2nd innings."
+        detail["dew_multiplier"] = 1.2
+    elif is_night:
+        detail["dew_impact_text"] = "Night match — some dew expected. Slight chasing edge."
+        detail["dew_multiplier"] = 1.0
+    else:
+        detail["dew_impact_text"] = "Day match — no dew. Conditions neutral for both innings."
+        detail["dew_multiplier"] = 0.8
+
+    # Toss logit: venue toss sensitivity + dew-enhanced chasing bias
+    toss_deviation = toss_win_pct - 0.50
+    dew_multiplier = detail.get("dew_multiplier", 1.0)
+    toss_logit = (3.0 * toss_deviation + 2.5 * chasing_bias) * dew_multiplier
+    toss_logit = max(-1.5, min(1.5, toss_logit))
     detail["toss_logit_raw"] = round(toss_logit, 4)
 
     return toss_logit, detail
 
 
-def _compute_bowling_depth(squad_data: dict, t1_rating: dict, t2_rating: dict) -> Tuple[float, dict]:
-    """Category 6: Bowling Attack Depth from DB squad data (top 5 bowlers only, like Playing XI)."""
+def _compute_bowling_depth(squad_data: dict, t1_rating: dict, t2_rating: dict,
+                           venue_key: Optional[str] = None) -> Tuple[float, dict]:
+    """Category 6: Bowling Attack Depth — venue-aware, top 5 bowlers.
+    
+    At spin-friendly venues (Chepauk, Jaipur), team with more spinners gets a boost.
+    At pace-friendly venues (Mohali, Hyderabad), team with more pacers gets a boost.
+    Quality scores are weighted by venue surface to produce differentiated logits.
+    """
     detail = {}
+    venue_info = TOSS_LOOKUP.get(venue_key, {}) if venue_key else {}
+    v_pace_assist = venue_info.get("pace_assist", 0.45)
+    v_spin_assist = venue_info.get("spin_assist", 0.35)
+
     for team_key in ["team1", "team2"]:
         players = squad_data.get(team_key, [])
         bowler_entries = []
@@ -739,46 +766,64 @@ def _compute_bowling_depth(squad_data: dict, t1_rating: dict, t2_rating: dict) -
                     score = 3
                 else:
                     score = 2
+                is_pace = name in PACE_BOWLERS
+                is_spin = name in SPIN_BOWLERS
+                if not is_pace and not is_spin:
+                    is_pace = True  # default unknown bowlers to pace
+                # Venue-weighted score: pacers score more at pace venues, spinners at spin venues
+                venue_multiplier = v_pace_assist if is_pace else v_spin_assist
+                venue_score = score * 4 * (1 + venue_multiplier)
                 bowler_entries.append({
-                    "name": name, "score": score * 4, "rating": base_rating,
-                    "is_pace": name in PACE_BOWLERS,
-                    "is_spin": name in SPIN_BOWLERS,
+                    "name": name, "score": score * 4, "venue_score": round(venue_score, 1),
+                    "rating": base_rating, "is_pace": is_pace, "is_spin": is_spin,
                 })
 
-        # Sort by score descending & take top 5 (Playing XI bowlers)
-        bowler_entries.sort(key=lambda x: x["score"], reverse=True)
+        # Sort by venue_score descending & take top 5
+        bowler_entries.sort(key=lambda x: x["venue_score"], reverse=True)
         top5 = bowler_entries[:5]
         for b in top5:
             if b["is_pace"]:
                 pace_count += 1
             elif b["is_spin"]:
                 spin_count += 1
-            else:
-                pace_count += 1  # default
 
         total_quality = sum(b["score"] for b in top5)
+        total_venue_quality = sum(b["venue_score"] for b in top5)
         has_variety = pace_count >= 2 and spin_count >= 1
         detail[f"{team_key}_quality_score"] = round(total_quality, 1)
+        detail[f"{team_key}_venue_quality"] = round(total_venue_quality, 1)
         detail[f"{team_key}_bowler_count"] = len(top5)
         detail[f"{team_key}_pace_count"] = pace_count
         detail[f"{team_key}_spin_count"] = spin_count
         detail[f"{team_key}_variety"] = "pace+spin" if has_variety else "one-dimensional"
         detail[f"{team_key}_variety_bonus"] = 0.3 if has_variety else 0.0
+        detail[f"{team_key}_top_bowlers"] = [b["name"] for b in top5]
 
-    t1_q = detail.get("team1_quality_score", 50)
-    t2_q = detail.get("team2_quality_score", 50)
+    t1_vq = detail.get("team1_venue_quality", 50)
+    t2_vq = detail.get("team2_venue_quality", 50)
     t1_variety_bonus = detail.get("team1_variety_bonus", 0)
     t2_variety_bonus = detail.get("team2_variety_bonus", 0)
-    # Base logit from quality difference + variety bonus
-    bowl_depth_logit = 3.0 * ((t1_q - t2_q) / max(t1_q + t2_q, 1)) + (t1_variety_bonus - t2_variety_bonus)
+    # Use venue-weighted quality for the logit
+    bowl_depth_logit = 3.0 * ((t1_vq - t2_vq) / max(t1_vq + t2_vq, 1)) + (t1_variety_bonus - t2_variety_bonus)
+    detail["venue_key"] = venue_key
+    detail["venue_pace_assist"] = v_pace_assist
+    detail["venue_spin_assist"] = v_spin_assist
     return bowl_depth_logit, detail
 
 
 def _compute_conditions_from_weather(venue_key: Optional[str], match_time: str,
                                       weather: dict, squads: dict) -> Tuple[float, dict]:
-    """Category 7: Conditions based on REAL weather data + bowler type support."""
+    """Category 7: Conditions — team-specific advantage from real weather.
+    
+    Key logic:
+    - Heavy dew → team with better BATTING benefits (chasing becomes easier)
+    - High humidity + cool temp → team with more PACE BOWLERS benefits (swing)
+    - Hot + dry → team with more SPIN BOWLERS benefits
+    - Strong wind → higher scoring, benefits better batting lineup
+    """
     detail = {"is_night": False, "dew_factor": "none", "conditions_summary": "neutral",
-              "temperature": None, "humidity": None, "wind_kmh": None}
+              "temperature": None, "humidity": None, "wind_kmh": None,
+              "favours_team": "neutral", "conditions_edge_text": "No significant weather edge"}
 
     is_night = _is_night_match(match_time)
     detail["is_night"] = is_night
@@ -798,33 +843,104 @@ def _compute_conditions_from_weather(venue_key: Optional[str], match_time: str,
     detail["swing_conditions"] = cricket_impact.get("swing_conditions", "normal")
 
     conditions_logit = 0.0
+    edge_reasons = []
 
-    # Weather-based bowler advantage calculation
     humidity = current.get("humidity", 50) or 50
     temperature = current.get("temperature", 30) or 30
     wind = current.get("wind_speed_kmh", 0) or 0
+    dew_factor = cricket_impact.get("dew_factor", "none")
 
-    # Count pace/spin bowlers per team
-    t1_pace = sum(1 for p in squads.get("team1", []) if p.get("name", "") in PACE_BOWLERS)
-    t1_spin = sum(1 for p in squads.get("team1", []) if p.get("name", "") in SPIN_BOWLERS)
-    t2_pace = sum(1 for p in squads.get("team2", []) if p.get("name", "") in PACE_BOWLERS)
-    t2_spin = sum(1 for p in squads.get("team2", []) if p.get("name", "") in SPIN_BOWLERS)
+    # Count pace/spin bowlers per team (top 5 only)
+    t1_pace, t1_spin, t2_pace, t2_spin = 0, 0, 0, 0
+    for team_key in ["team1", "team2"]:
+        players = squads.get(team_key, [])
+        bowlers = [p for p in players if p.get("role") in ("Bowler", "All-rounder")]
+        bowlers_rated = sorted(bowlers, key=lambda p: STAR_PLAYERS.get(p.get("name", ""), 65), reverse=True)[:5]
+        pace = sum(1 for p in bowlers_rated if p.get("name", "") in PACE_BOWLERS or (p.get("name", "") not in SPIN_BOWLERS))
+        spin = sum(1 for p in bowlers_rated if p.get("name", "") in SPIN_BOWLERS)
+        if team_key == "team1":
+            t1_pace, t1_spin = pace, spin
+        else:
+            t2_pace, t2_spin = pace, spin
 
-    # Swing conditions favor pace: humid + overcast
-    if humidity > 70 and temperature < 28:
-        pace_bonus = 0.3 * ((t1_pace - t2_pace) / max(t1_pace + t2_pace, 1))
-        conditions_logit += pace_bonus
-        detail["pace_advantage"] = "team1" if t1_pace > t2_pace else "team2" if t2_pace > t1_pace else "equal"
+    detail["team1_pace_bowlers"] = t1_pace
+    detail["team1_spin_bowlers"] = t1_spin
+    detail["team2_pace_bowlers"] = t2_pace
+    detail["team2_spin_bowlers"] = t2_spin
 
-    # Hot + dry = spin friendly
-    if temperature > 35 and humidity < 40:
-        spin_bonus = 0.3 * ((t1_spin - t2_spin) / max(t1_spin + t2_spin, 1))
-        conditions_logit += spin_bonus
-        detail["spin_advantage"] = "team1" if t1_spin > t2_spin else "team2" if t2_spin > t1_spin else "equal"
+    # ── DEW EFFECT (biggest weather factor in T20) ──
+    if dew_factor == "heavy":
+        # Heavy dew: bowling in 2nd innings MUCH harder → batting strength matters more
+        # Team with superior batting gets a boost (they'd want to chase)
+        # Pre-toss: team with better batting depth is more likely to benefit
+        bat_diff = 0
+        t1_players = squads.get("team1", [])
+        t2_players = squads.get("team2", [])
+        t1_bat_quality = sum(STAR_PLAYERS.get(p.get("name", ""), 65) for p in t1_players if p.get("role") in ("Batsman", "WK-Batsman", "All-rounder"))
+        t2_bat_quality = sum(STAR_PLAYERS.get(p.get("name", ""), 65) for p in t2_players if p.get("role") in ("Batsman", "WK-Batsman", "All-rounder"))
+        # Normalize to top 7 batsmen
+        t1_bat_avg = t1_bat_quality / max(sum(1 for p in t1_players if p.get("role") in ("Batsman", "WK-Batsman", "All-rounder")), 1)
+        t2_bat_avg = t2_bat_quality / max(sum(1 for p in t2_players if p.get("role") in ("Batsman", "WK-Batsman", "All-rounder")), 1)
+        bat_diff = (t1_bat_avg - t2_bat_avg) / 100
+        dew_logit = 0.6 * bat_diff  # Strong effect
+        conditions_logit += dew_logit
+        if bat_diff > 0:
+            edge_reasons.append("Heavy dew favours team1 (stronger batting, chasing advantage)")
+        elif bat_diff < 0:
+            edge_reasons.append("Heavy dew favours team2 (stronger batting, chasing advantage)")
+        detail["dew_batting_edge"] = "team1" if bat_diff > 0 else "team2" if bat_diff < 0 else "equal"
+    elif dew_factor == "moderate":
+        t1_players = squads.get("team1", [])
+        t2_players = squads.get("team2", [])
+        t1_bat_quality = sum(STAR_PLAYERS.get(p.get("name", ""), 65) for p in t1_players if p.get("role") in ("Batsman", "WK-Batsman", "All-rounder"))
+        t2_bat_quality = sum(STAR_PLAYERS.get(p.get("name", ""), 65) for p in t2_players if p.get("role") in ("Batsman", "WK-Batsman", "All-rounder"))
+        t1_bat_avg = t1_bat_quality / max(sum(1 for p in t1_players if p.get("role") in ("Batsman", "WK-Batsman", "All-rounder")), 1)
+        t2_bat_avg = t2_bat_quality / max(sum(1 for p in t2_players if p.get("role") in ("Batsman", "WK-Batsman", "All-rounder")), 1)
+        bat_diff = (t1_bat_avg - t2_bat_avg) / 100
+        dew_logit = 0.35 * bat_diff
+        conditions_logit += dew_logit
+        if bat_diff > 0:
+            edge_reasons.append("Moderate dew slightly favours team1 (better batting)")
+        elif bat_diff < 0:
+            edge_reasons.append("Moderate dew slightly favours team2 (better batting)")
+        detail["dew_batting_edge"] = "team1" if bat_diff > 0 else "team2" if bat_diff < 0 else "equal"
 
-    # Strong wind penalizes shorter bowlers (lofted shots harder to control)
-    if wind > 25:
-        detail["wind_impact"] = "significant"
+    # ── SWING CONDITIONS: humid + cool ──
+    if humidity > 65 and temperature < 30:
+        pace_diff = (t1_pace - t2_pace) / max(t1_pace + t2_pace, 1)
+        swing_logit = 0.4 * pace_diff
+        conditions_logit += swing_logit
+        if t1_pace > t2_pace:
+            edge_reasons.append(f"Swing conditions (humidity {humidity}%) favour team1 ({t1_pace} pacers vs {t2_pace})")
+        elif t2_pace > t1_pace:
+            edge_reasons.append(f"Swing conditions (humidity {humidity}%) favour team2 ({t2_pace} pacers vs {t1_pace})")
+        detail["swing_edge"] = "team1" if t1_pace > t2_pace else "team2" if t2_pace > t1_pace else "equal"
+
+    # ── HOT & DRY: spin-friendly ──
+    if temperature > 33 and humidity < 45:
+        spin_diff = (t1_spin - t2_spin) / max(t1_spin + t2_spin, 1)
+        dry_logit = 0.35 * spin_diff
+        conditions_logit += dry_logit
+        if t1_spin > t2_spin:
+            edge_reasons.append(f"Hot dry conditions ({temperature}C) favour team1 ({t1_spin} spinners vs {t2_spin})")
+        elif t2_spin > t1_spin:
+            edge_reasons.append(f"Hot dry conditions ({temperature}C) favour team2 ({t2_spin} spinners vs {t1_spin})")
+        detail["dry_spin_edge"] = "team1" if t1_spin > t2_spin else "team2" if t2_spin > t1_spin else "equal"
+
+    # ── WIND: high-scoring games benefit stronger batting ──
+    if wind > 20:
+        detail["wind_impact"] = "significant — high scoring likely"
+        edge_reasons.append(f"Strong wind ({wind} kmh) — higher scoring game expected")
+
+    # Set summary
+    if conditions_logit > 0.01:
+        detail["favours_team"] = "team1"
+    elif conditions_logit < -0.01:
+        detail["favours_team"] = "team2"
+    else:
+        detail["favours_team"] = "neutral"
+
+    detail["conditions_edge_text"] = " | ".join(edge_reasons) if edge_reasons else "Conditions relatively neutral for both teams"
 
     return conditions_logit, detail
 

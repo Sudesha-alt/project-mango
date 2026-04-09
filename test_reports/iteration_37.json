@@ -1,0 +1,97 @@
+{
+  "summary": "Iteration 37 - Testing New Pre-Match Prediction Features: Venue-weighted bowling depth, dew impact text, and team-specific conditions. All 11 backend tests passed. Frontend verification confirmed all new fields display correctly.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "passed_tests": [
+    "API health check passes (version 4.1.0)",
+    "KKR vs LSG H2H returns non-zero wins (3-2) with source=historical_ipl",
+    "Toss impact includes dew_impact_text explaining dew conditions",
+    "Toss impact dew_multiplier is 1.5 for heavy dew (verified)",
+    "Bowling depth includes venue_key, venue_pace_assist, venue_spin_assist",
+    "Bowling depth team1_venue_quality and team2_venue_quality are different (venue-weighted)",
+    "Conditions includes favours_team field (team1/team2/neutral)",
+    "Conditions includes conditions_edge_text with specific team references",
+    "All 8 factors produce valid logit_contribution values",
+    "Pre-match prediction returns valid probability between 1-99%",
+    "RR vs MI at Guwahati - secondary home ground works correctly"
+  ],
+  "frontend_verification": {
+    "dew_impact_text_display": "VERIFIED - Toss Impact shows dew_impact_text: 'Heavy dew — massive chasing advantage. Bowling second extremely difficult. Team batting second favoured.'",
+    "venue_quality_display": "VERIFIED - Bowling Depth shows VQ values: KKR VQ:110.8, LSG VQ:112.4",
+    "conditions_edge_text_display": "VERIFIED - Conditions shows team-specific edge text: 'Heavy dew favours team1 (stronger batting, chasing advantage) | Swing conditions (humidity 79%) favour team2 (4 pacers vs 3)'",
+    "h2h_historical_display": "VERIFIED - H2H shows '3 wins' vs '2 wins (5 total)' for KKR vs LSG",
+    "matches_tested": [
+      "ipl2026_015 (KKR vs LSG at Eden Gardens) - All new fields displayed correctly",
+      "ipl2026_013 (RR vs MI at Guwahati) - HOME label, venue quality, dew impact all working"
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration37_venue_dew_conditions.py",
+    "/app/test_reports/pytest/iteration37_venue_dew_conditions_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "dew_impact_text correctly explains which team benefits from dew conditions",
+    "dew_multiplier values correct: 1.5 for heavy, 1.2 for moderate, 0.8-1.0 for none/light",
+    "Bowling depth venue_score calculation: score * 4 * (1 + venue_multiplier) produces differentiated values",
+    "Conditions favours_team correctly set based on dew/swing/spin analysis",
+    "conditions_edge_text provides specific team references with reasoning"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration37_venue_dew_conditions.py"
+  ],
+  "success_rate": {
+    "backend": "100% (11/11 tests passed)",
+    "frontend": "100% (all UI elements verified)"
+  },
+  "test_credentials": "No authentication required - open access app",
+  "seed_data_creation": "Used existing seeded schedule and squad data",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 37 complete. All new pre-match prediction features verified: (1) KKR vs LSG H2H returns 3-2 with source=historical_ipl, (2) Toss impact includes dew_impact_text and dew_multiplier (1.5 for heavy, 1.2 for moderate), (3) Bowling depth includes venue_key, venue_pace_assist, venue_spin_assist, and venue-weighted quality scores, (4) Conditions includes favours_team and conditions_edge_text with team-specific analysis, (5) All 8 factors produce valid logit_contribution values, (6) Prediction probability in valid 1-99% range.",
+  "feature_verification": {
+    "h2h_historical_ipl": {
+      "status": "WORKING",
+      "description": "KKR vs LSG H2H returns team1_wins=3, team2_wins=2, total=5 with source=historical_ipl"
+    },
+    "dew_impact_text": {
+      "status": "WORKING",
+      "description": "Toss impact includes descriptive dew_impact_text explaining chasing advantage"
+    },
+    "dew_multiplier": {
+      "status": "WORKING",
+      "description": "dew_multiplier=1.5 for heavy dew, 1.2 for moderate, 0.8-1.0 for none/light"
+    },
+    "bowling_depth_venue_fields": {
+      "status": "WORKING",
+      "description": "Bowling depth includes venue_key=eden_gardens, venue_pace_assist=0.5, venue_spin_assist=0.4"
+    },
+    "bowling_depth_venue_quality": {
+      "status": "WORKING",
+      "description": "team1_venue_quality and team2_venue_quality are different (venue-weighted scores)"
+    },
+    "conditions_favours_team": {
+      "status": "WORKING",
+      "description": "Conditions includes favours_team field (team1/team2/neutral)"
+    },
+    "conditions_edge_text": {
+      "status": "WORKING",
+      "description": "Conditions includes conditions_edge_text with specific team references and reasoning"
+    },
+    "all_8_factors_logit": {
+      "status": "WORKING",
+      "description": "All 8 factors (squad_strength, current_form, venue_pitch_home, h2h, toss_impact, bowling_depth, conditions, momentum) produce valid logit_contribution values"
+    },
+    "prediction_probability": {
+      "status": "WORKING",
+      "description": "Prediction returns valid probability between 1-99% with model='8-category-v2'"
+    }
+  }
+}
