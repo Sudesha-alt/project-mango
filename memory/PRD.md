@@ -23,6 +23,11 @@ Build a full-stack cricket prediction app for IPL 2026 with an 8-category math m
 ### Live Match — 8-Layer Claude Contextual Analysis
 Claude produces contextual adjustment (+/-30%) across 8 layers, not direct win %. System applies adjustment on algo baseline.
 
+### Playing XI Integration (Apr 2026)
+- Pre-match: Fetches actual Playing XI from SportMonks (live or last completed match), cross-references with DB squad, and filters down to ~11 active players for predictions.
+- Live match: Filters squads to Playing XI using SportMonks lineup data (excluding substitutes) before passing to Claude and combined prediction models.
+- Graceful fallback to full squad if API data unavailable or name matching falls below 8-player threshold.
+
 ### Key Endpoints
 - `POST /api/matches/{id}/pre-match-predict`
 - `POST /api/matches/{id}/fetch-live` (accepts gut_feeling, current_betting_odds)
@@ -37,9 +42,12 @@ Claude produces contextual adjustment (+/-30%) across 8 layers, not direct win %
 - [x] Conditions: team-specific advantage (dew→batting, swing→pace, dry→spin)
 - [x] 8-Layer Claude contextual analysis with contextual adjustment
 - [x] Phase-based dynamic weighting + Gut Feeling + Betting Odds
+- [x] Playing XI filtering for Pre-Match predictions (via SportMonks API)
+- [x] Playing XI filtering for Live Match predictions (fetch-live + refresh-claude)
+- [x] Substitute player exclusion from Playing XI (SportMonks lineup.substitution field)
 
 ## Backlog
 - [ ] P2: Shareable prediction card
 - [ ] P2: Celery migration for background jobs
 - [ ] P3: Prediction accuracy leaderboard
-- [ ] Refactor: Break server.py into modular routers
+- [ ] P3: Refactor: Break server.py into modular routers
