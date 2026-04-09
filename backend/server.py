@@ -584,30 +584,32 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
             gut_feeling=body.gut_feeling, betting_odds_pct=body.current_betting_odds
         )
 
-    # ── Use Claude's probabilities as the single source of truth ──
+    # ── Apply Claude's CONTEXTUAL ADJUSTMENT to the algo baseline ──
+    # Claude no longer produces direct win %. Instead it produces a +/- adjustment
+    # that gets applied on top of the algorithm's structural baseline.
     if claude_prediction and not claude_prediction.get("error"):
-        # Extract Claude's team-specific win percentages
-        claude_t1_pct = claude_prediction.get(f"{t1_short}_win_pct")
-        claude_t2_pct = claude_prediction.get(f"{t2_short}_win_pct")
-        if claude_t1_pct is None:
-            # Fallback: derive from predicted_winner + win_pct
-            winner = claude_prediction.get("predicted_winner", "")
-            win_pct = claude_prediction.get("win_pct", 50)
-            if winner == t1_short:
-                claude_t1_pct = win_pct
-                claude_t2_pct = 100 - win_pct
-            else:
-                claude_t2_pct = win_pct
-                claude_t1_pct = 100 - win_pct
-        # Normalize Claude's percentages into probabilities dict
-        claude_t1_pct = float(claude_t1_pct or 50)
-        claude_t2_pct = float(claude_t2_pct or 50)
-        claude_prediction["team1_win_pct"] = round(claude_t1_pct, 1)
-        claude_prediction["team2_win_pct"] = round(claude_t2_pct, 1)
-        # Override ensemble with Claude's probability
-        probs["ensemble"] = round(claude_t1_pct / 100, 4)
-        probs["source"] = "claude"
-        # Recalculate odds from Claude probability
+        adjustment = claude_prediction.get("contextual_adjustment_pct", 0)
+        try:
+            adjustment = float(adjustment)
+        except (TypeError, ValueError):
+            adjustment = 0.0
+        adjustment = max(-30, min(30, adjustment))  # Cap at +/- 30%
+
+        algo_t1_pct = probs.get("ensemble", 0.5) * 100
+        # Apply adjustment: positive favours team1, negative favours team2
+        adjusted_t1_pct = algo_t1_pct + adjustment
+        adjusted_t1_pct = max(1, min(99, adjusted_t1_pct))
+        adjusted_t2_pct = 100 - adjusted_t1_pct
+
+        claude_prediction["team1_win_pct"] = round(adjusted_t1_pct, 1)
+        claude_prediction["team2_win_pct"] = round(adjusted_t2_pct, 1)
+        claude_prediction["algo_baseline_t1_pct"] = round(algo_t1_pct, 1)
+        claude_prediction["adjustment_applied"] = round(adjustment, 1)
+
+        # Update ensemble with the adjusted probability
+        probs["ensemble"] = round(adjusted_t1_pct / 100, 4)
+        probs["source"] = "algo+claude_adjustment"
+        # Recalculate odds from adjusted probability
         team1_odds = calculate_odds_from_probability(probs["ensemble"])
         team2_odds = calculate_odds_from_probability(1 - probs["ensemble"])
 

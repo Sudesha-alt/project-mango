@@ -681,31 +681,22 @@ export default function LiveMatch() {
                         </div>
                       )}
 
-                      {/* ── MODEL 2: Claude Opus Prediction ── */}
+                      {/* ── MODEL 2: Claude Contextual Analysis (8-Layer) ── */}
                       {claudePred && !claudePred.error && (
                         <div className="bg-[#141414] border border-purple-500/30 rounded-md p-4 space-y-3" data-testid="claude-live-prediction">
                           <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-purple-400" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
-                            Claude Opus Prediction
+                            Claude Contextual Analysis
                           </h4>
-                          <p className="text-sm font-bold text-white leading-snug" data-testid="claude-headline">
-                            {claudePred.headline || (claudePred.analysis ? claudePred.analysis.split('.')[0] + '.' : claudePred.predicted_winner + ' to win')}
-                          </p>
 
-                          {/* Winner Verdict */}
-                          {claudePred.winner_verdict && (
-                            <div className="bg-purple-500/10 border border-purple-500/30 rounded-md p-3" data-testid="claude-winner-verdict">
-                              <p className="text-[9px] text-purple-300 uppercase mb-1 font-bold tracking-wider">Winner Verdict</p>
-                              <p className="text-sm font-bold text-purple-200 leading-snug">{claudePred.winner_verdict}</p>
-                            </div>
-                          )}
-                          {!claudePred.winner_verdict && claudePred.predicted_winner && (
-                            <div className="bg-purple-500/10 border border-purple-500/30 rounded-md p-3" data-testid="claude-winner-verdict">
-                              <p className="text-[9px] text-purple-300 uppercase mb-1 font-bold tracking-wider">Predicted Winner</p>
-                              <p className="text-sm font-bold text-purple-200">{claudePred.predicted_winner} to win</p>
+                          {/* Verdict (Layer 8) — shown first, prominently */}
+                          {claudePred.layer_8_verdict && (
+                            <div className="bg-purple-500/10 border border-purple-500/30 rounded-md p-3" data-testid="claude-verdict">
+                              <p className="text-[9px] text-purple-300 uppercase mb-1.5 font-bold tracking-wider">Verdict</p>
+                              <p className="text-[11px] text-purple-100 leading-[1.8] whitespace-pre-line">{claudePred.layer_8_verdict}</p>
                             </div>
                           )}
 
-                          {/* Win probabilities */}
+                          {/* Adjusted Win % + Contextual Adjustment */}
                           <div className="grid grid-cols-2 gap-2">
                             <div className="bg-purple-500/10 border border-purple-500/20 rounded px-3 py-2.5 text-center">
                               <p className="text-[9px] text-purple-300 uppercase">{t1Short}</p>
@@ -717,58 +708,86 @@ export default function LiveMatch() {
                             </div>
                           </div>
 
-                          <div className="flex items-center gap-2">
+                          {/* Adjustment detail */}
+                          {claudePred.contextual_adjustment_pct != null && (
+                            <div className="flex items-center justify-between bg-[#0A0A0A] border border-purple-500/10 rounded px-3 py-2" data-testid="claude-adjustment">
+                              <span className="text-[9px] text-[#737373] uppercase">Contextual Adjustment</span>
+                              <span className={`text-sm font-bold font-mono ${parseFloat(claudePred.contextual_adjustment_pct) > 0 ? 'text-[#34C759]' : parseFloat(claudePred.contextual_adjustment_pct) < 0 ? 'text-[#FF3B30]' : 'text-[#A1A1AA]'}`}>
+                                {parseFloat(claudePred.contextual_adjustment_pct) > 0 ? '+' : ''}{claudePred.contextual_adjustment_pct}% {parseFloat(claudePred.contextual_adjustment_pct) > 0 ? t1Short : parseFloat(claudePred.contextual_adjustment_pct) < 0 ? t2Short : ''}
+                              </span>
+                            </div>
+                          )}
+
+                          {/* Confidence + Momentum + Market Mispricing */}
+                          <div className="flex items-center gap-2 flex-wrap">
                             <span className={`text-[9px] px-2 py-0.5 rounded font-bold uppercase ${
                               claudePred.momentum === "BATTING" ? "bg-[#34C759]/15 text-[#34C759]" :
                               claudePred.momentum === "BOWLING" ? "bg-[#FF3B30]/15 text-[#FF3B30]" :
                               "bg-[#525252]/15 text-[#A1A1AA]"
                             }`}>Momentum: {claudePred.momentum}</span>
                             <span className="text-[9px] px-2 py-0.5 rounded font-bold bg-purple-500/10 text-purple-400">
-                              Confidence: {claudePred.confidence}
+                              Confidence: {claudePred.adjustment_confidence || claudePred.confidence}
                             </span>
+                            {claudePred.market_mispricing && claudePred.market_mispricing !== "No" && (
+                              <span className="text-[9px] px-2 py-0.5 rounded font-bold bg-[#FF9500]/10 text-[#FF9500]">
+                                Market Mispricing: {claudePred.market_mispricing}
+                              </span>
+                            )}
                           </div>
 
-                          {/* Full Narrative Analysis (new flowing style) */}
-                          {claudePred.analysis && (
-                            <div className="bg-[#0A0A0A] border border-purple-500/10 rounded-md p-4" data-testid="claude-analysis-narrative">
-                              <p className="text-[11px] text-[#D4D4D4] leading-[1.8] whitespace-pre-line">{claudePred.analysis}</p>
+                          {/* Primary + Secondary Drivers */}
+                          {(claudePred.primary_driver || claudePred.secondary_driver) && (
+                            <div className="bg-[#0A0A0A] border border-purple-500/10 rounded p-3 space-y-1.5">
+                              {claudePred.primary_driver && (
+                                <div>
+                                  <span className="text-[8px] text-purple-300 uppercase font-bold">Primary Driver: </span>
+                                  <span className="text-[10px] text-[#D4D4D4]">{claudePred.primary_driver}</span>
+                                </div>
+                              )}
+                              {claudePred.secondary_driver && (
+                                <div>
+                                  <span className="text-[8px] text-[#737373] uppercase font-bold">Secondary: </span>
+                                  <span className="text-[10px] text-[#A3A3A3]">{claudePred.secondary_driver}</span>
+                                </div>
+                              )}
+                              {claudePred.market_mispricing_detail && (
+                                <div>
+                                  <span className="text-[8px] text-[#FF9500] uppercase font-bold">Market Missing: </span>
+                                  <span className="text-[10px] text-[#A3A3A3]">{claudePred.market_mispricing_detail}</span>
+                                </div>
+                              )}
                             </div>
                           )}
 
-                          {/* Fallback: old-style reasoning if no analysis field */}
-                          {!claudePred.analysis && claudePred.reasoning && (
-                            <p className="text-[11px] text-[#D4D4D4] leading-relaxed">{claudePred.reasoning}</p>
+                          {/* 8 Analytical Layers (collapsible) */}
+                          {(claudePred.layer_1_batters || claudePred.layer_2_bowling) && (
+                            <details className="group" data-testid="claude-layers">
+                              <summary className="text-[10px] text-purple-300 uppercase cursor-pointer hover:text-purple-200 font-bold tracking-wider py-1">
+                                8-Layer Deep Analysis
+                              </summary>
+                              <div className="mt-2 space-y-2">
+                                {[
+                                  { key: "layer_1_batters", label: "L1 — Batters at Crease" },
+                                  { key: "layer_2_bowling", label: "L2 — Bowling Resources" },
+                                  { key: "layer_3_batting_depth", label: "L3 — Batting Depth & Tail" },
+                                  { key: "layer_4_pitch_conditions", label: "L4 — Pitch & Conditions" },
+                                  { key: "layer_5_matchups", label: "L5 — Key Matchups" },
+                                  { key: "layer_6_momentum", label: "L6 — Momentum & Pressure" },
+                                  { key: "layer_7_impact_player", label: "L7 — Impact Player" },
+                                ].map(({ key, label }) => claudePred[key] && (
+                                  <div key={key} className="bg-[#0A0A0A] border border-white/5 rounded p-2.5">
+                                    <p className="text-[8px] text-purple-300/70 uppercase font-bold mb-1">{label}</p>
+                                    <p className="text-[10px] text-[#A3A3A3] leading-[1.7] whitespace-pre-line">{claudePred[key]}</p>
+                                  </div>
+                                ))}
+                              </div>
+                            </details>
                           )}
 
-                          {/* Key Player */}
-                          {claudePred.key_player && (
-                            <div className="bg-[#0A0A0A] border border-purple-500/10 rounded p-2.5">
-                              <p className="text-[9px] text-purple-300 uppercase mb-1">Key Player</p>
-                              <p className="text-[10px] text-[#D4D4D4]">{claudePred.key_player}</p>
-                            </div>
-                          )}
-
-                          {/* Legacy fields fallback */}
-                          {!claudePred.analysis && (
-                            <div className="grid grid-cols-1 gap-2">
-                              {claudePred.batting_depth_assessment && (
-                                <div className="bg-[#0A0A0A] border border-white/5 rounded p-2.5">
-                                  <p className="text-[9px] text-[#737373] uppercase mb-1">Batting Depth</p>
-                                  <p className="text-[10px] text-[#A3A3A3] leading-relaxed">{claudePred.batting_depth_assessment}</p>
-                                </div>
-                              )}
-                              {claudePred.bowling_assessment && (
-                                <div className="bg-[#0A0A0A] border border-white/5 rounded p-2.5">
-                                  <p className="text-[9px] text-[#737373] uppercase mb-1">Bowling Options</p>
-                                  <p className="text-[10px] text-[#A3A3A3] leading-relaxed">{claudePred.bowling_assessment}</p>
-                                </div>
-                              )}
-                              {claudePred.key_matchup && (
-                                <div className="bg-[#0A0A0A] border border-purple-500/10 rounded p-2.5">
-                                  <p className="text-[9px] text-purple-300 uppercase mb-1">Key Matchup</p>
-                                  <p className="text-[10px] text-[#D4D4D4]">{claudePred.key_matchup}</p>
-                                </div>
-                              )}
+                          {/* Algo baseline info */}
+                          {claudePred.algo_baseline_t1_pct != null && (
+                            <div className="text-[9px] text-[#525252] italic">
+                              Algo baseline: {t1Short} {claudePred.algo_baseline_t1_pct}% → adjusted to {claudePred.team1_win_pct}% ({claudePred.adjustment_applied > 0 ? '+' : ''}{claudePred.adjustment_applied}%)
                             </div>
                           )}
                         </div>

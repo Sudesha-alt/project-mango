@@ -279,14 +279,10 @@ def compute_live_prediction(sm_data: dict, claude_prediction: dict,
         bowlers_remaining = 0.5
 
     # Factor 5: Pre-match Base Probability (10%)
-    # Prefer Claude's live win % as the base anchor (most informed signal)
+    # Prefer the algo+claude adjusted probability (contextual adjustment applied)
     claude_t1_pct = None
     if claude_prediction and not claude_prediction.get("error"):
         claude_t1_pct = claude_prediction.get("team1_win_pct")
-        if claude_t1_pct is None:
-            # Try team-specific keys
-            t1_short = match_info.get("team1Short", "")
-            claude_t1_pct = claude_prediction.get(f"{t1_short}_win_pct")
         if claude_t1_pct is not None:
             claude_t1_pct = float(claude_t1_pct)
 
@@ -456,6 +452,7 @@ def compute_combined_prediction(
 
     # Get team1 win % from both models
     algo_t1_pct = float(algo_pred.get("team1_pct", 50)) if algo_pred else 50.0
+    # Claude now provides adjusted team1_win_pct (algo baseline + contextual adjustment)
     claude_t1_pct = float(claude_pred.get("team1_win_pct", 50)) if claude_pred and not claude_pred.get("error") else 50.0
 
     # Gut feeling and betting odds adjustments

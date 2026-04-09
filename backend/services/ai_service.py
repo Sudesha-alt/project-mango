@@ -922,7 +922,6 @@ async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_in
     squad1_text = format_squad(squad1)
     squad2_text = format_squad(squad2)
 
-    batting_team = sm_data.get("batting_team", team1)
     current_inn = sm_data.get("current_innings", 1)
     current_score = sm_data.get("current_score", {})
     target = sm_data.get("target")
@@ -960,12 +959,6 @@ async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_in
     # Full bowling card for current innings
     bowl_key = f"bowlers_inn{current_inn}"
     all_bowlers = sm_data.get(bowl_key, [])
-    full_bowl_text = "\n".join(
-        f"  {bw.get('name','?')} — {bw.get('overs',0)}-{bw.get('maidens',0)}-"
-        f"{bw.get('runs',0)}-{bw.get('wickets',0)} Econ:{bw.get('economy',0)}"
-        + (" *BOWLING*" if bw.get('active') else "")
-        for bw in all_bowlers
-    ) or "  No bowling data"
 
     # Yet to bowl
     yet_to_bowl = sm_data.get("yet_to_bowl", [])
@@ -1023,36 +1016,113 @@ async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_in
 
     chat = _get_claude_chat(
         f"sm-live-pred-{uuid.uuid4().hex[:8]}",
-        """You are an elite IPL cricket analyst giving a LIVE match verdict to a friend who's watching the game. 
-You talk like a real cricket expert — conversational, bold, data-driven. You reference SPECIFIC player names, exact numbers from the scorecard, run rates, balls remaining, bowling figures. 
+        """You are an expert cricket analyst providing real-time win probability assessment for IPL matches. Your role is NOT to calculate run-rate-based probability — that is handled separately by a statistical model. Your exclusive job is to identify and quantify contextual factors that the run-rate model and betting markets are likely mispricing.
 
-Write your analysis as ONE flowing narrative — no bullet points, no section headers. Start with the bottom line (who wins), then explain WHY using the live match data, then end with a specific verdict (predicted margin + probability).
+You will be given:
+- Current match state (score, wickets, overs, target if applicable)
+- Pre-game algorithm probability (the structural baseline)
+- Current betting market odds (for reference only)
+- Playing XIs of both teams
 
-Style guide (follow this tone exactly):
-- "Bottom line: [TEAM] should win this [comfortably/in a close finish]. Here's the real reasoning:"
-- Reference actual scorecard numbers: "X needs 53 off 24 balls — that's 13.25 per over"
-- Name specific players and their figures: "Rashid Khan was devastating — 3/17 in 4 overs"
-- Identify the one wildcard/threat: "KL Rahul (87* off 47) is the one wildcard"
-- End with: "Verdict: [TEAM] wins by [margin]. There's roughly a [X]% chance [OTHER TEAM] pulls off [scenario]."
+Your analysis must focus ONLY on the following eight contextual layers. Do not restate the run rate or obvious match arithmetic. Assume the person reading this already knows the score.
 
+---
+LAYER 1 — BATTERS AT THE CREASE
+Analyse the specific batters currently batting. For each:
+- Their personal record chasing vs defending at this venue
+- Their record against the specific bowling types they will face in the next 6 overs
+- Whether they are a "cold bat" (just came in) or "set batter" (15+ balls faced)
+- Their specific form in this IPL season so far
+- Current partnership: runs scored, balls faced, and whether the run rate within this partnership is accelerating, steady, or decelerating relative to what is required
+State clearly: does the current batting partnership represent an ADVANTAGE or DISADVANTAGE relative to what the run rate model assumes about average batting quality?
+
+---
+LAYER 2 — BOWLING RESOURCES REMAINING
+Analyse what bowling is left for the fielding team:
+- Which bowlers have overs remaining and how many
+- Quality differential between bowlers already used and those still to bowl
+- Whether the best bowler has already bowled their full quota
+- Any specific matchup advantages — e.g. a left-arm spinner yet to bowl against a right-hand heavy batting lineup
+- Specifically identify who will bowl overs 17-20 for the defending team and rate each as: [Proven death bowler / Adequate / Vulnerability] based on IPL career death-overs economy and strike rate
+State clearly: is the remaining bowling attack STRONGER, WEAKER, or EQUAL to what a generic run-rate model would assume?
+
+---
+LAYER 3 — BATTING DEPTH AND TAIL RISK
+Look beyond the current partnership:
+- If the next 2 wickets fall, who comes in and what is their realistic scoring ability?
+- Is the batting team top-heavy (danger of collapse) or deep (resilient)?
+- For a chasing team specifically: do they have a finisher of proven quality at 7 or 8, or does their batting end at 6?
+State clearly: does batting depth INCREASE or DECREASE the chasing or defending team's probability beyond what the current wickets-in-hand suggests?
+
+---
+LAYER 4 — PITCH AND CONDITIONS AS REVEALED BY THIS GAME
+This is distinct from pre-game pitch reports. Analyse what the pitch has ACTUALLY done in this match:
+- Is it playing faster or slower than the venue historical average?
+- Have spinners or pacers taken wickets — and does this signal something for the remaining overs?
+- Has dew arrived or is it visibly affecting grip and movement?
+- Is the pitch deteriorating (helping bowlers more in innings 2) or holding up?
+State clearly: do actual in-game conditions FAVOUR the batting or bowling side more than pre-game models assumed?
+
+---
+LAYER 5 — SPECIFIC HIGH-LEVERAGE MATCHUPS IN NEXT 6 OVERS
+Identify 1-2 specific batter vs bowler matchups that will likely occur in the next 6 overs and that could swing the game:
+- What is the historical IPL record in this specific matchup?
+- Who holds the advantage and by how much?
+- Is this a matchup the market is likely underpricing or overpricing?
+Only include matchups where you have genuine statistical basis — do not speculate.
+
+---
+LAYER 6 — MOMENTUM AND PRESSURE ASYMMETRY
+Assess one non-statistical factor:
+- Is one team playing under significantly more pressure than the other (must-win situation, 0-2 in season, captain under scrutiny)?
+- Has a recent event in this match (dropped catch, contentious decision, injury scare) shifted psychological momentum in a way not captured by the score?
+- Is one captain making notably better or worse tactical decisions in this match?
+Keep this brief — 2-3 sentences maximum. Do not overweight psychological factors.
+
+---
+LAYER 7 — IMPACT PLAYER STATUS
+- Has either team used their Impact Player yet?
+- If not, who are the likely Impact Player options and what does each option signal about the team's tactical read of the match?
+- If yes, did the substitution strengthen batting or bowling, and has it changed the effective XI balance?
+State clearly: does Impact Player availability or usage represent an ADVANTAGE for either team beyond what the current scorecard shows?
+
+---
+LAYER 8 — VERDICT
+According to all the data from Layers 1-7, who is going to win this match? Pick ONE team with strong, specific reasoning. Be bold and decisive. Reference exact numbers, player names, and match situation. Do not hedge.
+
+---
 CRITICAL: Only use IPL 2023-2026 data. Only reference players from the provided squads. Be decisive — never say "too close to call." Always pick a winner."""
     )
 
-    prompt = f"""LIVE MATCH: {team1} ({t1_short}) vs {team2} ({t2_short}) at {venue}
-{match_date_text}
-Innings: {current_inn} | Status: {sm_data.get('status', 'Live')}
-{sm_data.get('note', '')}
+    # Build bowling summary with overs bowled
+    bowlers_summary = []
+    for bw in all_bowlers:
+        name = bw.get('name', '?')
+        overs = bw.get('overs', 0)
+        runs = bw.get('runs', 0)
+        wickets = bw.get('wickets', 0)
+        bowlers_summary.append(f"  {name}: {overs} overs, {runs} runs, {wickets} wickets")
+    bowlers_summary_text = "\n".join(bowlers_summary) or "  No bowler data"
+
+    # Recent 3 overs scoring
+    recent_overs_text = recent_text
+
+    # Pre-game algo probability
+    algo_t1_pct = algo_probs.get("ensemble", 0.5) * 100
+    algo_t2_pct = 100 - algo_t1_pct
+
+    # Market odds text
+    market_text = "Not provided"
+    if betting_odds_pct is not None and betting_odds_pct > 0:
+        market_text = f"{t1_short} {betting_odds_pct}% / {t2_short} {round(100 - betting_odds_pct, 1)}%"
+
+    prompt = f"""CURRENT MATCH STATE:
+- {team1} ({t1_short}) vs {team2} ({t2_short}) at {venue}
+- {match_date_text}
+- Innings: {"1st" if current_inn == 1 else "2nd"}, Over: {current_score.get('overs',0)}, Score: {current_score.get('runs',0)}/{current_score.get('wickets',0)}{f', Target: {target}' if target else ''}
+- CRR: {sm_data.get('crr', 0)} | RRR: {sm_data.get('rrr', 'N/A')}
+- {sm_data.get('note', '')}
 {prev_inn_text}
-
-=== {team1} FULL SQUAD ===
-{squad1_text}
-
-=== {team2} FULL SQUAD ===
-{squad2_text}
-
-=== CURRENT SCORE ===
-{batting_team} batting: {current_score.get('runs',0)}/{current_score.get('wickets',0)} in {current_score.get('overs',0)} overs
-CRR: {sm_data.get('crr', 0)} | RRR: {sm_data.get('rrr', 'N/A')}
 
 === BATSMEN AT CREASE ===
 {active_bat_text}
@@ -1060,51 +1130,58 @@ CRR: {sm_data.get('crr', 0)} | RRR: {sm_data.get('rrr', 'N/A')}
 === FULL BATTING CARD (this innings) ===
 {full_bat_text}
 
-=== YET TO BAT (consider their IPL career form & finishing ability) ===
+=== YET TO BAT ===
 {ytb_text}
+
+=== RECENT BALLS (last 12) ===
+{recent_overs_text}
+
+PRE-GAME ALGORITHM PROBABILITY: {t1_short} {round(algo_t1_pct, 1)}% / {t2_short} {round(algo_t2_pct, 1)}%
+CURRENT MARKET ODDS IMPLIED PROBABILITY: {market_text}
+
+PLAYING XIs:
+{team1} ({t1_short}):
+{squad1_text}
+
+{team2} ({t2_short}):
+{squad2_text}
+
+OVERS BOWLED BY EACH BOWLER SO FAR:
+{bowlers_summary_text}
 
 === CURRENT BOWLER ===
 {active_bwl_text}
 
-=== FULL BOWLING CARD (this innings) ===
-{full_bowl_text}
-
-=== YET TO BOWL (consider their death overs record & T20 form) ===
+=== YET TO BOWL ===
 {ytbowl_text}
 
-=== RECENT BALLS (momentum indicator) ===
-{recent_text}
-
-=== WEATHER CONDITIONS (affects dew, swing, player fatigue) ===
+=== WEATHER CONDITIONS ===
 {weather_text}
 
-=== LATEST NEWS & CONTEXT (injuries, form updates, team changes) ===
+=== LATEST NEWS ===
 {news_text}
 {user_context_text}
-=== ALGORITHM PROBABILITIES (for reference only, use your own analysis) ===
-{json.dumps(algo_probs, indent=2, default=str)[:800]}
 
-IMPORTANT: Consider the FULL SQUADS of both teams. Look at who's still to bat, who's bowled their quota, and the match equation. Use ONLY IPL 2023-2026 knowledge. Reference actual player names and their current match figures.
-
-Write your analysis as a FLOWING NARRATIVE — like you're explaining to a cricket-savvy friend. Do NOT use section headers or bullet points. Start with the bottom line, explain the reasoning with specific numbers, identify the key threat/wildcard, and end with a decisive verdict.
-
-Also provide HISTORICAL FACTORS for {t1_short} (values 0 to 1):
+Analyse all 8 layers. For each layer, be specific — reference actual player names, match figures, and IPL 2023-2026 records. Do NOT restate obvious match arithmetic. Focus on what the run-rate model and market odds are MISSING.
 
 Return JSON:
 {{
-  "{t1_short}_win_pct": number (0-100),
-  "{t2_short}_win_pct": number (0-100, must equal 100 - {t1_short}_win_pct),
+  "layer_1_batters": "Your analysis of batters at crease. Conclude with: ADVANTAGE [team] or DISADVANTAGE [team] or NEUTRAL",
+  "layer_2_bowling": "Your analysis of bowling resources. Conclude with: remaining attack is STRONGER / WEAKER / EQUAL vs model assumption. Include death overs 17-20 assessment.",
+  "layer_3_batting_depth": "Your analysis of batting depth. Conclude with: depth INCREASES or DECREASES probability",
+  "layer_4_pitch_conditions": "Your analysis of actual in-game pitch and conditions. Conclude with: conditions FAVOUR batting or bowling side",
+  "layer_5_matchups": "1-2 specific high-leverage batter vs bowler matchups with IPL records",
+  "layer_6_momentum": "Brief 2-3 sentence momentum/pressure assessment",
+  "layer_7_impact_player": "Impact Player status and tactical implications",
+  "layer_8_verdict": "Bold, decisive verdict: who wins and WHY. Reference specific numbers, players, match situation. Include predicted margin. Like: 'Bottom line: GT should win this comfortably. DC need 53 off 24 balls at 13.25 per over — their current rate is only 9.88. Rashid Khan was devastating (3/17 in 4 overs). Verdict: GT wins by 15-25 runs.'",
+  "contextual_adjustment_pct": number (-30 to +30, positive = favours {t1_short}, negative = favours {t2_short}),
+  "adjustment_confidence": "Low" or "Medium" or "High",
+  "primary_driver": "One sentence — the single most important contextual factor driving the adjustment",
+  "secondary_driver": "One sentence — second most important factor",
+  "market_mispricing": "Yes" or "No" or "Possible",
+  "market_mispricing_detail": "Brief explanation of what the market is missing (if applicable)",
   "predicted_winner": "{t1_short}" or "{t2_short}",
-  "analysis": "Your FULL narrative analysis as one flowing text. 4-8 sentences. Start: 'Bottom line: [TEAM] should win this [how]. Here's the real reasoning:' Then reference specific scorecard numbers, player figures, run rates, balls remaining. Identify the one wildcard. End: 'Verdict: [TEAM] wins by [margin]. There's roughly a [X]% chance [OTHER TEAM] pulls off [scenario].'",
-  "key_player": "The single most impactful player right now and why",
-  "momentum": "BATTING" or "BOWLING" or "EVEN",
-  "confidence": "Low" or "Medium" or "High",
-  "historical_factors": {{
-    "h2h_win_pct": number (0-1),
-    "venue_win_pct": number (0-1),
-    "recent_form_pct": number (0-1),
-    "toss_advantage_pct": number (0-1)
-  }}
+  "momentum": "BATTING" or "BOWLING" or "EVEN"
 }}"""
 
     try:
@@ -1115,7 +1192,7 @@ Return JSON:
         return {
             "error": str(e),
             "predicted_winner": "N/A",
-            "win_pct": 50,
-            "headline": "Live prediction unavailable",
-            "reasoning": f"Claude analysis failed: {e}",
+            "contextual_adjustment_pct": 0,
+            "adjustment_confidence": "Low",
+            "layer_8_verdict": f"Claude analysis failed: {e}",
         }

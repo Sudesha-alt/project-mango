@@ -1,7 +1,7 @@
 # The Lucky 11 — IPL 2026 Cricket Prediction Platform
 
 ## Original Problem Statement
-Build a full-stack cricket prediction app for IPL 2026 with an 8-category math model, Claude Opus narrative predictions, live scoring, and advanced prediction weighting.
+Build a full-stack cricket prediction app for IPL 2026 with an 8-category math model, Claude Opus contextual analysis, live scoring, and advanced prediction weighting.
 
 ## Core Architecture
 - **Frontend**: React + Tailwind CSS + Shadcn UI
@@ -13,22 +13,33 @@ Build a full-stack cricket prediction app for IPL 2026 with an 8-category math m
 ### Pre-Match Prediction (8-Category Model)
 1. Squad Strength & Balance (25%)
 2. Current Season Form (21%)
-3. Venue + Pitch + Home Advantage (18%) — pitch type, pace/spin assist, secondary home venues
-4. Head-to-Head (11%) — IPL 2023-2025 H2H data
-5. Toss Impact (9%) — venue-specific toss_win_pct with dew
-6. Bowling Attack Depth (8%) — top 5 bowlers with variety bonus
-7. Conditions/Weather (5%) — Open-Meteo
+3. Venue + Pitch + Home Advantage (18%)
+4. Head-to-Head (11%) — IPL 2023-2025
+5. Toss Impact (9%)
+6. Bowling Attack Depth (8%)
+7. Conditions/Weather (5%)
 8. Team Momentum (3%)
 
-### Live Match Prediction
-- **Weighted Model**: Claude's win % fed directly as base anchor (Factor 5)
-- **Phase-Based Dynamic Weighting** (5 phases: Algo vs Claude blend)
-- **Combined Prediction** with Gut Feeling (3%) + Betting Odds (7%)
-- **Claude Opus**: Natural flowing narrative analysis style:
-  - "Bottom line: [TEAM] should win this [how]. Here's the real reasoning:"
-  - References specific scorecard numbers, player figures, run rates
-  - Identifies the key wildcard player
-  - "Verdict: [TEAM] wins by [margin]. There's roughly [X]% chance [OTHER] pulls off [scenario]."
+### Live Match Prediction — 8-Layer Contextual Analysis
+**Claude's Role**: Produces a contextual adjustment (+/- %) across 8 analytical layers. Claude does NOT produce direct win %. The system applies Claude's adjustment on top of the algorithm baseline.
+
+**8 Layers:**
+1. Batters at Crease — set vs cold bat, partnership rate, advantage assessment
+2. Bowling Resources Remaining — death overs 17-20 bowler rating, quota analysis
+3. Batting Depth & Tail Risk — finisher quality, collapse risk
+4. Pitch & Conditions (in-game) — actual pitch behavior vs pre-game assumptions
+5. High-Leverage Matchups — specific batter vs bowler IPL records
+6. Momentum & Pressure Asymmetry — pressure situations, captain tactics
+7. Impact Player Status — substitution implications
+8. Verdict — bold, decisive, with predicted margin
+
+**Output**: contextual_adjustment_pct (+/-30%), adjustment_confidence, primary/secondary drivers, market_mispricing signal
+
+**Weighting System**:
+- Algorithm computes structural baseline
+- Claude's contextual adjustment is applied on top
+- Phase-based blending: Post-Toss (Algo 70%/Claude 30%) → Late Game (0%/100%)
+- User inputs: Gut Feeling (3%), Betting Odds (7%)
 
 ### Key Endpoints
 - `POST /api/matches/{id}/pre-match-predict`
@@ -37,14 +48,14 @@ Build a full-stack cricket prediction app for IPL 2026 with an 8-category math m
 - `POST /api/schedule/sync-results`
 
 ## Completed Tasks (Apr 2026)
-- [x] 8-category pre-match model
+- [x] 8-category pre-match model with all factors producing non-zero values
 - [x] Venue + Pitch data with secondary home grounds
 - [x] H2H 2023-2025 IPL data
 - [x] Phase-based dynamic weighting (5 phases)
-- [x] Gut Feeling (3%) + Betting Odds (7%) inputs
-- [x] Claude win % fed directly into weighted model
-- [x] Claude narrative-style analysis (conversational, data-driven, decisive)
-- [x] Frontend: flowing analysis display with key player card
+- [x] Gut Feeling + Betting Odds user inputs
+- [x] 8-Layer Claude contextual analysis (replaces direct win %)
+- [x] Contextual adjustment system (algo baseline + Claude delta)
+- [x] Frontend: 8-layer analysis display with collapsible layers, verdict, adjustment indicator
 
 ## Backlog
 - [ ] P2: Shareable prediction card
