@@ -1790,22 +1790,39 @@ async def api_get_upcoming_predictions():
 
 # ─── BACKGROUND RE-PREDICTION ────────────────────────────────
 
-repredict_status = {"running": False, "total": 0, "completed": 0, "failed": 0, "current_match": "", "started_at": None}
+repredict_status = {"running": False, "total": 0, "completed": 0, "failed": 0, "current_match": "", "started_at": None, "phase": ""}
 
 async def _background_repredict_all():
-    """Background task: re-predict all upcoming matches with 8-category model + Claude + Expected XI."""
-    global repredict_status
-    repredict_status["running"] = True
-    repredict_status["completed"] = 0
-    repredict_status["failed"] = 0
-    repredict_status["started_at"] = datetime.now(timezone.utc).isoformat()
+    """Background task: re-predict ALL upcoming matches from scratch.
 
+    For each match:
+    1. Delete old pre-match prediction from DB
+    2. Delete old Claude analysis from DB
+    3. Clear SportMonks fixtures cache (fresh Playing XI)
+    4. Re-run 8-category algo prediction (fresh Playing XI + player performance)
+    5. Re-run Claude deep analysis with filtered Playing XI
+    6. Store fresh results in DB
+    """
+    global repredict_status
+    repredict_status = {
+        "running": True, "total": 0, "completed": 0, "failed": 0,
+        "current_match": "", "started_at": datetime.now(timezone.utc).isoformat(),
+        "phase": "init",
+    }
+
+    # Clear SportMonks season fixtures cache so fresh data is fetched
+    from services.sportmonks_service import _season_fixtures_cache
+    _season_fixtures_cache.clear()
+    logger.info("[RePredict] Cleared SportMonks cache")
+
+    # Get all upcoming matches
     upcoming = []
     async for doc in db.ipl_schedule.find({"status": "Upcoming"}, {"_id": 0}).sort("match_number", 1):
         upcoming.append(doc)
     repredict_status["total"] = len(upcoming)
+    logger.info(f"[RePredict] Starting for {len(upcoming)} upcoming matches")
 
-    for match in upcoming:
+    for i, match in enumerate(upcoming):
         mid = match.get("matchId", "")
         team1 = match.get("team1", "")
         team2 = match.get("team2", "")
@@ -1814,44 +1831,71 @@ async def _background_repredict_all():
         repredict_status["current_match"] = f"{t1_short} vs {t2_short}"
 
         try:
-            # Run algorithm prediction (reuses api_pre_match_predict with force=True)
-            result = await api_pre_match_predict(mid, force=True)
-            if result and "error" not in result:
-                repredict_status["completed"] += 1
-                logger.info(f"[RePredict {repredict_status['completed']}/{repredict_status['total']}] {t1_short} vs {t2_short} done")
+            # ── Step 1: Delete old predictions from DB ──
+            repredict_status["phase"] = f"cleaning {t1_short} vs {t2_short}"
+            await db.pre_match_predictions.delete_one({"matchId": mid})
+            await db.claude_analysis.delete_one({"matchId": mid})
+            logger.info(f"[RePredict {i+1}/{len(upcoming)}] Cleared old data for {mid}")
+
+            # ── Step 2: Re-run algo prediction (fresh Playing XI + player perf) ──
+            repredict_status["phase"] = f"algo {t1_short} vs {t2_short}"
+            algo_result = await api_pre_match_predict(mid, force=True)
+            algo_ok = algo_result and "error" not in algo_result
+            if algo_ok:
+                logger.info(f"[RePredict {i+1}/{len(upcoming)}] Algo done: {t1_short} vs {t2_short}")
             else:
-                repredict_status["failed"] += 1
+                logger.warning(f"[RePredict {i+1}/{len(upcoming)}] Algo failed: {mid} - {algo_result.get('error', 'unknown')}")
+
+            # ── Step 3: Re-run Claude deep analysis with Playing XI ──
+            repredict_status["phase"] = f"claude {t1_short} vs {t2_short}"
+            venue = match.get("venue", "")
+            match_squads = await _get_squads_for_match(team1, team2)
+
+            # Filter to Playing XI for Claude
+            playing_xi_squads = match_squads
+            try:
+                t1_xi = await fetch_last_played_xi(team1)
+                t2_xi = await fetch_last_played_xi(team2)
+                if t1_xi or t2_xi:
+                    xi_sm_data = {"team1_playing_xi": t1_xi, "team2_playing_xi": t2_xi}
+                    filtered = _filter_squads_to_playing_xi(match_squads, xi_sm_data, team1, team2)
+                    if filtered:
+                        playing_xi_squads = filtered
+            except Exception as e:
+                logger.warning(f"[RePredict] XI filter failed for {mid}: {e}")
+
+            match_news = await fetch_match_news(team1, team2)
+            try:
+                analysis = await claude_deep_match_analysis(
+                    team1, team2, venue, match, squads=playing_xi_squads, news=match_news
+                )
+                if analysis and "error" not in analysis:
+                    await db.claude_analysis.update_one(
+                        {"matchId": mid},
+                        {"$set": {
+                            "matchId": mid,
+                            "analysis": analysis,
+                            "updatedAt": datetime.now(timezone.utc).isoformat(),
+                            "playing_xi_used": True,
+                        }},
+                        upsert=True,
+                    )
+                    logger.info(f"[RePredict {i+1}/{len(upcoming)}] Claude done: {t1_short} vs {t2_short}")
+                else:
+                    logger.warning(f"[RePredict] Claude returned error for {mid}: {analysis.get('error', '')}")
+            except Exception as e:
+                logger.error(f"[RePredict] Claude failed for {mid}: {e}")
+
+            repredict_status["completed"] += 1
+
         except Exception as e:
             repredict_status["failed"] += 1
             logger.error(f"[RePredict] Failed {mid}: {e}")
 
-    # Also trigger Claude analysis for next 3 upcoming matches
-    try:
-        next_3 = upcoming[:3]
-        for match in next_3:
-            mid = match.get("matchId", "")
-            team1 = match.get("team1", "")
-            team2 = match.get("team2", "")
-            venue = match.get("venue", "")
-            match_squads = await _get_squads_for_match(team1, team2)
-            match_news = await fetch_match_news(team1, team2)
-            try:
-                analysis = await claude_deep_match_analysis(team1, team2, venue, match, squads=match_squads, news=match_news)
-                if analysis and "error" not in analysis:
-                    await db.claude_analysis.update_one(
-                        {"matchId": mid},
-                        {"$set": {"matchId": mid, "analysis": analysis, "updatedAt": datetime.now(timezone.utc).isoformat()}},
-                        upsert=True,
-                    )
-                    logger.info(f"[RePredict] Claude analysis done for {mid}")
-            except Exception as e:
-                logger.error(f"[RePredict] Claude failed for {mid}: {e}")
-    except Exception as e:
-        logger.error(f"[RePredict] Claude batch failed: {e}")
-
     repredict_status["running"] = False
+    repredict_status["phase"] = "done"
     repredict_status["current_match"] = "Done"
-    logger.info(f"[RePredict] Complete: {repredict_status['completed']} predicted, {repredict_status['failed']} failed")
+    logger.info(f"[RePredict] Complete: {repredict_status['completed']}/{repredict_status['total']} predicted, {repredict_status['failed']} failed")
 
 
 @api_router.post("/predictions/repredict-all")

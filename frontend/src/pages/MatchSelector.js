@@ -247,9 +247,9 @@ export default function MatchSelector() {
           <div className="mb-4 bg-[#1A0A2E] border border-[#7C3AED]/30 rounded-md p-3 flex items-center gap-3" data-testid="repredict-banner">
             <Spinner className="w-4 h-4 animate-spin text-[#7C3AED]" />
             <div className="flex-1">
-              <p className="text-xs font-bold text-white">Re-Predicting All Matches with Fresh Data + Playing XI</p>
+              <p className="text-xs font-bold text-white">Re-Predicting All Matches — Fresh Playing XI + Algo + Claude</p>
               <p className="text-[10px] text-[#A1A1AA]">
-                {repredictStatus.completed}/{repredictStatus.total} complete &middot; {repredictStatus.failed} failed &middot; Current: {repredictStatus.current_match}
+                {repredictStatus.completed}/{repredictStatus.total} complete &middot; {repredictStatus.failed} failed &middot; {repredictStatus.phase || repredictStatus.current_match}
               </p>
             </div>
             <div className="text-right">

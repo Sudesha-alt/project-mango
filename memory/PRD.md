@@ -31,22 +31,31 @@ Build a full-stack cricket prediction app for IPL 2026 with an 8-category math m
 - Dynamic STAR_PLAYERS rating override (+/-12 pts based on actual form)
 - 3-year coverage: IPL 2024, 2025, 2026
 
-### Stale Data Prevention (Apr 2026)
-- **Auto-invalidation**: When match results are synced via `/schedule/sync-results`, all cached pre-match predictions for upcoming matches involving either team are deleted
-- **Auto-refresh**: Pre-match predictions older than 6 hours are automatically re-computed on next request
-- **Cache clearing**: SportMonks season fixtures cache is cleared after each result sync so fresh fixture data is fetched
-- **Scheduled auto-sync**: Background job runs every 30 minutes to check for new results, sync them, and invalidate stale predictions
-- **DB-stored predictions**: All predictions stored in `pre_match_predictions` collection with `computed_at` timestamps
+### Stale Data Prevention
+- Auto-invalidation: sync-results deletes cached predictions for affected teams
+- Auto-refresh: predictions >6 hours old are auto-recomputed
+- Scheduled auto-sync: 30-min background job
+- Cache clearing: SportMonks fixtures cache cleared on sync
+
+### Re-Predict All (Apr 2026)
+- **Endpoint**: `POST /api/predictions/repredict-all` — triggers background re-prediction of ALL upcoming matches
+- **For each match**: 1) Delete old pre-match prediction from DB, 2) Delete old Claude analysis from DB, 3) Clear caches, 4) Re-run algo with fresh Playing XI + player performance, 5) Re-run Claude with filtered Playing XI, 6) Store fresh results
+- **Status polling**: `GET /api/predictions/repredict-status` — returns running/completed/failed/phase
+- **Claude analysis**: Now runs for ALL upcoming matches (previously only next 3)
+- **All Claude endpoints use Playing XI**: Pre-match analysis, live analysis, 8-layer sportmonks prediction — all filter squads to expected 11
 
 ### Live Match — 8-Layer Claude Contextual Analysis
 Claude produces contextual adjustment (+/-30%) across 8 layers applied on algo baseline.
 
 ### Key Endpoints
-- `POST /api/matches/{id}/pre-match-predict` — 8-category prediction (auto-refreshes stale cache)
+- `POST /api/matches/{id}/pre-match-predict` — 8-category prediction
 - `POST /api/matches/{id}/fetch-live` — Live scores + Claude + combined prediction
-- `POST /api/matches/{id}/refresh-claude-prediction` — Re-run Claude with cached data
+- `POST /api/matches/{id}/refresh-claude-prediction` — Re-run Claude
+- `POST /api/matches/{id}/claude-analysis` — Claude deep pre-match analysis (uses Playing XI)
+- `POST /api/matches/{id}/claude-live` — Claude live analysis (uses Playing XI)
 - `POST /api/schedule/sync-results` — Sync results + invalidate stale predictions
-- `POST /api/sync-player-stats` — Background sync of player performance stats
+- `POST /api/predictions/repredict-all` — Background full re-prediction
+- `GET /api/predictions/repredict-status` — Poll re-prediction progress
 
 ## Completed Tasks (Apr 2026)
 - [x] All 8 pre-match categories with non-zero values
@@ -56,11 +65,11 @@ Claude produces contextual adjustment (+/-30%) across 8 layers applied on algo b
 - [x] Playing XI from SportMonks (live + last completed match)
 - [x] Player performance stats from last 5 matches per team
 - [x] Form = W/L (60%) + player performance (40%)
-- [x] Dynamic STAR_PLAYERS rating override from actual stats
-- [x] Auto-invalidation of stale predictions on result sync
-- [x] Auto-refresh of predictions older than 6 hours
-- [x] Scheduled 30-min auto-sync for results + cache clearing
-- [x] Season fixtures cache clearing on result sync
+- [x] Dynamic STAR_PLAYERS rating override
+- [x] Auto-invalidation + auto-refresh + scheduled sync
+- [x] Re-Predict All: deletes old data, runs algo + Claude for all upcoming matches
+- [x] All Claude endpoints use filtered Playing XI (not full squad)
+- [x] Claude prompts updated to say "Expected Playing XI"
 
 ## Backlog
 - [ ] P2: Shareable prediction card
