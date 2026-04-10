@@ -144,6 +144,36 @@ def _filter_squads_to_playing_xi(match_squads: dict, sm_data: dict, team1: str, 
     return filtered_squads
 
 
+async def _invalidate_team_predictions(team1: str, team2: str) -> int:
+    """Invalidate (delete) cached pre-match predictions for all upcoming matches
+    involving either of the given teams. This ensures fresh form/XI data is used
+    the next time a prediction is requested."""
+    t1_lower = team1.lower()
+    t2_lower = team2.lower()
+    invalidated = 0
+
+    # Find all upcoming matches for these teams
+    async for match in db.ipl_schedule.find(
+        {"status": {"$regex": "upcoming|ns|not started", "$options": "i"}},
+        {"_id": 0, "matchId": 1, "team1": 1, "team2": 1}
+    ):
+        mt1 = (match.get("team1", "") or "").lower()
+        mt2 = (match.get("team2", "") or "").lower()
+        # Check if either team from the completed match is in this upcoming match
+        if (t1_lower in mt1 or mt1 in t1_lower or
+            t1_lower in mt2 or mt2 in t1_lower or
+            t2_lower in mt1 or mt1 in t2_lower or
+            t2_lower in mt2 or mt2 in t2_lower):
+            mid = match.get("matchId")
+            result = await db.pre_match_predictions.delete_one({"matchId": mid})
+            if result.deleted_count > 0:
+                invalidated += 1
+                logger.info(f"Invalidated stale prediction for {mid} ({match.get('team1')} vs {match.get('team2')})")
+
+    return invalidated
+
+
+
 # ─── HEALTH & STATUS ─────────────────────────────────────────
 
 @api_router.get("/")
@@ -328,7 +358,20 @@ async def sync_results_from_sportmonks():
                     )
                     updated += 1
                     logger.info(f"Synced result: {match.get('matchId')} -> winner: {db_winner}")
+
+                    # ── Invalidate stale pre-match predictions ──
+                    # Any upcoming match involving either team now has stale form/XI data
+                    invalidated = await _invalidate_team_predictions(
+                        match.get("team1", ""), match.get("team2", "")
+                    )
+                    if invalidated > 0:
+                        logger.info(f"Invalidated {invalidated} stale predictions after result update")
                 break
+
+    # Clear season fixtures cache so next prediction fetches fresh data
+    from services.sportmonks_service import _season_fixtures_cache
+    _season_fixtures_cache.clear()
+    logger.info("Cleared SportMonks season fixtures cache after sync")
 
     return {"status": "synced", "updated": updated, "total_fixtures": len(results)}
 
@@ -1438,10 +1481,25 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
     Predict upcoming match winner using 8-category algorithm.
     NO web scraping. Uses DB squads, SportMonks form data, Open-Meteo weather.
     Also generates Expected Playing XI from squad roster.
+
+    Auto-refreshes stale predictions (>6 hours old) to keep data fresh.
     """
     cached = await db.pre_match_predictions.find_one({"matchId": match_id}, {"_id": 0})
     if cached and not force:
-        return cached
+        # Check staleness — auto-refresh if older than 6 hours
+        computed_at = cached.get("computed_at", "")
+        is_stale = False
+        if computed_at:
+            try:
+                computed_dt = datetime.fromisoformat(computed_at.replace("Z", "+00:00"))
+                age_hours = (datetime.now(timezone.utc) - computed_dt).total_seconds() / 3600
+                if age_hours > 6:
+                    is_stale = True
+                    logger.info(f"Prediction for {match_id} is {age_hours:.1f}h old — auto-refreshing")
+            except (ValueError, TypeError):
+                pass
+        if not is_stale:
+            return cached
 
     match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
     if not match_info:
@@ -2676,6 +2734,60 @@ async def auto_scrape_live_matches():
     logger.info(f"[Auto-Scrape] Updated {updated} of {len(live_matches)} live matches")
 
 
+async def auto_sync_results_and_invalidate():
+    """Background job: Auto-sync results from SportMonks, invalidate stale predictions,
+    and clear caches when new match results are detected."""
+    logger.info("[Auto-Sync] Checking for new match results...")
+    try:
+        results = await fetch_recent_fixtures()
+        if not results:
+            return
+
+        synced = 0
+        for result in results:
+            sm_t1 = (result.get("team1", "") or "").lower()
+            sm_t2 = (result.get("team2", "") or "").lower()
+            winner = result.get("winner", "")
+            if not winner:
+                continue
+
+            async for match in db.ipl_schedule.find({}, {"_id": 0}):
+                db_t1 = (match.get("team1", "") or "").lower()
+                db_t2 = (match.get("team2", "") or "").lower()
+                t1_words = [w for w in sm_t1.split() if len(w) > 3]
+                t2_words = [w for w in sm_t2.split() if len(w) > 3]
+                db_t1_match = any(w in db_t1 for w in t1_words)
+                db_t2_match = any(w in db_t2 for w in t2_words)
+                if db_t1_match and db_t2_match and not match.get("winner"):
+                    db_winner = None
+                    winner_lower = winner.lower()
+                    for tf in ["team1", "team2"]:
+                        dt = (match.get(tf, "") or "").lower()
+                        if any(w in dt for w in winner_lower.split() if len(w) > 3):
+                            db_winner = match.get(tf)
+                            break
+                    if db_winner:
+                        await db.ipl_schedule.update_one(
+                            {"matchId": match.get("matchId")},
+                            {"$set": {"winner": db_winner, "status": "completed",
+                                      "result": result.get("note", ""),
+                                      "team1_score": result.get("team1_score", ""),
+                                      "team2_score": result.get("team2_score", ""),
+                                      "toss_won_by": result.get("toss_won_by", "")}}
+                        )
+                        synced += 1
+                        await _invalidate_team_predictions(match.get("team1", ""), match.get("team2", ""))
+                        logger.info(f"[Auto-Sync] Synced {match.get('matchId')} winner: {db_winner}")
+                    break
+
+        if synced > 0:
+            from services.sportmonks_service import _season_fixtures_cache
+            _season_fixtures_cache.clear()
+            logger.info(f"[Auto-Sync] Synced {synced} results, cleared caches")
+    except Exception as e:
+        logger.error(f"[Auto-Sync] Error: {e}")
+
+
 # ─── STARTUP ─────────────────────────────────────────────────
 
 @app.on_event("startup")
@@ -2686,6 +2798,8 @@ async def startup():
     scheduler.add_job(promote_matches_to_live, CronTrigger(hour=19, minute=0), id="promote_7pm", replace_existing=True)
     # Auto-scrape live matches every 5 minutes during match hours (2PM-11PM IST)
     scheduler.add_job(auto_scrape_live_matches, "interval", minutes=5, id="auto_scrape", replace_existing=True)
+    # Auto-sync results and invalidate stale predictions every 30 minutes
+    scheduler.add_job(auto_sync_results_and_invalidate, "interval", minutes=30, id="auto_sync_results", replace_existing=True)
     scheduler.start()
     logger.info("[Scheduler] Started — promote at 4PM/7PM, auto-scrape every 5 min")
     # Sync any existing live scores to schedule on startup
