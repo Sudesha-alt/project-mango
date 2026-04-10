@@ -127,13 +127,14 @@ async def _sm_get(endpoint: str, params: dict = None) -> dict:
         return {"error": str(e)}
 
 
-async def fetch_team_form(db, team1: str, team2: str) -> Dict:
+async def fetch_team_form(db, team1: str, team2: str, player_performance: Dict = None) -> Dict:
     """
     Fetch current season form data for both teams.
-    Uses completed matches from DB schedule + SportMonks standings as fallback.
-    Returns form scores (0-100) based on recent results.
+    Uses completed matches from DB schedule + player performance stats from SportMonks.
+    Returns form scores (0-100) based on recent results AND player-level performance.
     """
     form = {"team1": {}, "team2": {}, "h2h": {}}
+    player_performance = player_performance or {}
 
     # Get completed matches from DB for form calculation
     completed = []
@@ -174,8 +175,8 @@ async def fetch_team_form(db, team1: str, team2: str) -> Dict:
         total = wins + losses
         win_pct = (wins / total * 100) if total > 0 else 50
 
-        # Form score: weighted by recency (recent matches count more)
-        form_score = 50.0
+        # Base form score from W/L weighted by recency
+        wl_form = 50.0
         if results_list:
             weighted = 0
             weight_sum = 0
@@ -188,16 +189,80 @@ async def fetch_team_form(db, team1: str, team2: str) -> Dict:
                 else:
                     weighted += w * 50
                 weight_sum += w
-            form_score = weighted / weight_sum if weight_sum > 0 else 50
+            wl_form = weighted / weight_sum if weight_sum > 0 else 50
+
+        # ── Player Performance Form Enhancement ──
+        # Use actual batting/bowling stats from recent matches to compute player-level form
+        team_perf = player_performance.get(key, {})
+        player_form_score = 0
+        player_form_count = 0
+        player_details = []
+
+        if team_perf:
+            for pid, ps in team_perf.items():
+                p_score = 0
+                matches_played = ps.get("matches", 0)
+                if matches_played == 0:
+                    continue
+
+                bat = ps.get("batting", {})
+                bowl = ps.get("bowling", {})
+
+                # Batting form: weighted by avg, SR, and consistency
+                if bat.get("innings", 0) > 0:
+                    bat_avg = bat.get("avg", 0)
+                    bat_sr = bat.get("sr", 0)
+                    # Scale: avg 40+ = excellent (90+), avg 20-40 = good (60-90), avg 0-20 = poor (30-60)
+                    bat_form = min(100, max(0, bat_avg * 2 + bat_sr * 0.2))
+                    p_score += bat_form * 0.5
+
+                # Bowling form: weighted by economy and wickets per innings
+                if bowl.get("innings", 0) > 0:
+                    economy = bowl.get("economy", 12)
+                    wpi = bowl.get("wickets", 0) / bowl["innings"]
+                    # Scale: economy < 7 = excellent, 7-9 = good, > 9 = poor
+                    econ_score = max(0, min(100, (14 - economy) * 10))
+                    wicket_score = min(100, wpi * 40)
+                    bowl_form = (econ_score * 0.5 + wicket_score * 0.5)
+                    p_score += bowl_form * 0.5
+
+                if p_score > 0:
+                    player_form_score += p_score
+                    player_form_count += 1
+                    player_details.append({
+                        "name": ps.get("name", ""),
+                        "form_score": round(p_score, 1),
+                        "matches": matches_played,
+                        "batting": {
+                            "runs": bat.get("runs", 0),
+                            "avg": bat.get("avg", 0),
+                            "sr": bat.get("sr", 0),
+                        },
+                        "bowling": {
+                            "wickets": bowl.get("wickets", 0),
+                            "economy": bowl.get("economy", 0),
+                        },
+                    })
+
+        # Combine W/L form (60%) + player performance form (40%)
+        if player_form_count > 0:
+            avg_player_form = player_form_score / player_form_count
+            form_score = wl_form * 0.6 + avg_player_form * 0.4
+        else:
+            form_score = wl_form
 
         form[key] = {
             "form_score": round(form_score, 1),
+            "wl_form_score": round(wl_form, 1),
+            "player_form_score": round(player_form_score / max(player_form_count, 1), 1) if player_form_count > 0 else 0,
             "matches_played": total,
             "wins": wins,
             "losses": losses,
             "win_pct": round(win_pct, 1),
             "recent_results": results_list[:5],
-            "nrr": 0,  # NRR requires detailed match data
+            "player_count": player_form_count,
+            "top_performers": sorted(player_details, key=lambda x: x["form_score"], reverse=True)[:5],
+            "nrr": 0,
         }
 
     # Head-to-Head from completed matches (only matches with a winner)

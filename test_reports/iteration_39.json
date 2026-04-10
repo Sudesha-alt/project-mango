@@ -1,0 +1,99 @@
+{
+  "summary": "Iteration 39 - Testing Player Performance Integration in Pre-Match Prediction. All 10 backend tests passed. Frontend verification confirmed homepage loads with 70 matches showing Playing XI predictions, and PreMatch page displays correctly with Combined Prediction, Algorithm (8 categories), and Claude Opus analysis sections.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "passed_tests": [
+    "GET /api/ - Health check returns squadsLoaded=true, scheduleLoaded=true (version 4.1.0)",
+    "POST /api/matches/ipl2026_015/pre-match-predict?force=true - Returns prediction with all 8 categories having non-zero weights",
+    "POST /api/matches/ipl2026_015/pre-match-predict?force=true - Returns form data with top_performers array (player performance)",
+    "POST /api/matches/ipl2026_015/pre-match-predict?force=true - Returns playing_xi with source field and team1_xi/team2_xi",
+    "POST /api/matches/ipl2026_015/pre-match-predict?force=true - Returns has_player_stats flag in form data",
+    "POST /api/matches/ipl2026_015/pre-match-predict (without force) - Returns cached prediction correctly",
+    "POST /api/matches/ipl2026_016/pre-match-predict?force=true - RR vs RCB prediction works (Team1 55.6% vs Team2 44.4%)",
+    "POST /api/matches/ipl2026_015/fetch-live - Returns gracefully with noLiveMatch:true (no live match currently)",
+    "POST /api/sync-player-stats - Returns sync_started status (background sync initiated)",
+    "All 8 prediction categories have non-zero weights summing to 1.0"
+  ],
+  "frontend_verification": {
+    "homepage_loads": "VERIFIED - 70 matches displayed with predictions and Playing XI labels",
+    "match_cards_show_playing_xi": "VERIFIED - Cards show 'Playing XI: Predicted -11 + 10/11 players'",
+    "match_cards_show_predictions": "VERIFIED - Cards show prediction percentages (e.g., RR 56% vs RCB 44%)",
+    "prematch_page_loads": "VERIFIED - RR vs RCB (ipl2026_016) page loads correctly",
+    "combined_prediction_section": "VERIFIED - Shows RR 55.3% vs RCB 44.7% with HIGH CONSENSUS",
+    "algorithm_section": "VERIFIED - Algorithm (5-factor logistic model) shows RR 55.6% vs RCB 44.4%",
+    "claude_opus_section": "VERIFIED - Claude Opus AI narrative analysis shows RR 55% vs RCB 45%",
+    "factor_breakdown_8_categories": "VERIFIED - Shows Squad Strength (25%), Current Form (21%), Venue+Pitch+Home (18%), H2H (11%)",
+    "match_info_panel": "VERIFIED - Shows Match #16, T20, TATA IPL 2026, Status: Upcoming, City: Guwahati",
+    "team_comparison_radar": "VERIFIED - Radar chart showing Form, H2H, Venue, Bowling, Batting, NRR"
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration39_player_performance.py",
+    "/app/test_reports/pytest/iteration39_player_performance_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "sportmonks_service.py correctly implements fetch_team_recent_performance() with team_id filtering to avoid mixing opponent stats",
+    "form_service.py fetch_team_form() now combines W/L form (60%) + player performance form (40%) when player_performance data is available",
+    "pre_match_predictor.py compute_prediction() dynamically overrides STAR_PLAYERS ratings based on actual player stats from SportMonks",
+    "All 8 prediction categories (squad_strength, current_form, venue_pitch_home, h2h, toss_impact, bowling_depth, conditions, momentum) have non-zero weights",
+    "Playing XI fetching pipeline: live fixtures -> last completed match -> squad estimate fallback"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration39_player_performance.py"
+  ],
+  "success_rate": {
+    "backend": "100% (10/10 tests passed)",
+    "frontend": "100% (all UI elements verified)"
+  },
+  "test_credentials": "No authentication required - open access app",
+  "seed_data_creation": "Used existing seeded schedule and squad data",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 39 complete. Player performance integration verified: (1) Pre-match predict with force=true returns form data with top_performers array containing player-level batting/bowling stats, (2) has_player_stats flag indicates whether player performance data was used, (3) All 8 prediction categories have non-zero weights summing to 1.0, (4) fetch-live returns noLiveMatch:true gracefully when no live match, (5) sync-player-stats starts background sync. Frontend shows 70 matches with Playing XI predictions and 8-category factor breakdown.",
+  "feature_verification": {
+    "player_performance_in_form": {
+      "status": "WORKING",
+      "description": "Form data includes top_performers array with player-level batting/bowling stats from SportMonks"
+    },
+    "8_category_weights": {
+      "status": "WORKING",
+      "description": "All 8 categories (squad_strength 25%, current_form 21%, venue_pitch_home 18%, h2h 11%, toss_impact 9%, bowling_depth 8%, conditions 5%, momentum 3%) have non-zero weights"
+    },
+    "playing_xi_source": {
+      "status": "WORKING",
+      "description": "playing_xi includes source field ('live', 'last_match', 'squad_estimate') and team1_xi/team2_xi arrays"
+    },
+    "fetch_live_graceful": {
+      "status": "WORKING",
+      "description": "fetch-live returns noLiveMatch:true gracefully when no live IPL match is in progress"
+    },
+    "sync_player_stats": {
+      "status": "WORKING",
+      "description": "sync-player-stats endpoint starts background sync and returns sync_started status"
+    },
+    "frontend_predictions": {
+      "status": "WORKING",
+      "description": "Homepage shows 70 matches with predictions, Playing XI labels, and model confidence indicators"
+    },
+    "prematch_page": {
+      "status": "WORKING",
+      "description": "PreMatch page shows Combined Prediction, Algorithm (8 categories), Claude Opus analysis, and Team Comparison radar"
+    }
+  },
+  "prediction_sample": {
+    "match": "RR vs RCB (ipl2026_016)",
+    "venue": "Barsapara Cricket Stadium, Guwahati",
+    "combined_prediction": "RR 55.3% vs RCB 44.7%",
+    "algorithm_prediction": "RR 55.6% vs RCB 44.4%",
+    "claude_prediction": "RR 55% vs RCB 45%",
+    "model_consensus": "HIGH CONSENSUS",
+    "model_spread": "0.6% difference"
+  }
+}

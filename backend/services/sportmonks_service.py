@@ -514,20 +514,442 @@ def parse_fixture_result(raw: dict) -> dict:
 
 
 
-# ── IPL Team Name to SportMonks Team ID mapping ──
+# ── IPL Team Name to SportMonks v2 Team ID mapping ──
 TEAM_SM_IDS = {
-    "chennai super kings": 5,
-    "mumbai indians": 7,
-    "kolkata knight riders": 5,
-    "royal challengers bengaluru": 3,
-    "royal challengers bangalore": 3,
-    "delhi capitals": 6,
+    "chennai super kings": 2,
+    "delhi capitals": 3,
     "punjab kings": 4,
-    "rajasthan royals": 8,
-    "sunrisers hyderabad": 255,
+    "kolkata knight riders": 5,
+    "mumbai indians": 6,
+    "rajasthan royals": 7,
+    "royal challengers bengaluru": 8,
+    "royal challengers bangalore": 8,
+    "sunrisers hyderabad": 9,
+    "gujarat titans": 1976,
     "lucknow super giants": 1979,
-    "gujarat titans": 1978,
 }
+
+# IPL Season IDs (last 3 years for player form)
+IPL_SEASON_IDS = {2024: 1484, 2025: 1689, 2026: 1795}
+
+# In-memory cache for season fixtures and player stats
+_season_fixtures_cache: Dict[int, list] = {}
+_player_stats_cache: Dict[int, dict] = {}  # player_id -> aggregated stats
+
+
+def _get_team_sm_id(team_name: str) -> Optional[int]:
+    """Resolve team name to SportMonks team ID."""
+    lower = team_name.lower().strip()
+    for name, tid in TEAM_SM_IDS.items():
+        if name in lower or lower in name:
+            return tid
+    # Partial match on first word
+    first_word = lower.split()[0] if lower else ""
+    for name, tid in TEAM_SM_IDS.items():
+        if first_word and first_word in name:
+            return tid
+    return None
+
+
+async def fetch_season_fixtures(season_id: int) -> list:
+    """Fetch all fixtures for an IPL season. Cached in memory."""
+    if season_id in _season_fixtures_cache:
+        return _season_fixtures_cache[season_id]
+
+    data = await _get(f"seasons/{season_id}", {"include": "fixtures"})
+    raw_fixtures = data.get("data", {}).get("fixtures", {})
+    if isinstance(raw_fixtures, dict):
+        raw_fixtures = raw_fixtures.get("data", [])
+
+    _season_fixtures_cache[season_id] = raw_fixtures
+    logger.info(f"Cached {len(raw_fixtures)} fixtures for season {season_id}")
+    return raw_fixtures
+
+
+async def fetch_team_last_completed_fixture(team_name: str) -> Optional[dict]:
+    """Find the most recent completed fixture for a team in IPL 2026.
+
+    Returns the raw fixture dict with id, localteam_id, visitorteam_id, note, starting_at.
+    """
+    team_id = _get_team_sm_id(team_name)
+    if not team_id:
+        logger.warning(f"Could not resolve team ID for: {team_name}")
+        return None
+
+    season_id = IPL_SEASON_IDS.get(2026, 1795)
+    fixtures = await fetch_season_fixtures(season_id)
+    finished = [f for f in fixtures if (f.get("status") or "").lower() == "finished"]
+    # Sort by starting_at descending
+    finished.sort(key=lambda x: x.get("starting_at", ""), reverse=True)
+
+    for f in finished:
+        if f.get("localteam_id") == team_id or f.get("visitorteam_id") == team_id:
+            logger.info(f"Last completed match for {team_name} (id={team_id}): fixture {f.get('id')}")
+            return f
+    logger.warning(f"No completed fixture found for {team_name} (id={team_id})")
+    return None
+
+
+async def fetch_playing_xi_from_last_match(team_name: str) -> list:
+    """Fetch the Playing XI for a team from their most recent completed IPL match.
+
+    Pipeline (per user doc):
+    1. Resolve team name → SportMonks team ID
+    2. Find last completed fixture from season fixtures
+    3. Fetch fixture with lineup include
+    4. Extract non-substitute players = Playing XI
+    5. Enrich with batting/bowling style from player endpoint
+    """
+    fixture = await fetch_team_last_completed_fixture(team_name)
+    if not fixture:
+        return []
+
+    fixture_id = fixture.get("id")
+    team_id = _get_team_sm_id(team_name)
+
+    # Fetch fixture with lineup
+    data = await _get(f"fixtures/{fixture_id}", {"include": "lineup"})
+    fixture_detail = data.get("data", {})
+
+    lineup_raw = fixture_detail.get("lineup", {})
+    if isinstance(lineup_raw, dict):
+        lineup_raw = lineup_raw.get("data", [])
+
+    if not lineup_raw:
+        logger.warning(f"No lineup data for fixture {fixture_id}")
+        return []
+
+    # Extract Playing XI (non-subs) for this team
+    xi = _parse_lineup(lineup_raw, team_id)
+    logger.info(f"Playing XI for {team_name} from fixture {fixture_id}: {len(xi)} players")
+
+    # Enrich players with batting/bowling style (parallel fetch)
+    enriched = await _enrich_players(xi)
+    return enriched
+
+
+async def _enrich_players(players: list) -> list:
+    """Enrich player list with batting_style, bowling_style, position from player endpoint."""
+    import asyncio
+    enriched = []
+
+    async def _fetch_player(p):
+        pid = p.get("sm_player_id")
+        if not pid:
+            return p
+        data = await _get(f"players/{pid}")
+        pd = data.get("data", {})
+        if pd:
+            p["batting_style"] = pd.get("battingstyle", p.get("batting_style", ""))
+            p["bowling_style"] = pd.get("bowlingstyle", p.get("bowling_style", ""))
+            pos = pd.get("position", {})
+            if isinstance(pos, dict):
+                p["position"] = pos.get("name", "")
+            p["country_id"] = pd.get("country_id")
+        return p
+
+    # Fetch in batches of 5 to respect rate limits
+    batch_size = 5
+    for i in range(0, len(players), batch_size):
+        batch = players[i:i + batch_size]
+        results = await asyncio.gather(*[_fetch_player(p) for p in batch], return_exceptions=True)
+        for r in results:
+            if isinstance(r, Exception):
+                logger.warning(f"Player enrichment error: {r}")
+            elif isinstance(r, dict):
+                enriched.append(r)
+
+    return enriched
+
+
+async def fetch_fixture_batting_bowling(fixture_id: int) -> dict:
+    """Fetch batting and bowling scorecard data for a fixture."""
+    data = await _get(f"fixtures/{fixture_id}", {"include": "batting,bowling,lineup"})
+    fixture = data.get("data", {})
+
+    batting_raw = fixture.get("batting", {})
+    if isinstance(batting_raw, dict):
+        batting_raw = batting_raw.get("data", [])
+
+    bowling_raw = fixture.get("bowling", {})
+    if isinstance(bowling_raw, dict):
+        bowling_raw = bowling_raw.get("data", [])
+
+    lineup_raw = fixture.get("lineup", {})
+    if isinstance(lineup_raw, dict):
+        lineup_raw = lineup_raw.get("data", [])
+
+    # Build player name map from lineup
+    player_names = {}
+    for p in lineup_raw:
+        player_names[p.get("id")] = p.get("fullname", "")
+
+    batting = []
+    for b in batting_raw:
+        batting.append({
+            "player_id": b.get("player_id"),
+            "player_name": player_names.get(b.get("player_id"), ""),
+            "runs": b.get("score", 0),
+            "balls": b.get("ball", 0),
+            "fours": b.get("four_x", 0),
+            "sixes": b.get("six_x", 0),
+            "strike_rate": round((b.get("score", 0) / max(b.get("ball", 1), 1)) * 100, 1),
+            "scoreboard": b.get("scoreboard", "S1"),
+            "team_id": b.get("team_id"),
+        })
+
+    bowling = []
+    for bw in bowling_raw:
+        bowling.append({
+            "player_id": bw.get("player_id"),
+            "player_name": player_names.get(bw.get("player_id"), ""),
+            "overs": bw.get("overs", 0),
+            "wickets": bw.get("wickets", 0),
+            "runs_conceded": bw.get("runs", 0),
+            "economy": bw.get("rate", 0),
+            "maidens": bw.get("medians", 0),
+            "scoreboard": bw.get("scoreboard", "S1"),
+            "team_id": bw.get("team_id"),
+        })
+
+    return {
+        "fixture_id": fixture_id,
+        "batting": batting,
+        "bowling": bowling,
+        "player_names": player_names,
+    }
+
+
+async def fetch_team_recent_performance(team_name: str, num_matches: int = 5) -> dict:
+    """Fetch batting/bowling stats for a team's last N completed matches.
+
+    Returns per-player aggregated stats:
+    {
+        player_id: {
+            "name": str,
+            "matches": int,
+            "batting": {"runs": int, "balls": int, "innings": int, "avg": float, "sr": float},
+            "bowling": {"overs": float, "wickets": int, "runs_conceded": int, "innings": int, "economy": float},
+        }
+    }
+    """
+    team_id = _get_team_sm_id(team_name)
+    if not team_id:
+        return {}
+
+    # Collect finished fixtures across seasons (most recent first)
+    all_finished = []
+    for year in [2026, 2025, 2024]:
+        season_id = IPL_SEASON_IDS.get(year)
+        if not season_id:
+            continue
+        fixtures = await fetch_season_fixtures(season_id)
+        finished = [f for f in fixtures if (f.get("status") or "").lower() == "finished"]
+        # Filter to team's matches
+        team_fixtures = [f for f in finished
+                         if f.get("localteam_id") == team_id or f.get("visitorteam_id") == team_id]
+        team_fixtures.sort(key=lambda x: x.get("starting_at", ""), reverse=True)
+        all_finished.extend(team_fixtures)
+        if len(all_finished) >= num_matches:
+            break
+
+    all_finished = all_finished[:num_matches]
+    if not all_finished:
+        return {}
+
+    logger.info(f"Fetching stats from {len(all_finished)} matches for {team_name}")
+
+    # Fetch batting/bowling for each fixture
+    player_stats = {}
+    for fix in all_finished:
+        fid = fix.get("id")
+        try:
+            data = await fetch_fixture_batting_bowling(fid)
+        except Exception as e:
+            logger.warning(f"Error fetching fixture {fid} stats: {e}")
+            continue
+
+        # Aggregate batting — ONLY for this team's players
+        for b in data.get("batting", []):
+            if b.get("team_id") and b["team_id"] != team_id:
+                continue  # Skip opponent's players
+            pid = b["player_id"]
+            if pid not in player_stats:
+                player_stats[pid] = {
+                    "name": b["player_name"],
+                    "matches": 0,
+                    "batting": {"runs": 0, "balls": 0, "innings": 0, "fours": 0, "sixes": 0},
+                    "bowling": {"overs": 0, "wickets": 0, "runs_conceded": 0, "innings": 0, "maidens": 0},
+                }
+            player_stats[pid]["name"] = b["player_name"] or player_stats[pid]["name"]
+            player_stats[pid]["batting"]["runs"] += b["runs"]
+            player_stats[pid]["batting"]["balls"] += b["balls"]
+            player_stats[pid]["batting"]["innings"] += 1
+            player_stats[pid]["batting"]["fours"] += b["fours"]
+            player_stats[pid]["batting"]["sixes"] += b["sixes"]
+
+        # Aggregate bowling — ONLY for this team's players
+        for bw in data.get("bowling", []):
+            if bw.get("team_id") and bw["team_id"] != team_id:
+                continue  # Skip opponent's bowlers
+            pid = bw["player_id"]
+            if pid not in player_stats:
+                player_stats[pid] = {
+                    "name": bw["player_name"],
+                    "matches": 0,
+                    "batting": {"runs": 0, "balls": 0, "innings": 0, "fours": 0, "sixes": 0},
+                    "bowling": {"overs": 0, "wickets": 0, "runs_conceded": 0, "innings": 0, "maidens": 0},
+                }
+            player_stats[pid]["name"] = bw["player_name"] or player_stats[pid]["name"]
+            player_stats[pid]["bowling"]["overs"] += bw["overs"]
+            player_stats[pid]["bowling"]["wickets"] += bw["wickets"]
+            player_stats[pid]["bowling"]["runs_conceded"] += bw["runs_conceded"]
+            player_stats[pid]["bowling"]["innings"] += 1
+            player_stats[pid]["bowling"]["maidens"] += bw["maidens"]
+
+        # Count match appearances (only this team's players)
+        seen_players = set()
+        for b in data.get("batting", []):
+            if b.get("team_id") and b["team_id"] != team_id:
+                continue
+            seen_players.add(b["player_id"])
+        for bw in data.get("bowling", []):
+            if bw.get("team_id") and bw["team_id"] != team_id:
+                continue
+            seen_players.add(bw["player_id"])
+        for pid in seen_players:
+            if pid in player_stats:
+                player_stats[pid]["matches"] += 1
+
+    # Compute derived stats
+    for pid, ps in player_stats.items():
+        bat = ps["batting"]
+        if bat["innings"] > 0:
+            bat["avg"] = round(bat["runs"] / bat["innings"], 1)
+            bat["sr"] = round((bat["runs"] / max(bat["balls"], 1)) * 100, 1)
+        else:
+            bat["avg"] = 0
+            bat["sr"] = 0
+
+        bowl = ps["bowling"]
+        if bowl["innings"] > 0 and bowl["overs"] > 0:
+            bowl["economy"] = round(bowl["runs_conceded"] / bowl["overs"], 2)
+            bowl["avg"] = round(bowl["runs_conceded"] / max(bowl["wickets"], 1), 1)
+        else:
+            bowl["economy"] = 0
+            bowl["avg"] = 0
+
+    return player_stats
+
+
+async def sync_player_performance_to_db(db) -> dict:
+    """Sync player performance stats from last 3 IPL seasons (2024-2026) into MongoDB.
+
+    Stores aggregated per-player stats for use in form calculations.
+    Returns summary of sync operation.
+    """
+    all_player_stats = {}
+    total_fixtures = 0
+
+    for year, season_id in sorted(IPL_SEASON_IDS.items()):
+        fixtures = await fetch_season_fixtures(season_id)
+        finished = [f for f in fixtures if (f.get("status") or "").lower() == "finished"]
+        logger.info(f"Syncing {len(finished)} finished matches from IPL {year}")
+
+        for fix in finished:
+            fid = fix.get("id")
+            try:
+                data = await fetch_fixture_batting_bowling(fid)
+                total_fixtures += 1
+            except Exception as e:
+                logger.warning(f"Error fetching fixture {fid}: {e}")
+                continue
+
+            for b in data.get("batting", []):
+                pid = b["player_id"]
+                if pid not in all_player_stats:
+                    all_player_stats[pid] = {
+                        "player_id": pid,
+                        "name": b["player_name"],
+                        "batting": {"runs": 0, "balls": 0, "innings": 0, "fours": 0, "sixes": 0, "fifties": 0, "hundreds": 0},
+                        "bowling": {"overs": 0, "wickets": 0, "runs_conceded": 0, "innings": 0, "maidens": 0, "three_fers": 0},
+                        "matches": 0,
+                        "seasons": [],
+                    }
+                ps = all_player_stats[pid]
+                ps["name"] = b["player_name"] or ps["name"]
+                ps["batting"]["runs"] += b["runs"]
+                ps["batting"]["balls"] += b["balls"]
+                ps["batting"]["innings"] += 1
+                ps["batting"]["fours"] += b["fours"]
+                ps["batting"]["sixes"] += b["sixes"]
+                if b["runs"] >= 50:
+                    ps["batting"]["fifties"] += 1
+                if b["runs"] >= 100:
+                    ps["batting"]["hundreds"] += 1
+                if year not in ps["seasons"]:
+                    ps["seasons"].append(year)
+
+            for bw in data.get("bowling", []):
+                pid = bw["player_id"]
+                if pid not in all_player_stats:
+                    all_player_stats[pid] = {
+                        "player_id": pid,
+                        "name": bw["player_name"],
+                        "batting": {"runs": 0, "balls": 0, "innings": 0, "fours": 0, "sixes": 0, "fifties": 0, "hundreds": 0},
+                        "bowling": {"overs": 0, "wickets": 0, "runs_conceded": 0, "innings": 0, "maidens": 0, "three_fers": 0},
+                        "matches": 0,
+                        "seasons": [],
+                    }
+                ps = all_player_stats[pid]
+                ps["name"] = bw["player_name"] or ps["name"]
+                ps["bowling"]["overs"] += bw["overs"]
+                ps["bowling"]["wickets"] += bw["wickets"]
+                ps["bowling"]["runs_conceded"] += bw["runs_conceded"]
+                ps["bowling"]["innings"] += 1
+                ps["bowling"]["maidens"] += bw["maidens"]
+                if bw["wickets"] >= 3:
+                    ps["bowling"]["three_fers"] += 1
+                if year not in ps["seasons"]:
+                    ps["seasons"].append(year)
+
+    # Compute derived stats and store in DB
+    for pid, ps in all_player_stats.items():
+        bat = ps["batting"]
+        if bat["innings"] > 0:
+            bat["avg"] = round(bat["runs"] / bat["innings"], 1)
+            bat["sr"] = round((bat["runs"] / max(bat["balls"], 1)) * 100, 1)
+        else:
+            bat["avg"] = 0
+            bat["sr"] = 0
+
+        bowl = ps["bowling"]
+        if bowl["innings"] > 0 and bowl["overs"] > 0:
+            bowl["economy"] = round(bowl["runs_conceded"] / bowl["overs"], 2)
+            bowl["avg"] = round(bowl["runs_conceded"] / max(bowl["wickets"], 1), 1)
+        else:
+            bowl["economy"] = 0
+            bowl["avg"] = 0
+
+    # Bulk upsert to MongoDB
+    from pymongo import UpdateOne
+    ops = []
+    for pid, ps in all_player_stats.items():
+        ops.append(UpdateOne(
+            {"player_id": pid},
+            {"$set": ps},
+            upsert=True,
+        ))
+
+    if ops:
+        result = await db.player_performance.bulk_write(ops)
+        logger.info(f"Synced {len(ops)} player stats from {total_fixtures} fixtures")
+
+    return {
+        "players_synced": len(all_player_stats),
+        "fixtures_processed": total_fixtures,
+        "seasons": list(IPL_SEASON_IDS.keys()),
+    }
 
 
 def _parse_lineup(lineup_data: list, team_id: int) -> list:
@@ -611,11 +1033,16 @@ async def fetch_playing_xi_from_live(team1: str, team2: str) -> dict:
 
 async def fetch_last_played_xi(team_name: str) -> list:
     """Fetch the Playing XI for a team from their most recent completed match.
-    
-    Uses the SportMonks fixtures endpoint with lineup include.
+
+    Pipeline (per user doc):
+    1. Try live fixtures first (current match lineup is most relevant)
+    2. Fallback: Find last completed match from IPL 2026 season fixtures
+    3. Fetch fixture with lineup include
+    4. Extract non-substitute players = Playing XI
+
     Returns a list of player dicts (name, batting_style, bowling_style, captain, wk).
     """
-    # First try live fixtures (today's lineup is most relevant for pre-match)
+    # Step 1: Try live fixtures first (today's lineup is most relevant)
     data = await _get("livescores", {
         "include": "lineup,localteam,visitorteam"
     })
@@ -650,41 +1077,44 @@ async def fetch_last_played_xi(team_name: str) -> list:
             logger.info(f"Found Playing XI for {team_name} from live match: {len(xi)} players")
             return xi
 
-    # Fallback: fetch recent finished fixtures
-    data = await _get("fixtures", {
-        "include": "lineup,localteam,visitorteam",
-        "sort": "-starting_at",
-        "filter[status]": "Finished",
-    })
-    fixtures = data.get("data", [])
+    # Step 2: Find last completed match from IPL season fixtures
+    team_id = _get_team_sm_id(team_name)
+    if not team_id:
+        logger.warning(f"Could not resolve team ID for: {team_name}")
+        return []
 
-    for f in fixtures:
-        lt = f.get("localteam", {})
-        vt = f.get("visitorteam", {})
-        lt_name = (lt.get("name", "") or "").lower()
-        vt_name = (vt.get("name", "") or "").lower()
+    season_id = IPL_SEASON_IDS.get(2026, 1795)
+    season_fixtures = await fetch_season_fixtures(season_id)
+    finished = [f for f in season_fixtures if (f.get("status") or "").lower() == "finished"]
+    finished.sort(key=lambda x: x.get("starting_at", ""), reverse=True)
 
-        team_id = None
-        if team_lower in lt_name or lt_name in team_lower:
-            team_id = lt.get("id")
-        elif team_lower in vt_name or vt_name in team_lower:
-            team_id = vt.get("id")
+    # Find team's most recent completed match
+    target_fixture_id = None
+    for f in finished:
+        if f.get("localteam_id") == team_id or f.get("visitorteam_id") == team_id:
+            target_fixture_id = f.get("id")
+            break
 
-        if team_id is None:
-            continue
+    if not target_fixture_id:
+        logger.warning(f"No completed fixture found for {team_name}")
+        return []
 
-        lineup = f.get("lineup", {})
-        if isinstance(lineup, dict):
-            lineup_data = lineup.get("data", [])
-        elif isinstance(lineup, list):
-            lineup_data = lineup
-        else:
-            lineup_data = []
+    # Step 3: Fetch fixture with lineup
+    data = await _get(f"fixtures/{target_fixture_id}", {"include": "lineup"})
+    fixture_detail = data.get("data", {})
+    lineup = fixture_detail.get("lineup", {})
+    if isinstance(lineup, dict):
+        lineup_data = lineup.get("data", [])
+    elif isinstance(lineup, list):
+        lineup_data = lineup
+    else:
+        lineup_data = []
 
-        xi = _parse_lineup(lineup_data, team_id)
-        if len(xi) >= 11:
-            logger.info(f"Found last Playing XI for {team_name} from fixture {f.get('id')}: {len(xi)} players")
-            return xi
+    # Step 4: Extract non-sub Playing XI
+    xi = _parse_lineup(lineup_data, team_id)
+    if xi:
+        logger.info(f"Found Playing XI for {team_name} from fixture {target_fixture_id}: {len(xi)} players")
+    else:
+        logger.warning(f"No lineup data for {team_name} in fixture {target_fixture_id}")
 
-    logger.warning(f"Could not find Playing XI for {team_name} from API")
-    return []
+    return xi

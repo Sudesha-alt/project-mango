@@ -34,7 +34,7 @@ from services.ai_service import (
     claude_deep_match_analysis, claude_live_analysis,
     claude_sportmonks_prediction
 )
-from services.sportmonks_service import fetch_live_match, check_fixture_status, fetch_livescores_ipl, parse_fixture, fetch_fixture_details, fetch_recent_fixtures, fetch_last_played_xi, fetch_playing_xi_from_live
+from services.sportmonks_service import fetch_live_match, check_fixture_status, fetch_livescores_ipl, parse_fixture, fetch_fixture_details, fetch_recent_fixtures, fetch_last_played_xi, fetch_playing_xi_from_live, fetch_team_recent_performance, fetch_playing_xi_from_last_match, sync_player_performance_to_db, fetch_season_fixtures, IPL_SEASON_IDS, _get_team_sm_id
 from services.beta_prediction_engine import run_beta_prediction
 from services.consultant_engine import run_consultation, build_features
 from services.cricdata_service import fetch_live_ipl_details, fetch_venue_stats_from_cricapi
@@ -331,6 +331,21 @@ async def sync_results_from_sportmonks():
                 break
 
     return {"status": "synced", "updated": updated, "total_fixtures": len(results)}
+
+
+@api_router.post("/sync-player-stats")
+async def api_sync_player_stats(background_tasks: BackgroundTasks):
+    """Sync player performance stats from last 3 IPL seasons (2024-2026) into MongoDB.
+    Runs in background to avoid blocking."""
+    async def _sync():
+        try:
+            result = await sync_player_performance_to_db(db)
+            logger.info(f"Player stats sync complete: {result}")
+        except Exception as e:
+            logger.error(f"Player stats sync failed: {e}")
+    background_tasks.add_task(_sync)
+    return {"status": "sync_started", "message": "Player performance sync started in background"}
+
 
 
 
@@ -1519,8 +1534,21 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
     match_date_str = match_info.get("dateTimeGMT", "")[:10] if match_info.get("dateTimeGMT") else None
     prematch_weather = await fetch_weather_for_venue(prematch_city, match_date_str) if prematch_city else {}
 
-    # Fetch form data from DB completed matches
-    form_data = await fetch_team_form(db, team1, team2)
+    # ── Fetch player performance stats from SportMonks (last 5 matches per team) ──
+    player_performance = {}
+    try:
+        t1_perf = await fetch_team_recent_performance(team1, num_matches=5)
+        t2_perf = await fetch_team_recent_performance(team2, num_matches=5)
+        if t1_perf:
+            player_performance["team1"] = t1_perf
+        if t2_perf:
+            player_performance["team2"] = t2_perf
+        logger.info(f"Player performance fetched: {len(t1_perf)} + {len(t2_perf)} players")
+    except Exception as e:
+        logger.warning(f"Failed to fetch player performance: {e}")
+
+    # Fetch form data from DB completed matches + player performance
+    form_data = await fetch_team_form(db, team1, team2, player_performance=player_performance)
 
     # Fetch momentum (last 2 results)
     momentum_data = await fetch_momentum(db, team1, team2)
@@ -1533,6 +1561,7 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
         weather=prematch_weather,
         form_data=form_data,
         momentum_data=momentum_data,
+        player_performance=player_performance,
     )
 
     # Compute odds direction vs previous prediction
@@ -1581,6 +1610,12 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
         "odds_direction": odds_direction,
         "form_data": form_data,
         "momentum": momentum_data,
+        "player_performance_summary": {
+            "team1_players": len(player_performance.get("team1", {})),
+            "team2_players": len(player_performance.get("team2", {})),
+            "source": "sportmonks_recent_matches",
+            "has_data": bool(player_performance.get("team1") or player_performance.get("team2")),
+        },
         "computed_at": datetime.now(timezone.utc).isoformat(),
     }
 

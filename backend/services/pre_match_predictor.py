@@ -364,16 +364,19 @@ def _is_home(team_name: str, venue_key: str) -> bool:
 
 def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
                         weather: Dict = None, form_data: Dict = None,
-                        momentum_data: Dict = None) -> Dict:
+                        momentum_data: Dict = None, player_performance: Dict = None) -> Dict:
     """
     8-Category Pre-Match Prediction Engine (The Lucky 11, IPL 2026).
     NO web scraping. All data from DB squads, SportMonks API, or weather API.
+    player_performance: Optional dict with "team1" and "team2" keys containing
+    per-player batting/bowling stats from SportMonks.
     """
     match_info = match_info or {}
     squad_data = squad_data or {}
     weather = weather or {}
     form_data = form_data or {}
     momentum_data = momentum_data or {}
+    player_performance = player_performance or {}
 
     team1 = match_info.get("team1", "")
     team2 = match_info.get("team2", "")
@@ -389,6 +392,49 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
             "team1": squad_data.get(squad_names[0], []) if len(squad_names) > 0 else [],
             "team2": squad_data.get(squad_names[1], []) if len(squad_names) > 1 else [],
         }
+
+    # ── Enhance squad ratings with actual player performance stats ──
+    # Override STAR_PLAYERS ratings with real form data where available
+    perf_overrides = {}
+    for team_key in ["team1", "team2"]:
+        team_perf = player_performance.get(team_key, {})
+        for pid, ps in team_perf.items():
+            name = ps.get("name", "")
+            if not name:
+                continue
+            matches = ps.get("matches", 0)
+            if matches < 1:
+                continue
+            bat = ps.get("batting", {})
+            bowl = ps.get("bowling", {})
+            # Compute dynamic rating from actual performance
+            base = STAR_PLAYERS.get(name, 65)
+            adj = 0
+            if bat.get("innings", 0) > 0:
+                bat_avg = bat.get("avg", 0)
+                bat_sr = bat.get("sr", 0)
+                # Avg 30+, SR 140+ = excellent form (+5 to +10)
+                if bat_avg >= 30 and bat_sr >= 140:
+                    adj += min(10, (bat_avg - 25) * 0.3 + (bat_sr - 130) * 0.05)
+                elif bat_avg < 15:
+                    adj -= min(8, (15 - bat_avg) * 0.4)  # Poor form penalty
+            if bowl.get("innings", 0) > 0:
+                economy = bowl.get("economy", 12)
+                wpi = bowl.get("wickets", 0) / bowl["innings"]
+                if economy < 7.5 and wpi > 1:
+                    adj += min(8, (8 - economy) * 2 + wpi * 2)
+                elif economy > 10:
+                    adj -= min(6, (economy - 10) * 1.5)
+
+            # Clamp adjustment and apply
+            adj = max(-12, min(12, adj))
+            perf_overrides[name] = round(max(50, min(99, base + adj)))
+
+    # Temporarily override STAR_PLAYERS for this prediction
+    original_ratings = {}
+    for name, rating in perf_overrides.items():
+        original_ratings[name] = STAR_PLAYERS.get(name)
+        STAR_PLAYERS[name] = rating
 
     # ━━━━━━ Category 1: Current Squad Strength and Balance (25%) ━━━━━━
     if remapped_squads.get("team1") and remapped_squads.get("team2"):
@@ -410,6 +456,13 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
     balance_diff = t1_balance - t2_balance
     balance_bonus = 3.0 * balance_diff
     squad_logit = raw_squad_logit + balance_bonus
+
+    # Restore original STAR_PLAYERS ratings
+    for name, orig in original_ratings.items():
+        if orig is not None:
+            STAR_PLAYERS[name] = orig
+        else:
+            STAR_PLAYERS.pop(name, None)
 
     # ━━━━━━ Category 2: Current Season Form — SportMonks API (21%) ━━━━━━
     t1_form = form_data.get("team1", {})
@@ -549,14 +602,21 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
                 "logit_contribution": round(WEIGHTS["current_form"] * form_logit, 4),
                 "team1_form_score": round(t1_form_score, 1),
                 "team2_form_score": round(t2_form_score, 1),
+                "team1_wl_form": t1_form.get("wl_form_score", t1_form_score),
+                "team2_wl_form": t2_form.get("wl_form_score", t2_form_score),
+                "team1_player_form": t1_form.get("player_form_score", 0),
+                "team2_player_form": t2_form.get("player_form_score", 0),
                 "team1_matches_played": t1_matches_played,
                 "team2_matches_played": t2_matches_played,
                 "team1_wins": t1_form.get("wins", 0),
                 "team2_wins": t2_form.get("wins", 0),
+                "team1_top_performers": t1_form.get("top_performers", []),
+                "team2_top_performers": t2_form.get("top_performers", []),
                 "team1_nrr": t1_form.get("nrr", 0),
                 "team2_nrr": t2_form.get("nrr", 0),
                 "source": "sportmonks_api",
                 "damping": round(form_damping, 2),
+                "has_player_stats": bool(player_performance),
             },
             "venue_pitch_home": {
                 "weight": WEIGHTS["venue_pitch_home"],
