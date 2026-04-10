@@ -667,7 +667,7 @@ async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_i
     match_num = match_info.get("match_number", "")
     city = match_info.get("city", "")
 
-    # Build squad block for Claude (ONLY from DB)
+    # Build squad block for Claude (ONLY expected Playing XI, not full squad)
     squad_block = ""
     if squads:
         for team_name, players in squads.items():
@@ -679,9 +679,9 @@ async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_i
                     overseas = " [OVERSEAS]" if p.get("isOverseas") else ""
                     captain = " [C]" if p.get("isCaptain") else ""
                     player_lines.append(f"  - {name} ({role}){overseas}{captain}")
-                squad_block += f"\n{team_name} OFFICIAL SQUAD:\n" + "\n".join(player_lines) + "\n"
+                squad_block += f"\n{team_name} EXPECTED PLAYING XI ({len(players)} players):\n" + "\n".join(player_lines) + "\n"
 
-    squad_section = f"\n=== OFFICIAL IPL 2026 SQUADS (ONLY reference these players) ===\n{squad_block}" if squad_block else ""
+    squad_section = f"\n=== EXPECTED PLAYING XI (Based on last match — analyze ONLY these players) ===\n{squad_block}" if squad_block else ""
 
     # Build news section (ONLY from newsdata.io, filtered for these teams)
     news_section = ""
@@ -713,7 +713,7 @@ async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_i
         f"deep-{uuid.uuid4().hex[:8]}",
         """You are the sharpest cricket betting analyst alive. You write match previews that read like a friend who's watched every ball of every IPL season explaining the match over drinks. You're brutally honest, data-driven, and never hedge unless the data genuinely says it's close.
 
-CRITICAL DATA CONSTRAINT: You must ONLY use cricket data from the years 2023 to 2026. Do NOT reference any player stats, records, or events from before 2023. The IPL mega-auction happened before IPL 2025, so all team compositions changed — historical team stats before 2023 are irrelevant. Only reference players from the official IPL 2026 squads provided.
+CRITICAL DATA CONSTRAINT: You must ONLY use cricket data from the years 2023 to 2026. Do NOT reference any player stats, records, or events from before 2023. The IPL mega-auction happened before IPL 2025, so all team compositions changed — historical team stats before 2023 are irrelevant. Only reference players from the Expected Playing XI provided — these are the actual 11 players expected to play, NOT the full squad.
 
 Your style:
 - Direct, conversational, opinionated
@@ -773,7 +773,7 @@ Return a JSON object with this EXACT structure:
 RULES:
 - Include 6-10 factors covering: venue/conditions, H2H, form, injuries, key matchups, bowling depth, batting depth, spin/pace advantage, toss impact
 - Every factor MUST reference specific stats or recent events from 2023-2026 ONLY. Do NOT cite pre-2023 data.
-- Only reference players who are in the official IPL 2026 squads provided above.
+- Only reference players who are in the Expected Playing XI provided above. Do NOT reference bench or squad players.
 - Win probabilities must add to 100
 - Be opinionated. If one team is better, say so. Don't be safe.
 - Tag each factor with which team it favors"""
@@ -828,17 +828,17 @@ async def claude_live_analysis(match_info: dict, live_data: dict, algo_probs: di
 Be sharp, data-driven, and reference specific player performances happening NOW.
 Never hedge — give clear directional advice.
 
-CRITICAL DATA CONSTRAINT: Only reference cricket data from 2023-2026. Do NOT cite any player stats, records, or historical performances from before 2023. Only reference players from official IPL 2026 squads."""
+CRITICAL DATA CONSTRAINT: Only reference cricket data from 2023-2026. Do NOT cite any player stats, records, or historical performances from before 2023. Only reference players from the Expected Playing XI provided — these are the 11 players on the field, not the full squad."""
     )
 
     prompt = f"""Analyze this LIVE IPL 2026 match. Give me a real-time prediction update.
 
 {team1} ({t1_short}) vs {team2} ({t2_short})
 
-=== {team1} FULL SQUAD ===
+=== {team1} EXPECTED PLAYING XI ===
 {squad1_text}
 
-=== {team2} FULL SQUAD ===
+=== {team2} EXPECTED PLAYING XI ===
 {squad2_text}
 
 === LIVE MATCH DATA (from our system) ===
@@ -850,7 +850,7 @@ CRITICAL DATA CONSTRAINT: Only reference cricket data from 2023-2026. Do NOT cit
 === LATEST SCRAPED DATA ===
 {live_scraped[:4000]}
 
-Consider the full squads above — remaining batting depth, available bowling changes, and each player's IPL form.
+Consider the Playing XIs above — remaining batting depth, available bowling changes, and each player's IPL form. Only reference these 11 players per team.
 
 Return JSON:
 {{

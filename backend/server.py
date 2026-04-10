@@ -2213,9 +2213,27 @@ async def api_claude_analysis(match_id: str, background_tasks: BackgroundTasks =
 
     # Run Claude deep analysis (this takes time due to web scraping + Claude)
     match_squads = await _get_squads_for_match(team1, team2)
+
+    # ── Filter to Playing XI — Claude MUST analyze only the expected 11 ──
+    playing_xi_squads = match_squads  # Default: full squad
+    try:
+        t1_xi = await fetch_last_played_xi(team1)
+        t2_xi = await fetch_last_played_xi(team2)
+        if t1_xi or t2_xi:
+            xi_sm_data = {
+                "team1_playing_xi": t1_xi,
+                "team2_playing_xi": t2_xi,
+            }
+            filtered = _filter_squads_to_playing_xi(match_squads, xi_sm_data, team1, team2)
+            if filtered:
+                playing_xi_squads = filtered
+                logger.info(f"Claude pre-match analysis using Playing XI: {sum(len(v) for v in filtered.values())} players")
+    except Exception as e:
+        logger.warning(f"Failed to filter Playing XI for Claude analysis: {e}")
+
     # Fetch news for Claude context
     match_news = await fetch_match_news(team1, team2)
-    analysis = await claude_deep_match_analysis(team1, team2, venue, match_info, squads=match_squads, news=match_news)
+    analysis = await claude_deep_match_analysis(team1, team2, venue, match_info, squads=playing_xi_squads, news=match_news)
 
     # Cache in DB
     result = {
@@ -2268,7 +2286,12 @@ async def api_claude_live(match_id: str):
     match_squads = await _get_squads_for_match(
         match_info.get("team1", ""), match_info.get("team2", "")
     )
-    analysis = await claude_live_analysis(match_info, live_data, algo_probs, squads=match_squads)
+    # ── Filter to Playing XI for Claude live analysis ──
+    sm_data = live_state.get("sportmonksData", live_state.get("sm_data", {}))
+    live_squads = _filter_squads_to_playing_xi(
+        match_squads, sm_data, match_info.get("team1", ""), match_info.get("team2", "")
+    )
+    analysis = await claude_live_analysis(match_info, live_data, algo_probs, squads=live_squads)
 
     return {
         "matchId": match_id,
