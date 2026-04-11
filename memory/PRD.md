@@ -6,7 +6,7 @@ Build a full-stack cricket prediction app for IPL 2026 with an 8-category math m
 ## Core Architecture
 - **Frontend**: React + Tailwind CSS + Shadcn UI
 - **Backend**: FastAPI + MongoDB (Motor)
-- **Integrations**: Claude Opus (Anthropic), SportMonks Cricket v2 API, NewsData.io, Open-Meteo Weather
+- **Integrations**: Claude Opus (Anthropic via LiteLLM), SportMonks Cricket v2 API, NewsData.io, Open-Meteo Weather
 
 ## What's Been Implemented
 
@@ -25,27 +25,34 @@ Layers: Squad Strength, Key Matchups, Venue/Pitch, Bowling Depth, Death Bowling,
 Plus: Algorithm Predictions table, Analyst POTM, Divergence notes, Toss Scenarios, Deciding Factor, First 6 Signal.
 
 ### Claude Opus Live Match: 11-Section Structured Prediction (Apr 2026)
-Complete rewrite of live prediction prompt:
-- **S0**: Live Data Dump — explicit statement of all fetched data
-- **S1**: Match Context — teams, venue, time, toss, dew
-- **S2**: Squad Strength & Availability (22%) — XI ratings 1-10, absence impact analysis
-- **S3**: Current Season Form (18%) — IPL 2026 only, exponential decay
-- **S4**: Venue & Pitch Profile (16%) — avg 1st innings, bat-first win%, sample size
-- **S5**: Head-to-Head (10%) — 3-season filter, squad validity check
-- **S6**: Key Player Matchups (8%) — 3 decisive batter vs bowler matchups with stats
-- **S7**: Bowling Depth & Death (7%) — Proven/Adequate/Vulnerability ratings for overs 17-20
-- **S8**: Data Integrity Checks — form vs reputation, absence verification, venue recency, H2H validity, toss consistency, invented factors removed
-- **S9**: Toss Scenarios — mathematically consistent with venue data
-- **S10**: Final Prediction — 4 sentences: key factor, underdog chance, first 6 signal, confidence
-- **S11**: Mid-Game Revision Triggers — 3 exact measurable events with % revision
-- Also retains: contextual_adjustment_pct, momentum, market_mispricing
+- **S0**: Live Data Dump
+- **S1**: Match Context
+- **S2**: Squad Strength & Availability (22%)
+- **S3**: Current Season Form (18%)
+- **S4**: Venue & Pitch Profile (16%)
+- **S5**: Head-to-Head (10%)
+- **S6**: Key Player Matchups (8%)
+- **S7**: Bowling Depth & Death (7%)
+- **S8**: Data Integrity Checks
+- **S9**: Toss Scenarios
+- **S10**: Final Prediction
+- **S11**: Mid-Game Revision Triggers
 
 ### Performance Optimizations (Apr 2026)
 - Global axios timeout (30s default)
 - Individual timeouts on all API calls
 - Background tasks yield to event loop via asyncio.sleep(0.5)
 - Cancel endpoints for Re-Predict All and Claude Rerun
-- AbortController on fetch() calls
+
+### Playing XI Extraction Fix (Apr 2026)
+- **Bug**: Claude was evaluating full squad (16+ players) instead of Playing XI (11)
+- **Root cause**: `parse_fixture()` lineup pivot parsing failed silently → fell back to full squad
+- **Fix**: Multi-layer validation:
+  - Layer 1: Robust pivot parsing with type normalization
+  - Layer 2: Scorecard-based team resolution for unassigned players
+  - Layer 3: Pruning oversized XI using batting/bowling evidence
+  - Layer 4: Hard cap of 12 players (11 + 1 impact sub) in both parse_fixture() and _filter_squads_to_playing_xi()
+- **Tests**: 10 unit tests covering all edge cases (all passing)
 
 ### Key Endpoints
 - `POST /api/matches/{id}/pre-match-predict` — 8-category prediction
@@ -57,7 +64,7 @@ Complete rewrite of live prediction prompt:
 - `POST /api/predictions/repredict-cancel` — Cancel Re-Predict All
 
 ## Backlog
+- [ ] P1: Celery migration for background jobs
 - [ ] P2: Shareable prediction card
-- [ ] P2: Celery migration for background jobs
 - [ ] P3: Prediction accuracy leaderboard
-- [ ] P3: Refactor server.py into modular routers
+- [ ] P3: Refactor server.py (>3200 lines) into modular routers
