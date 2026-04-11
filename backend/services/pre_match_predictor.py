@@ -544,11 +544,19 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
     )
 
     # ━━━━━━ Category 8: Team Momentum — Last 2 Matches (3%) ━━━━━━
+    # Momentum should meaningfully favour a team on a winning streak.
+    # With 3% weight, the logit needs to be strong enough to create visible impact.
+    # 2-0 streak diff → ~1.5% swing, 1-0 diff → ~0.7% swing
     t1_last2 = momentum_data.get("team1_last2", [])
     t2_last2 = momentum_data.get("team2_last2", [])
     t1_wins_last2 = sum(1 for r in t1_last2 if r == "W")
     t2_wins_last2 = sum(1 for r in t2_last2 if r == "W")
-    momentum_logit = min(0.5, max(-0.5, 1.5 * ((t1_wins_last2 - t2_wins_last2) / 2)))
+    win_diff = t1_wins_last2 - t2_wins_last2  # +2, +1, 0, -1, -2
+    # Scale: +2 diff → logit +1.8, +1 diff → logit +0.9
+    momentum_logit = min(2.0, max(-2.0, 0.9 * win_diff))
+    # Add extra boost for dominant streak (2W-0L vs 0W-2L)
+    if abs(win_diff) == 2:
+        momentum_logit *= 1.3  # 2-0 streak is more impactful than just additive
 
     # ━━━━━━ Combined ━━━━━━
     combined_logit = (
@@ -664,6 +672,11 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
                 "team2_last2": t2_last2,
                 "team1_wins_last2": t1_wins_last2,
                 "team2_wins_last2": t2_wins_last2,
+                "raw_logit": round(momentum_logit, 4),
+                "momentum_text": (
+                    f"{'Team1' if win_diff > 0 else 'Team2'} has momentum ({abs(win_diff)} more win{'s' if abs(win_diff) > 1 else ''} in last 2)"
+                    if win_diff != 0 else "Even momentum — both teams split last 2 matches"
+                ),
             },
         },
     }

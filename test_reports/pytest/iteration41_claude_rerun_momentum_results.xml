@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="4" skipped="1" tests="9" time="291.453" timestamp="2026-04-11T09:18:53.959584+00:00" hostname="agent-env-c04530c5-e2d8-4df7-9745-07e632eb1b29"><testcase classname="backend.tests.test_iteration41_claude_rerun_momentum.TestClaudeRerunEndpoints" name="test_claude_rerun_status_endpoint_exists" time="0.260" /><testcase classname="backend.tests.test_iteration41_claude_rerun_momentum.TestClaudeRerunEndpoints" name="test_claude_rerun_all_endpoint_starts" time="62.354"><failure message="requests.exceptions.JSONDecodeError: Expecting value: line 1 column 1 (char 0)">/root/.venv/lib/python3.11/site-packages/requests/models.py:976: in json
+    return complexjson.loads(self.text, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/json/__init__.py:346: in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/json/decoder.py:337: in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/json/decoder.py:355: in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+E   json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+
+During handling of the above exception, another exception occurred:
+backend/tests/test_iteration41_claude_rerun_momentum.py:61: in test_claude_rerun_all_endpoint_starts
+    status = status_response.json()
+             ^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/models.py:980: in json
+    raise RequestsJSONDecodeError(e.msg, e.doc, e.pos)
+E   requests.exceptions.JSONDecodeError: Expecting value: line 1 column 1 (char 0)</failure></testcase><testcase classname="backend.tests.test_iteration41_claude_rerun_momentum.TestMomentumCalculation" name="test_pre_match_predict_returns_momentum_data" time="60.238"><failure message="AssertionError: Expected 200, got 502&#10;assert 502 == 200&#10; +  where 502 = &lt;Response [502]&gt;.status_code">backend/tests/test_iteration41_claude_rerun_momentum.py:72: in test_pre_match_predict_returns_momentum_data
+    assert response.status_code == 200, f"Expected 200, got {response.status_code}"
+E   AssertionError: Expected 200, got 502
+E   assert 502 == 200
+E    +  where 502 = &lt;Response [502]&gt;.status_code</failure></testcase><testcase classname="backend.tests.test_iteration41_claude_rerun_momentum.TestMomentumCalculation" name="test_momentum_logit_zero_when_equal_results" time="60.227"><failure message="assert 502 == 200&#10; +  where 502 = &lt;Response [502]&gt;.status_code">backend/tests/test_iteration41_claude_rerun_momentum.py:105: in test_momentum_logit_zero_when_equal_results
+    assert response.status_code == 200
+E   assert 502 == 200
+E    +  where 502 = &lt;Response [502]&gt;.status_code</failure></testcase><testcase classname="backend.tests.test_iteration41_claude_rerun_momentum.TestMomentumCalculation" name="test_momentum_logit_increased_impact" time="60.212"><failure message="assert 502 == 200&#10; +  where 502 = &lt;Response [502]&gt;.status_code">backend/tests/test_iteration41_claude_rerun_momentum.py:131: in test_momentum_logit_increased_impact
+    assert response.status_code == 200
+E   assert 502 == 200
+E    +  where 502 = &lt;Response [502]&gt;.status_code</failure></testcase><testcase classname="backend.tests.test_iteration41_claude_rerun_momentum.TestClaudeAnalysisStructure" name="test_claude_analysis_has_required_fields" time="47.174"><skipped type="pytest.skip" message="No cached Claude analysis available - run Claude analysis first">/app/backend/tests/test_iteration41_claude_rerun_momentum.py:169: No cached Claude analysis available - run Claude analysis first</skipped></testcase><testcase classname="backend.tests.test_iteration41_claude_rerun_momentum.TestHealthAndSchedule" name="test_health_check" time="0.386" /><testcase classname="backend.tests.test_iteration41_claude_rerun_momentum.TestHealthAndSchedule" name="test_schedule_has_upcoming_matches" time="0.153" /><testcase classname="backend.tests.test_iteration41_claude_rerun_momentum.TestHealthAndSchedule" name="test_predictions_upcoming_endpoint" time="0.298" /></testsuite></testsuites>

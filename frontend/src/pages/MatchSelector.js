@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import { useMatchData } from "@/hooks/useMatchData";
-import { Lightning, MapPin, Clock, CaretRight, Broadcast, Trophy, CalendarBlank, ArrowsClockwise, Spinner, Target, TrendUp, TrendDown, Minus, UsersThree } from "@phosphor-icons/react";
+import { Lightning, MapPin, Clock, CaretRight, Broadcast, Trophy, CalendarBlank, ArrowsClockwise, Spinner, Target, TrendUp, TrendDown, Minus, UsersThree, Sparkle } from "@phosphor-icons/react";
 import { Badge } from "@/components/ui/badge";
 import CricApiLivePanel from "@/components/CricApiLivePanel";
 import InfoTooltip from "@/components/InfoTooltip";
@@ -21,6 +21,8 @@ export default function MatchSelector() {
   const [repredictStatus, setRepredictStatus] = useState(null);
   const [refreshingLive, setRefreshingLive] = useState(false);
   const [refreshResult, setRefreshResult] = useState(null);
+  const [claudeRerunning, setClaudeRerunning] = useState(false);
+  const [claudeRerunStatus, setClaudeRerunStatus] = useState(null);
 
   useEffect(() => {
     fetchStatus();
@@ -147,6 +149,26 @@ export default function MatchSelector() {
     }
   };
 
+  const handleClaudeRerunAll = async () => {
+    setClaudeRerunning(true);
+    setClaudeRerunStatus(null);
+    try {
+      await axios.post(`${API}/predictions/claude-rerun-all`);
+      const poll = setInterval(async () => {
+        try {
+          const res = await axios.get(`${API}/predictions/claude-rerun-status`);
+          setClaudeRerunStatus(res.data);
+          if (!res.data.running) {
+            clearInterval(poll);
+            setClaudeRerunning(false);
+          }
+        } catch (e) { /* ignore */ }
+      }, 5000);
+    } catch (e) {
+      setClaudeRerunning(false);
+    }
+  };
+
   const selectMatch = (match) => {
     const status = (match.status || "").toLowerCase();
     if (status === "live" || status === "in progress") {
@@ -231,12 +253,22 @@ export default function MatchSelector() {
                 <span className="self-center text-[10px] text-[#34C759]">{syncResult.updated || 0} updated</span>
               )}
               {predictedCount > 0 && (
-                <button onClick={handleRepredictAll} disabled={repredicting || predictingAll} data-testid="repredict-all-btn"
+                <button onClick={handleRepredictAll} disabled={repredicting || predictingAll || claudeRerunning} data-testid="repredict-all-btn"
                   className="flex items-center gap-2 bg-[#1A0A2E] border border-[#7C3AED]/30 text-white px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider hover:border-[#7C3AED] transition-colors disabled:opacity-40">
                   {repredicting ? (
                     <><Spinner className="w-3.5 h-3.5 animate-spin" /> Re-Predicting {repredictStatus?.completed || 0}/{repredictStatus?.total || "?"}...</>
                   ) : (
                     <><ArrowsClockwise weight="bold" className="w-3.5 h-3.5 text-[#7C3AED]" /> Re-Predict All</>
+                  )}
+                </button>
+              )}
+              {predictedCount > 0 && (
+                <button onClick={handleClaudeRerunAll} disabled={claudeRerunning || repredicting} data-testid="claude-rerun-all-btn"
+                  className="flex items-center gap-2 bg-[#0A0A1A] border border-[#A78BFA]/30 text-white px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider hover:border-[#A78BFA] transition-colors disabled:opacity-40">
+                  {claudeRerunning ? (
+                    <><Spinner className="w-3.5 h-3.5 animate-spin" /> Claude {claudeRerunStatus?.completed || 0}/{claudeRerunStatus?.total || "?"}...</>
+                  ) : (
+                    <><Sparkle weight="fill" className="w-3.5 h-3.5 text-[#A78BFA]" /> Re-run Claude All</>
                   )}
                 </button>
               )}
@@ -285,6 +317,21 @@ export default function MatchSelector() {
             </div>
             <div className="text-right">
               <p className="text-xs font-mono text-[#7C3AED]">{repredictStatus.total > 0 ? Math.round(repredictStatus.completed / repredictStatus.total * 100) : 0}%</p>
+            </div>
+          </div>
+        )}
+
+        {claudeRerunning && claudeRerunStatus && (
+          <div className="mb-4 bg-[#0A0A1A] border border-[#A78BFA]/30 rounded-md p-3 flex items-center gap-3" data-testid="claude-rerun-banner">
+            <Sparkle weight="fill" className="w-4 h-4 animate-pulse text-[#A78BFA]" />
+            <div className="flex-1">
+              <p className="text-xs font-bold text-white">Re-running Claude 7-Layer Analysis — All Upcoming Matches</p>
+              <p className="text-[10px] text-[#A1A1AA]">
+                {claudeRerunStatus.completed}/{claudeRerunStatus.total} complete &middot; {claudeRerunStatus.failed} failed &middot; {claudeRerunStatus.phase || claudeRerunStatus.current_match}
+              </p>
+            </div>
+            <div className="text-right">
+              <p className="text-xs font-mono text-[#A78BFA]">{claudeRerunStatus.total > 0 ? Math.round(claudeRerunStatus.completed / claudeRerunStatus.total * 100) : 0}%</p>
             </div>
           </div>
         )}

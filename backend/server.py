@@ -1856,6 +1856,8 @@ async def _background_repredict_all():
     logger.info(f"[RePredict] Starting for {len(upcoming)} upcoming matches")
 
     for i, match in enumerate(upcoming):
+        # Yield to event loop between matches so other requests can be served
+        await asyncio.sleep(0.1)
         mid = match.get("matchId", "")
         team1 = match.get("team1", "")
         team2 = match.get("team2", "")
@@ -1983,7 +1985,139 @@ async def api_repredict_status():
     return repredict_status
 
 
-# ─── DATA SOURCE INFO ────────────────────────────────────────
+# ─── BACKGROUND CLAUDE-ONLY RE-RUN ──────────────────────────
+
+claude_rerun_status = {"running": False, "total": 0, "completed": 0, "failed": 0, "current_match": "", "started_at": None, "phase": ""}
+
+async def _background_claude_rerun_all():
+    """Background task: re-run Claude 7-layer analysis for ALL upcoming matches."""
+    global claude_rerun_status
+    claude_rerun_status = {
+        "running": True, "total": 0, "completed": 0, "failed": 0,
+        "current_match": "", "started_at": datetime.now(timezone.utc).isoformat(), "phase": "starting"
+    }
+
+    upcoming = []
+    async for m in db.ipl_schedule.find(
+        {"status": {"$regex": "upcoming|ns|not started", "$options": "i"}},
+        {"_id": 0}
+    ).sort("match_number", 1):
+        upcoming.append(m)
+
+    claude_rerun_status["total"] = len(upcoming)
+    logger.info(f"[Claude Rerun] Starting for {len(upcoming)} upcoming matches")
+
+    for i, match in enumerate(upcoming):
+        # Yield to event loop so other requests can be served
+        await asyncio.sleep(0.1)
+        mid = match.get("matchId")
+        team1 = match.get("team1", "")
+        team2 = match.get("team2", "")
+        venue = match.get("venue", "")
+        t1_short = match.get("team1Short", get_short_name(team1))
+        t2_short = match.get("team2Short", get_short_name(team2))
+
+        claude_rerun_status["current_match"] = f"{t1_short} vs {t2_short}"
+        claude_rerun_status["phase"] = f"claude {i+1}/{len(upcoming)}: {t1_short} vs {t2_short}"
+
+        try:
+            # Delete old Claude analysis
+            await db.claude_analysis.delete_one({"matchId": mid})
+
+            # Get squads + filter to Playing XI
+            match_squads = await _get_squads_for_match(team1, team2)
+            playing_xi_squads = match_squads
+            try:
+                t1_xi = await fetch_last_played_xi(team1)
+                t2_xi = await fetch_last_played_xi(team2)
+                if t1_xi or t2_xi:
+                    xi_sm_data = {"team1_playing_xi": t1_xi, "team2_playing_xi": t2_xi}
+                    filtered = _filter_squads_to_playing_xi(match_squads, xi_sm_data, team1, team2)
+                    if filtered:
+                        playing_xi_squads = filtered
+            except Exception as e:
+                logger.warning(f"[Claude Rerun] XI filter failed for {mid}: {e}")
+
+            # Fetch enrichment data
+            algo_pred = await db.pre_match_predictions.find_one({"matchId": mid}, {"_id": 0})
+            player_perf = {}
+            try:
+                t1p = await db.player_performance.find_one({"team": team1}, {"_id": 0})
+                t2p = await db.player_performance.find_one({"team": team2}, {"_id": 0})
+                if t1p:
+                    player_perf["team1"] = t1p.get("players", t1p)
+                if t2p:
+                    player_perf["team2"] = t2p.get("players", t2p)
+            except Exception:
+                pass
+            weather_data = None
+            try:
+                city_name = match.get("city", "") or venue.split(",")[-1].strip() if venue else ""
+                if city_name:
+                    weather_data = await get_weather(city_name, match.get("dateTimeGMT"))
+            except Exception:
+                pass
+            form_data = None
+            try:
+                form_data = await fetch_team_form(db, team1, team2, player_performance=player_perf)
+            except Exception:
+                pass
+
+            match_news = await fetch_match_news(team1, team2)
+
+            analysis = await claude_deep_match_analysis(
+                team1, team2, venue, match, squads=playing_xi_squads, news=match_news,
+                algo_prediction=algo_pred, player_performance=player_perf,
+                weather=weather_data, form_data=form_data,
+            )
+            if analysis and "error" not in analysis:
+                await db.claude_analysis.update_one(
+                    {"matchId": mid},
+                    {"$set": {
+                        "matchId": mid,
+                        "team1": team1,
+                        "team2": team2,
+                        "team1Short": t1_short,
+                        "team2Short": t2_short,
+                        "venue": venue,
+                        "analysis": analysis,
+                        "generatedAt": datetime.now(timezone.utc).isoformat(),
+                        "model": "claude-opus-4.5",
+                    }},
+                    upsert=True,
+                )
+                logger.info(f"[Claude Rerun {i+1}/{len(upcoming)}] Done: {t1_short} vs {t2_short}")
+            else:
+                logger.warning(f"[Claude Rerun] Error for {mid}: {analysis.get('error', '')}")
+
+            claude_rerun_status["completed"] += 1
+            # Yield to event loop after each Claude call completes
+            await asyncio.sleep(1)
+        except Exception as e:
+            logger.error(f"[Claude Rerun] Failed for {mid}: {e}")
+            claude_rerun_status["failed"] += 1
+
+    claude_rerun_status["running"] = False
+    claude_rerun_status["phase"] = "done"
+    claude_rerun_status["current_match"] = "Done"
+    logger.info(f"[Claude Rerun] Complete: {claude_rerun_status['completed']}/{claude_rerun_status['total']}, {claude_rerun_status['failed']} failed")
+
+
+@api_router.post("/predictions/claude-rerun-all")
+async def api_claude_rerun_all():
+    """Trigger background Claude 7-layer re-analysis for ALL upcoming matches."""
+    if claude_rerun_status["running"]:
+        return {"status": "already_running", "progress": claude_rerun_status}
+    if repredict_status["running"]:
+        return {"status": "repredict_running", "message": "Wait for Re-Predict All to finish first."}
+    asyncio.create_task(_background_claude_rerun_all())
+    return {"status": "started", "message": "Claude re-analysis started for all upcoming matches."}
+
+
+@api_router.get("/predictions/claude-rerun-status")
+async def api_claude_rerun_status():
+    """Get the current status of the Claude re-run task."""
+    return claude_rerun_status
 
 @api_router.get("/data-source")
 async def api_data_source():
