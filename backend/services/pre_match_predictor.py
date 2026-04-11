@@ -724,21 +724,37 @@ def _compute_toss_impact(venue_key: Optional[str], match_time: str, weather: dic
     
     Key insight: Heavy dew = bowling second is harder = chasing team advantage.
     Pre-toss, we don't know who bats first, but we quantify HOW MUCH toss matters.
-    The team with better batting depth benefits more from chasing (dew advantage).
-    The team with better pace bowling benefits more from bowling first (no dew).
+    
+    CRITICAL: Match time classification matters hugely:
+    - Afternoon matches (3:30 PM IST): End by ~7 PM. Minimal dew. Toss less impactful.
+    - Evening matches (7:30 PM IST): End by ~11 PM. Heavy dew in 2nd innings. Toss very impactful.
     """
-    detail = {"venue_key": venue_key, "is_night": False, "preferred_decision": "unknown", "toss_win_pct": 0.52}
+    time_class = _classify_match_time(match_time)
+    is_evening = time_class == "evening"
+    is_afternoon = time_class == "afternoon"
+    
+    detail = {
+        "venue_key": venue_key,
+        "is_night": is_evening,
+        "match_time_class": time_class,
+        "preferred_decision": "unknown",
+        "toss_win_pct": 0.52,
+    }
 
     if not venue_key or venue_key not in TOSS_LOOKUP:
-        detail["preferred_decision"] = "bowl"
-        detail["toss_win_pct"] = 0.53
+        detail["preferred_decision"] = "bowl" if is_evening else "bat"
+        detail["toss_win_pct"] = 0.53 if is_evening else 0.51
         detail["dew_factor"] = "none"
-        detail["dew_impact_text"] = "Unknown venue — slight chasing bias assumed"
+        if is_evening:
+            detail["dew_impact_text"] = "Unknown venue — slight chasing bias assumed (evening match)"
+        elif is_afternoon:
+            detail["dew_impact_text"] = "Unknown venue — afternoon match, minimal dew expected. Toss less decisive."
+        else:
+            detail["dew_impact_text"] = "Unknown venue — day match, no dew."
+        detail["dew_multiplier"] = 1.0 if is_evening else 0.6 if is_afternoon else 0.5
         return 0.09, detail
 
     venue_data = TOSS_LOOKUP[venue_key]
-    is_night = _is_night_match(match_time)
-    detail["is_night"] = is_night
 
     # Check for dew from weather data
     dew_factor = "none"
@@ -746,20 +762,31 @@ def _compute_toss_impact(venue_key: Optional[str], match_time: str, weather: dic
     if cricket_impact:
         dew_factor = cricket_impact.get("dew_factor", "none")
 
+    # For afternoon matches, override dew_factor downward — dew is negligible at 3:30 PM
+    if is_afternoon and dew_factor in ("heavy", "moderate"):
+        dew_factor = "light"  # Afternoon matches don't have significant dew
+        detail["dew_override_reason"] = "Afternoon match (3:30 PM IST) — dew downgraded, match ends before dark"
+
     conditions = venue_data["conditions"]
-    if is_night and dew_factor in ("heavy", "moderate") and "dew" in conditions:
+    
+    # Select condition based on match time classification
+    if is_evening and dew_factor in ("heavy", "moderate") and "dew" in conditions:
         selected = conditions["dew"]
         detail["condition"] = "dew"
-    elif is_night and "night" in conditions:
+    elif is_evening and "night" in conditions:
         selected = conditions["night"]
         detail["condition"] = "night"
-    elif not is_night and "day" in conditions:
+    elif (is_afternoon or not is_evening) and "day" in conditions:
         selected = conditions["day"]
         detail["condition"] = "day"
     else:
+        # Fallback: for afternoon at venues with no "day" condition, use first available
+        # but apply damping since it's not a night match
         first_key = list(conditions.keys())[0]
         selected = conditions[first_key]
         detail["condition"] = first_key
+        if is_afternoon:
+            detail["condition_note"] = "No afternoon-specific data — using default with reduced weight"
 
     detail["preferred_decision"] = selected["preferred"]
     detail["toss_win_pct"] = selected["toss_win_pct"]
@@ -769,23 +796,40 @@ def _compute_toss_impact(venue_key: Optional[str], match_time: str, weather: dic
     toss_win_pct = selected["toss_win_pct"]
     chasing_bias = selected.get("chasing_bias", 0)
 
-    # Dew impact text for frontend
-    if dew_factor == "heavy":
-        detail["dew_impact_text"] = "Heavy dew — massive chasing advantage. Bowling second extremely difficult. Team batting second favoured."
-        detail["dew_multiplier"] = 1.5
-    elif dew_factor == "moderate":
-        detail["dew_impact_text"] = "Moderate dew — clear chasing advantage. Wet ball makes bowling harder in 2nd innings."
-        detail["dew_multiplier"] = 1.2
-    elif is_night:
-        detail["dew_impact_text"] = "Night match — some dew expected. Slight chasing edge."
-        detail["dew_multiplier"] = 1.0
+    # ── Dew impact text and multiplier based on time classification ──
+    if is_evening:
+        if dew_factor == "heavy":
+            detail["dew_impact_text"] = "Evening match + heavy dew — massive chasing advantage. Bowling second extremely difficult."
+            detail["dew_multiplier"] = 1.5
+        elif dew_factor == "moderate":
+            detail["dew_impact_text"] = "Evening match + moderate dew — clear chasing advantage. Wet ball makes bowling harder in 2nd innings."
+            detail["dew_multiplier"] = 1.2
+        else:
+            detail["dew_impact_text"] = "Evening match (7:30 PM IST) — some dew expected. Slight chasing edge."
+            detail["dew_multiplier"] = 1.0
+    elif is_afternoon:
+        # Afternoon matches: significantly reduced dew impact
+        detail["dew_impact_text"] = (
+            "Afternoon match (3:30 PM IST) — match ends by ~7 PM before heavy dew sets in. "
+            "Toss less decisive. Batting conditions similar in both innings."
+        )
+        detail["dew_multiplier"] = 0.55  # Much lower than evening
+        # Reduce chasing bias for afternoon matches
+        chasing_bias = chasing_bias * 0.3  # Chasing bias drops significantly without dew
+        detail["chasing_bias_adjusted"] = round(chasing_bias, 3)
     else:
         detail["dew_impact_text"] = "Day match — no dew. Conditions neutral for both innings."
-        detail["dew_multiplier"] = 0.8
+        detail["dew_multiplier"] = 0.5
 
     # Toss logit: venue toss sensitivity + dew-enhanced chasing bias
     toss_deviation = toss_win_pct - 0.50
     dew_multiplier = detail.get("dew_multiplier", 1.0)
+    
+    # For afternoon, also dampen the toss deviation itself
+    if is_afternoon:
+        toss_deviation = toss_deviation * 0.6  # Toss matters less in afternoon
+        detail["toss_deviation_adjusted"] = round(toss_deviation, 4)
+    
     toss_logit = (3.0 * toss_deviation + 2.5 * chasing_bias) * dew_multiplier
     toss_logit = max(-1.5, min(1.5, toss_logit))
     detail["toss_logit_raw"] = round(toss_logit, 4)
@@ -876,17 +920,20 @@ def _compute_conditions_from_weather(venue_key: Optional[str], match_time: str,
     """Category 7: Conditions — team-specific advantage from real weather.
     
     Key logic:
-    - Heavy dew → team with better BATTING benefits (chasing becomes easier)
+    - Heavy dew → team with better BATTING benefits (chasing becomes easier) — EVENING ONLY
     - High humidity + cool temp → team with more PACE BOWLERS benefits (swing)
     - Hot + dry → team with more SPIN BOWLERS benefits
     - Strong wind → higher scoring, benefits better batting lineup
+    - AFTERNOON matches: dew impact significantly reduced
     """
-    detail = {"is_night": False, "dew_factor": "none", "conditions_summary": "neutral",
+    time_class = _classify_match_time(match_time)
+    is_evening = time_class == "evening"
+    is_afternoon = time_class == "afternoon"
+    
+    detail = {"is_night": is_evening, "match_time_class": time_class,
+              "dew_factor": "none", "conditions_summary": "neutral",
               "temperature": None, "humidity": None, "wind_kmh": None,
               "favours_team": "neutral", "conditions_edge_text": "No significant weather edge"}
-
-    is_night = _is_night_match(match_time)
-    detail["is_night"] = is_night
 
     if not weather or not weather.get("available"):
         detail["conditions_summary"] = "Weather data unavailable — neutral conditions assumed"
@@ -910,6 +957,11 @@ def _compute_conditions_from_weather(venue_key: Optional[str], match_time: str,
     wind = current.get("wind_speed_kmh", 0) or 0
     dew_factor = cricket_impact.get("dew_factor", "none")
 
+    # For afternoon matches, override dew factor — minimal dew before dark
+    if is_afternoon and dew_factor in ("heavy", "moderate"):
+        dew_factor = "light"
+        detail["dew_override_reason"] = "Afternoon match — dew downgraded (match ends before dark)"
+
     # Count pace/spin bowlers per team (top 5 only)
     t1_pace, t1_spin, t2_pace, t2_spin = 0, 0, 0, 0
     for team_key in ["team1", "team2"]:
@@ -928,28 +980,25 @@ def _compute_conditions_from_weather(venue_key: Optional[str], match_time: str,
     detail["team2_pace_bowlers"] = t2_pace
     detail["team2_spin_bowlers"] = t2_spin
 
-    # ── DEW EFFECT (biggest weather factor in T20) ──
-    if dew_factor == "heavy":
+    # ── DEW EFFECT (biggest weather factor in T20) — EVENING MATCHES ONLY ──
+    if dew_factor == "heavy" and is_evening:
         # Heavy dew: bowling in 2nd innings MUCH harder → batting strength matters more
-        # Team with superior batting gets a boost (they'd want to chase)
-        # Pre-toss: team with better batting depth is more likely to benefit
         bat_diff = 0
         t1_players = squads.get("team1", [])
         t2_players = squads.get("team2", [])
         t1_bat_quality = sum(STAR_PLAYERS.get(p.get("name", ""), 65) for p in t1_players if p.get("role") in ("Batsman", "WK-Batsman", "All-rounder"))
         t2_bat_quality = sum(STAR_PLAYERS.get(p.get("name", ""), 65) for p in t2_players if p.get("role") in ("Batsman", "WK-Batsman", "All-rounder"))
-        # Normalize to top 7 batsmen
         t1_bat_avg = t1_bat_quality / max(sum(1 for p in t1_players if p.get("role") in ("Batsman", "WK-Batsman", "All-rounder")), 1)
         t2_bat_avg = t2_bat_quality / max(sum(1 for p in t2_players if p.get("role") in ("Batsman", "WK-Batsman", "All-rounder")), 1)
         bat_diff = (t1_bat_avg - t2_bat_avg) / 100
         dew_logit = 0.6 * bat_diff  # Strong effect
         conditions_logit += dew_logit
         if bat_diff > 0:
-            edge_reasons.append("Heavy dew favours team1 (stronger batting, chasing advantage)")
+            edge_reasons.append("Heavy dew (evening) favours team1 (stronger batting, chasing advantage)")
         elif bat_diff < 0:
-            edge_reasons.append("Heavy dew favours team2 (stronger batting, chasing advantage)")
+            edge_reasons.append("Heavy dew (evening) favours team2 (stronger batting, chasing advantage)")
         detail["dew_batting_edge"] = "team1" if bat_diff > 0 else "team2" if bat_diff < 0 else "equal"
-    elif dew_factor == "moderate":
+    elif dew_factor == "moderate" and is_evening:
         t1_players = squads.get("team1", [])
         t2_players = squads.get("team2", [])
         t1_bat_quality = sum(STAR_PLAYERS.get(p.get("name", ""), 65) for p in t1_players if p.get("role") in ("Batsman", "WK-Batsman", "All-rounder"))
@@ -960,10 +1009,13 @@ def _compute_conditions_from_weather(venue_key: Optional[str], match_time: str,
         dew_logit = 0.35 * bat_diff
         conditions_logit += dew_logit
         if bat_diff > 0:
-            edge_reasons.append("Moderate dew slightly favours team1 (better batting)")
+            edge_reasons.append("Moderate dew (evening) slightly favours team1 (better batting)")
         elif bat_diff < 0:
-            edge_reasons.append("Moderate dew slightly favours team2 (better batting)")
+            edge_reasons.append("Moderate dew (evening) slightly favours team2 (better batting)")
         detail["dew_batting_edge"] = "team1" if bat_diff > 0 else "team2" if bat_diff < 0 else "equal"
+    elif is_afternoon:
+        edge_reasons.append("Afternoon match (3:30 PM IST) — minimal dew impact, conditions similar for both innings")
+        detail["dew_batting_edge"] = "neutral"
 
     # ── SWING CONDITIONS: humid + cool ──
     if humidity > 65 and temperature < 30:
@@ -1005,17 +1057,44 @@ def _compute_conditions_from_weather(venue_key: Optional[str], match_time: str,
     return conditions_logit, detail
 
 
-def _is_night_match(match_time: str) -> bool:
-    """Determine if match is a night/evening match."""
+def _classify_match_time(match_time: str) -> str:
+    """Classify match time into 'day', 'afternoon', or 'evening'.
+    
+    IPL scheduling:
+    - 3:30 PM IST (10:00 UTC) → 'afternoon' — ends ~7 PM, minimal dew
+    - 7:30 PM IST (14:00 UTC) → 'evening'   — ends ~11 PM, heavy dew in 2nd innings
+    - Anything else before 2 PM IST → 'day'
+    
+    This distinction is critical for toss impact: afternoon matches have far less
+    dew than evening matches, so the chasing advantage is reduced.
+    """
     if not match_time:
-        return True
+        return "evening"  # Default assumption for IPL
     try:
         from datetime import datetime as dt
         parsed = dt.fromisoformat(match_time.replace("Z", "+00:00"))
-        ist_hour = parsed.hour + 5 + (1 if parsed.minute >= 30 else 0)
-        return ist_hour >= 15
+        # Convert to IST (UTC + 5:30)
+        ist_hour = parsed.hour + 5
+        ist_minute = parsed.minute + 30
+        if ist_minute >= 60:
+            ist_hour += 1
+            ist_minute -= 60
+        
+        if ist_hour < 14:
+            return "day"
+        elif ist_hour < 17:
+            # 2 PM - 5 PM IST → afternoon slot (3:30 PM start matches)
+            return "afternoon"
+        else:
+            # 5 PM+ IST → evening slot (7:30 PM start matches)
+            return "evening"
     except Exception:
-        return True
+        return "evening"
+
+
+def _is_night_match(match_time: str) -> bool:
+    """Legacy wrapper — returns True for evening matches only."""
+    return _classify_match_time(match_time) == "evening"
 
 
 def _guess_role(name: str, squad: list) -> str:

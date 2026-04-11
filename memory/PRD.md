@@ -15,10 +15,18 @@ Build a full-stack cricket prediction app for IPL 2026 with an 8-category math m
 2. Current Season Form (21%) — W/L form (60%) + player-level performance form (40%) from SportMonks
 3. Venue + Pitch + Home (18%) — pitch type, pace/spin assist, secondary home venues
 4. Head-to-Head (11%) — IPL 2023-2025 H2H (all 45 team pairs)
-5. Toss Impact (9%) — dew_multiplier, dew_impact_text
+5. Toss Impact (9%) — **3-tier match time classification**: day/afternoon/evening with time-aware dew multipliers
 6. Bowling Depth (8%) — venue-weighted quality
-7. Conditions (5%) — dew/swing/spin team-specific
+7. Conditions (5%) — dew/swing/spin team-specific, afternoon-aware
 8. Team Momentum (3%)
+
+### Match Time Classification (Apr 2026)
+- **`_classify_match_time`**: Replaces boolean `_is_night_match` with 3-tier system:
+  - `day` (before 2 PM IST) — no dew, toss neutral
+  - `afternoon` (2-5 PM IST, e.g. 3:30 PM slot) — minimal dew, toss less decisive, dew_multiplier=0.55
+  - `evening` (after 5 PM IST, e.g. 7:30 PM slot) — significant dew, toss very impactful, dew_multiplier=1.0
+- **SportMonks cross-reference**: Match start time fetched from SportMonks `starting_at` field and cross-referenced with DB `dateTimeGMT` on every prediction
+- **Impact on toss_logit**: Afternoon matches show ~73% lower toss impact than evening matches at same venue
 
 ### Playing XI Integration
 - Pipeline: Live fixtures -> Last completed match from season fixtures -> Squad estimate fallback
@@ -27,14 +35,13 @@ Build a full-stack cricket prediction app for IPL 2026 with an 8-category math m
 
 ### Schedule Management (Apr 2026)
 - **Winner-based categorization**: Match is completed ONLY if it has a winner (not date-based)
-- **Date guard on sync**: sync-results only updates matches whose date has already passed (prevents future contamination)
+- **Date guard on sync**: sync-results only updates matches whose date has already passed
 - **Sync Results button**: Frontend button to manually trigger result sync from SportMonks
-- **Fixed DB**: Reset 23 wrongly-completed future matches back to Upcoming
 
 ### DLS / Overs Reduced (Apr 2026)
-- User can input DLS context (e.g., "Match reduced to 15 overs, revised target 142") in live match page
-- Passed through to Claude via `dls_info` parameter in both `fetch-live` and `refresh-claude-prediction` endpoints
-- Claude prompt includes DLS section marked as CRITICAL with instructions to adjust probabilities accordingly
+- User can input DLS context in live match page
+- Passed through to Claude via `dls_info` parameter
+- Claude prompt includes DLS section marked as CRITICAL
 
 ### Re-Predict All
 - Deletes old pre-match prediction + Claude analysis from DB for each match
@@ -62,6 +69,9 @@ Build a full-stack cricket prediction app for IPL 2026 with an 8-category math m
 - [x] DLS/Overs Reduced input in live match page, passed to Claude
 - [x] Playing XI refresh returns API-verified (fixed _bg_fetch_playing_xi)
 - [x] Playing XI status endpoint falls back to DB cache
+- [x] **Match time classification**: 3-tier day/afternoon/evening for toss & conditions
+- [x] **SportMonks start time cross-reference**: Fetches `starting_at` from API to verify match time
+- [x] **Afternoon match dew reduction**: Afternoon matches have 0.55x dew multiplier vs 1.0x for evening
 
 ## Backlog
 - [ ] P2: Shareable prediction card

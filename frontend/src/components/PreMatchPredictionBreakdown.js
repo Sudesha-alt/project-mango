@@ -232,12 +232,12 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
         <FactorBar label="Toss Impact (Venue)" weight={factors.toss_impact?.weight || 0.09} logit={factors.toss_impact?.logit_contribution || 0} icon={CoinVertical}
           tooltip={factors.toss_impact?.dew_impact_text || `Venue toss data. Dew: ${factors.toss_impact?.dew_factor || "none"}.`}
           team1={t1} team2={t2}
-          team1Detail={`${factors.toss_impact?.is_night ? "Night" : "Day"} | Dew: ${factors.toss_impact?.dew_factor || "none"}`}
+          team1Detail={`${(factors.toss_impact?.match_time_class || (factors.toss_impact?.is_night ? "evening" : "day")).charAt(0).toUpperCase() + (factors.toss_impact?.match_time_class || (factors.toss_impact?.is_night ? "evening" : "day")).slice(1)} | Dew: ${factors.toss_impact?.dew_factor || "none"}`}
           team2Detail={`Pref: ${factors.toss_impact?.preferred_decision || "?"} | Win%: ${Math.round((factors.toss_impact?.toss_win_pct || 0.5) * 100)}%`}
         />
         {factors.toss_impact?.dew_impact_text && (
           <div className="flex items-center text-[9px] -mt-1.5 mb-1.5 px-1">
-            <span className={`${factors.toss_impact?.dew_factor === "heavy" ? "text-[#FF9500]" : factors.toss_impact?.dew_factor === "moderate" ? "text-[#FFCC00]/80" : "text-[#525252]"}`}>
+            <span className={`${factors.toss_impact?.match_time_class === "afternoon" ? "text-[#FF9500]" : factors.toss_impact?.dew_factor === "heavy" ? "text-[#FF9500]" : factors.toss_impact?.dew_factor === "moderate" ? "text-[#FFCC00]/80" : "text-[#525252]"}`}>
               {factors.toss_impact.dew_impact_text}
             </span>
           </div>

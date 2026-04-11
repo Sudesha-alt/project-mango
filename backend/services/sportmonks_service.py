@@ -1118,3 +1118,31 @@ async def fetch_last_played_xi(team_name: str) -> list:
         logger.warning(f"No lineup data for {team_name} in fixture {target_fixture_id}")
 
     return xi
+
+
+async def fetch_fixture_start_time(team1: str, team2: str) -> Optional[str]:
+    """Fetch the actual match start time from SportMonks season fixtures.
+    
+    Returns the `starting_at` field (UTC datetime string) from SportMonks,
+    which is the authoritative source for match timing.
+    This helps distinguish afternoon (3:30 PM IST) vs evening (7:30 PM IST) matches
+    for accurate toss/dew impact calculations.
+    """
+    t1_id = _get_team_sm_id(team1)
+    t2_id = _get_team_sm_id(team2)
+    if not t1_id or not t2_id:
+        return None
+    
+    season_id = IPL_SEASON_IDS.get(2026, 1795)
+    fixtures = await fetch_season_fixtures(season_id)
+    
+    for f in fixtures:
+        lt_id = f.get("localteam_id")
+        vt_id = f.get("visitorteam_id")
+        if (lt_id == t1_id and vt_id == t2_id) or (lt_id == t2_id and vt_id == t1_id):
+            starting_at = f.get("starting_at", "")
+            if starting_at:
+                logger.info(f"SportMonks start time for {team1} vs {team2}: {starting_at}")
+                return starting_at
+    
+    return None

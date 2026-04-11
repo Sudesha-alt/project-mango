@@ -34,7 +34,7 @@ from services.ai_service import (
     claude_deep_match_analysis, claude_live_analysis,
     claude_sportmonks_prediction
 )
-from services.sportmonks_service import fetch_live_match, check_fixture_status, fetch_livescores_ipl, parse_fixture, fetch_fixture_details, fetch_recent_fixtures, fetch_last_played_xi, fetch_playing_xi_from_live, fetch_team_recent_performance, fetch_playing_xi_from_last_match, sync_player_performance_to_db, fetch_season_fixtures, IPL_SEASON_IDS, _get_team_sm_id
+from services.sportmonks_service import fetch_live_match, check_fixture_status, fetch_livescores_ipl, parse_fixture, fetch_fixture_details, fetch_recent_fixtures, fetch_last_played_xi, fetch_playing_xi_from_live, fetch_team_recent_performance, fetch_playing_xi_from_last_match, sync_player_performance_to_db, fetch_season_fixtures, IPL_SEASON_IDS, _get_team_sm_id, fetch_fixture_start_time
 from services.beta_prediction_engine import run_beta_prediction
 from services.consultant_engine import run_consultation, build_features
 from services.cricdata_service import fetch_live_ipl_details, fetch_venue_stats_from_cricapi
@@ -1524,6 +1524,27 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
     t2_short = match_info.get("team2Short", get_short_name(team2))
 
     logger.info(f"Pre-match predict: {team1} vs {team2} at {venue}")
+
+    # ── Cross-reference match start time from SportMonks API ──
+    # This ensures accurate afternoon vs evening classification for toss/dew impact
+    try:
+        api_start_time = await fetch_fixture_start_time(team1, team2)
+        if api_start_time:
+            db_time = match_info.get("dateTimeGMT", "")
+            # Normalize for comparison (SportMonks includes microseconds)
+            api_time_normalized = api_start_time.split(".")[0].replace("Z", "") + "Z"
+            db_time_normalized = db_time.split(".")[0].replace("Z", "") + "Z"
+            if api_time_normalized != db_time_normalized:
+                logger.info(f"Match time updated from SportMonks: {db_time} → {api_start_time}")
+                match_info["dateTimeGMT"] = api_start_time
+                # Also update DB for future calls
+                await db.ipl_schedule.update_one(
+                    {"matchId": match_id},
+                    {"$set": {"dateTimeGMT": api_start_time, "dateTimeGMT_source": "sportmonks"}}
+                )
+            match_info["dateTimeGMT_source"] = "sportmonks"
+    except Exception as e:
+        logger.warning(f"Failed to fetch match time from SportMonks: {e}")
 
     # Fetch squads from DB (user-provided IPL 2026 rosters)
     match_squads = await _get_squads_for_match(team1, team2)
