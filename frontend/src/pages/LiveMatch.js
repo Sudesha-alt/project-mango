@@ -713,11 +713,20 @@ export default function LiveMatch() {
                             Claude Contextual Analysis
                           </h4>
 
-                          {/* Verdict (Layer 8) — shown first, prominently */}
-                          {claudePred.layer_8_verdict && (
+                          {/* Verdict — shown first, prominently */}
+                          {(claudePred.layer_8_verdict || claudePred.section_10_final_prediction) && (
                             <div className="bg-purple-500/10 border border-purple-500/30 rounded-md p-3" data-testid="claude-verdict">
-                              <p className="text-[9px] text-purple-300 uppercase mb-1.5 font-bold tracking-wider">Verdict</p>
-                              <p className="text-[11px] text-purple-100 leading-[1.8] whitespace-pre-line">{claudePred.layer_8_verdict}</p>
+                              <p className="text-[9px] text-purple-300 uppercase mb-1.5 font-bold tracking-wider">Final Prediction</p>
+                              {claudePred.section_10_final_prediction ? (
+                                <div className="space-y-1.5">
+                                  <p className="text-[11px] text-purple-100 leading-[1.8]">{claudePred.section_10_final_prediction.sentence_1_key_factor}</p>
+                                  <p className="text-[11px] text-[#A3A3A3] leading-[1.8]">{claudePred.section_10_final_prediction.sentence_2_underdog_chance}</p>
+                                  <p className="text-[10px] text-[#34C759] leading-[1.6]">{claudePred.section_10_final_prediction.sentence_3_first_6_signal}</p>
+                                  <p className="text-[10px] text-[#FFCC00] leading-[1.6]">{claudePred.section_10_final_prediction.sentence_4_confidence}</p>
+                                </div>
+                              ) : (
+                                <p className="text-[11px] text-purple-100 leading-[1.8] whitespace-pre-line">{claudePred.layer_8_verdict}</p>
+                              )}
                             </div>
                           )}
 
@@ -784,14 +793,69 @@ export default function LiveMatch() {
                             </div>
                           )}
 
-                          {/* 8 Analytical Layers (collapsible) */}
-                          {(claudePred.layer_1_batters || claudePred.layer_2_bowling) && (
+                          {/* 11-Section + Legacy 8-Layer Analysis (collapsible) */}
+                          {(claudePred.layer_1_batters || claudePred.layer_2_bowling || claudePred.section_1_match_context) && (
                             <details className="group" data-testid="claude-layers">
                               <summary className="text-[10px] text-purple-300 uppercase cursor-pointer hover:text-purple-200 font-bold tracking-wider py-1">
-                                8-Layer Deep Analysis
+                                {claudePred.section_1_match_context ? "11-Section Deep Analysis" : "8-Layer Deep Analysis"}
                               </summary>
                               <div className="mt-2 space-y-2">
+                                {/* New 11-section format */}
+                                {claudePred.section_1_match_context && [
+                                  { key: "section_0_data_dump", label: "S0 — Data Dump" },
+                                  { key: "section_1_match_context", label: "S1 — Match Context" },
+                                ].map(({ key, label }) => claudePred[key] && (
+                                  <div key={key} className="bg-[#0A0A0A] border border-white/5 rounded p-2.5">
+                                    <p className="text-[8px] text-purple-300/70 uppercase font-bold mb-1">{label}</p>
+                                    <p className="text-[10px] text-[#A3A3A3] leading-[1.7] whitespace-pre-line">{typeof claudePred[key] === 'string' ? claudePred[key] : claudePred[key]?.analysis || JSON.stringify(claudePred[key])}</p>
+                                  </div>
+                                ))}
+                                {claudePred.section_2_squad_strength && (
+                                  <div className="bg-[#0A0A0A] border border-white/5 rounded p-2.5">
+                                    <p className="text-[8px] text-purple-300/70 uppercase font-bold mb-1">S2 — Squad Strength (22%)</p>
+                                    <p className="text-[10px] text-[#A3A3A3] leading-[1.7] whitespace-pre-line">{claudePred.section_2_squad_strength.analysis}</p>
+                                    <div className="flex gap-3 mt-1">
+                                      <span className="text-[9px] text-[#007AFF]">{t1Short}: {claudePred.section_2_squad_strength.team1_xi_rating}/10</span>
+                                      <span className="text-[9px] text-[#FF3B30]">{t2Short}: {claudePred.section_2_squad_strength.team2_xi_rating}/10</span>
+                                    </div>
+                                  </div>
+                                )}
                                 {[
+                                  { key: "section_3_current_form", label: "S3 — Current Form (18%)" },
+                                  { key: "section_4_venue_pitch", label: "S4 — Venue & Pitch (16%)" },
+                                  { key: "section_5_h2h", label: "S5 — Head to Head (10%)" },
+                                ].map(({ key, label }) => claudePred[key] && (
+                                  <div key={key} className="bg-[#0A0A0A] border border-white/5 rounded p-2.5">
+                                    <p className="text-[8px] text-purple-300/70 uppercase font-bold mb-1">{label}</p>
+                                    <p className="text-[10px] text-[#A3A3A3] leading-[1.7] whitespace-pre-line">{claudePred[key]?.analysis || claudePred[key]}</p>
+                                  </div>
+                                ))}
+                                {claudePred.section_6_key_matchups && (
+                                  <div className="bg-[#0A0A0A] border border-white/5 rounded p-2.5">
+                                    <p className="text-[8px] text-purple-300/70 uppercase font-bold mb-1">S6 — Key Matchups (8%)</p>
+                                    <p className="text-[10px] text-[#A3A3A3] leading-[1.7] whitespace-pre-line">{claudePred.section_6_key_matchups.analysis}</p>
+                                    {claudePred.section_6_key_matchups.matchups?.map((m, i) => (
+                                      <div key={i} className="mt-1 pl-2 border-l border-purple-500/20 text-[9px]">
+                                        <span className="text-purple-300">{m.batter}</span> <span className="text-[#525252]">vs</span> <span className="text-purple-300">{m.bowler}</span>
+                                        <span className={`ml-1.5 px-1 py-0.5 rounded text-[8px] font-bold ${m.edge === t1Short ? 'bg-[#007AFF]/15 text-[#007AFF]' : 'bg-[#FF3B30]/15 text-[#FF3B30]'}`}>{m.edge}</span>
+                                        <span className="text-[#737373] ml-1">{m.detail}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                {claudePred.section_7_bowling_death && (
+                                  <div className="bg-[#0A0A0A] border border-white/5 rounded p-2.5">
+                                    <p className="text-[8px] text-purple-300/70 uppercase font-bold mb-1">S7 — Bowling & Death (7%)</p>
+                                    <p className="text-[10px] text-[#A3A3A3] leading-[1.7] whitespace-pre-line">{claudePred.section_7_bowling_death.analysis}</p>
+                                    <div className="flex gap-3 mt-1">
+                                      <span className="text-[9px] text-[#007AFF]">{t1Short} death: {claudePred.section_7_bowling_death.team1_death_rating}</span>
+                                      <span className="text-[9px] text-[#FF3B30]">{t2Short} death: {claudePred.section_7_bowling_death.team2_death_rating}</span>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* Legacy 8-layer format */}
+                                {!claudePred.section_1_match_context && [
                                   { key: "layer_1_batters", label: "L1 — Batters at Crease" },
                                   { key: "layer_2_bowling", label: "L2 — Bowling Resources" },
                                   { key: "layer_3_batting_depth", label: "L3 — Batting Depth & Tail" },
@@ -807,6 +871,52 @@ export default function LiveMatch() {
                                 ))}
                               </div>
                             </details>
+                          )}
+
+                          {/* Data Integrity Checks */}
+                          {claudePred.section_8_data_integrity && (
+                            <details className="group">
+                              <summary className="text-[10px] text-[#FFCC00] uppercase cursor-pointer hover:text-[#FFCC00]/80 font-bold tracking-wider py-1">
+                                Data Integrity Checks {claudePred.section_8_data_integrity.passed ? "PASSED" : "ISSUES FOUND"}
+                              </summary>
+                              <div className="mt-1 bg-[#0A0A0A] border border-[#FFCC00]/10 rounded p-2.5 space-y-1">
+                                {["form_vs_reputation", "absence_verification", "venue_recency", "h2h_validity", "toss_consistency", "invented_factors_removed"].map(k => 
+                                  claudePred.section_8_data_integrity[k] && (
+                                    <div key={k} className="text-[9px]">
+                                      <span className="text-[#FFCC00]/60 uppercase">{k.replace(/_/g, ' ')}: </span>
+                                      <span className="text-[#A3A3A3]">{claudePred.section_8_data_integrity[k]}</span>
+                                    </div>
+                                  )
+                                )}
+                              </div>
+                            </details>
+                          )}
+
+                          {/* Toss Scenarios */}
+                          {claudePred.section_9_toss_scenarios && (
+                            <div className="bg-[#0A0A0A] border border-purple-500/10 rounded p-2.5">
+                              <p className="text-[8px] text-purple-300 uppercase font-bold mb-1">Toss Scenarios</p>
+                              <div className="flex gap-3 text-[10px]">
+                                <span className="text-[#007AFF]">{t1Short} bats 1st: {claudePred.section_9_toss_scenarios.team1_bats_first_win_pct}%</span>
+                                <span className="text-[#FF3B30]">{t2Short} bats 1st: {claudePred.section_9_toss_scenarios.team2_bats_first_win_pct}%</span>
+                                <span className="text-[#737373]">Sensitivity: {claudePred.section_9_toss_scenarios.toss_sensitivity}</span>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Mid-Game Revision Triggers */}
+                          {claudePred.section_11_revision_triggers?.length > 0 && (
+                            <div className="bg-[#0A0A0A] border border-[#FF9500]/10 rounded p-2.5">
+                              <p className="text-[8px] text-[#FF9500] uppercase font-bold mb-1.5">Revision Triggers</p>
+                              {claudePred.section_11_revision_triggers.map((t, i) => (
+                                <div key={i} className="text-[9px] mb-1 pl-2 border-l border-[#FF9500]/20">
+                                  <span className="text-[#D4D4D4]">{t.trigger}</span>
+                                  <span className={`ml-1 text-[8px] font-bold ${t.revise_favour === t1Short ? 'text-[#007AFF]' : 'text-[#FF3B30]'}`}>
+                                    → {t.revise_favour} +{t.revise_pct}%
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
                           )}
 
                           {/* Algo baseline info */}

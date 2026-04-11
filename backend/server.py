@@ -887,8 +887,18 @@ async def refresh_claude_prediction(match_id: str, body: RefreshClaudeRequest = 
     )
 
     if claude_prediction and not claude_prediction.get("error"):
+        # Extract win probabilities — support both new 11-section and legacy format
         claude_t1 = claude_prediction.get(f"{t1_short}_win_pct")
         claude_t2 = claude_prediction.get(f"{t2_short}_win_pct")
+
+        # New format: section_10_final_prediction
+        if claude_t1 is None:
+            s10 = claude_prediction.get("section_10_final_prediction", {})
+            if s10:
+                claude_t1 = s10.get("team1_win_pct")
+                claude_t2 = s10.get("team2_win_pct")
+
+        # Fallback: predicted_winner + win_pct
         if claude_t1 is None:
             winner = claude_prediction.get("predicted_winner", "")
             win_pct = claude_prediction.get("win_pct", 50)

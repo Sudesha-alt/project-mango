@@ -1045,8 +1045,8 @@ Return JSON:
 async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_info: dict, squads: dict = None, weather: dict = None, news: list = None, gut_feeling: str = None, betting_odds_pct: float = None, dls_info: str = None) -> dict:
     """
     Claude Opus: Generate a live win prediction using rich SportMonks data.
-    Passes full batting card, bowling card, yet-to-bat, yet-to-bowl lineups,
-    and BOTH team squads so Claude can assess remaining depth and predict the outcome.
+    11-section structured analysis with data integrity checks, toss scenarios,
+    mid-game revision triggers, and committed final prediction.
     """
     team1 = match_info.get("team1", "Team A")
     team2 = match_info.get("team2", "Team B")
@@ -1054,7 +1054,6 @@ async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_in
     t2_short = match_info.get("team2Short", team2[:3].upper())
     venue = match_info.get("venue", "")
 
-    batting_team = sm_data.get("batting_team", team1)
     current_inn = sm_data.get("current_innings", 1)
     current_score = sm_data.get("current_score", {})
     target = sm_data.get("target")
@@ -1079,10 +1078,6 @@ async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_in
 
     squad1_text = format_squad(squad1)
     squad2_text = format_squad(squad2)
-
-    current_inn = sm_data.get("current_innings", 1)
-    current_score = sm_data.get("current_score", {})
-    target = sm_data.get("target")
 
     # Active batsmen at crease
     active_bat = sm_data.get("active_batsmen", [])
@@ -1165,107 +1160,25 @@ async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_in
         if news_lines:
             news_text = "\n".join(news_lines)
 
-    # User context (gut feeling + betting odds)
+    # User context (gut feeling + betting odds + DLS)
     user_context_text = ""
     if gut_feeling and gut_feeling.strip():
-        user_context_text += f"\n=== USER'S GUT FEELING (weigh this as a qualitative signal) ===\n{gut_feeling}\n"
+        user_context_text += f"\n=== USER'S GUT FEELING (weigh as qualitative signal) ===\n{gut_feeling}\n"
     if betting_odds_pct is not None and betting_odds_pct > 0:
-        user_context_text += f"\n=== CURRENT BETTING MARKET ODDS ===\n{t1_short} implied probability: {betting_odds_pct}% | {t2_short} implied probability: {round(100 - betting_odds_pct, 1)}%\nNote: Market odds reflect live money flow and crowd sentiment. Factor this into your analysis.\n"
+        user_context_text += f"\n=== CURRENT BETTING MARKET ODDS ===\n{t1_short} implied: {betting_odds_pct}% | {t2_short} implied: {round(100 - betting_odds_pct, 1)}%\n"
     if dls_info and dls_info.strip():
-        user_context_text += f"\n=== DLS / OVERS REDUCED (CRITICAL — this SIGNIFICANTLY changes win probabilities) ===\n{dls_info}\nIMPORTANT: If overs are reduced, DLS par scores and revised targets fundamentally change win probabilities. A team ahead of DLS par has a significant advantage. Adjust your analysis accordingly.\n"
+        user_context_text += f"\n=== DLS / OVERS REDUCED (CRITICAL) ===\n{dls_info}\nIMPORTANT: DLS par scores fundamentally change win probabilities.\n"
 
-    chat = _get_claude_chat(
-        f"sm-live-pred-{uuid.uuid4().hex[:8]}",
-        """You are an expert cricket analyst providing real-time win probability assessment for IPL matches. Your role is NOT to calculate run-rate-based probability — that is handled separately by a statistical model. Your exclusive job is to identify and quantify contextual factors that the run-rate model and betting markets are likely mispricing.
-
-You will be given:
-- Current match state (score, wickets, overs, target if applicable)
-- Pre-game algorithm probability (the structural baseline)
-- Current betting market odds (for reference only)
-- Playing XIs of both teams
-
-Your analysis must focus ONLY on the following eight contextual layers. Do not restate the run rate or obvious match arithmetic. Assume the person reading this already knows the score.
-
----
-LAYER 1 — BATTERS AT THE CREASE
-Analyse the specific batters currently batting. For each:
-- Their personal record chasing vs defending at this venue
-- Their record against the specific bowling types they will face in the next 6 overs
-- Whether they are a "cold bat" (just came in) or "set batter" (15+ balls faced)
-- Their specific form in this IPL season so far
-- Current partnership: runs scored, balls faced, and whether the run rate within this partnership is accelerating, steady, or decelerating relative to what is required
-State clearly: does the current batting partnership represent an ADVANTAGE or DISADVANTAGE relative to what the run rate model assumes about average batting quality?
-
----
-LAYER 2 — BOWLING RESOURCES REMAINING
-Analyse what bowling is left for the fielding team:
-- Which bowlers have overs remaining and how many
-- Quality differential between bowlers already used and those still to bowl
-- Whether the best bowler has already bowled their full quota
-- Any specific matchup advantages — e.g. a left-arm spinner yet to bowl against a right-hand heavy batting lineup
-- Specifically identify who will bowl overs 17-20 for the defending team and rate each as: [Proven death bowler / Adequate / Vulnerability] based on IPL career death-overs economy and strike rate
-State clearly: is the remaining bowling attack STRONGER, WEAKER, or EQUAL to what a generic run-rate model would assume?
-
----
-LAYER 3 — BATTING DEPTH AND TAIL RISK
-Look beyond the current partnership:
-- If the next 2 wickets fall, who comes in and what is their realistic scoring ability?
-- Is the batting team top-heavy (danger of collapse) or deep (resilient)?
-- For a chasing team specifically: do they have a finisher of proven quality at 7 or 8, or does their batting end at 6?
-State clearly: does batting depth INCREASE or DECREASE the chasing or defending team's probability beyond what the current wickets-in-hand suggests?
-
----
-LAYER 4 — PITCH AND CONDITIONS AS REVEALED BY THIS GAME
-This is distinct from pre-game pitch reports. Analyse what the pitch has ACTUALLY done in this match:
-- Is it playing faster or slower than the venue historical average?
-- Have spinners or pacers taken wickets — and does this signal something for the remaining overs?
-- Has dew arrived or is it visibly affecting grip and movement?
-- Is the pitch deteriorating (helping bowlers more in innings 2) or holding up?
-State clearly: do actual in-game conditions FAVOUR the batting or bowling side more than pre-game models assumed?
-
----
-LAYER 5 — SPECIFIC HIGH-LEVERAGE MATCHUPS IN NEXT 6 OVERS
-Identify 1-2 specific batter vs bowler matchups that will likely occur in the next 6 overs and that could swing the game:
-- What is the historical IPL record in this specific matchup?
-- Who holds the advantage and by how much?
-- Is this a matchup the market is likely underpricing or overpricing?
-Only include matchups where you have genuine statistical basis — do not speculate.
-
----
-LAYER 6 — MOMENTUM AND PRESSURE ASYMMETRY
-Assess one non-statistical factor:
-- Is one team playing under significantly more pressure than the other (must-win situation, 0-2 in season, captain under scrutiny)?
-- Has a recent event in this match (dropped catch, contentious decision, injury scare) shifted psychological momentum in a way not captured by the score?
-- Is one captain making notably better or worse tactical decisions in this match?
-Keep this brief — 2-3 sentences maximum. Do not overweight psychological factors.
-
----
-LAYER 7 — IMPACT PLAYER STATUS
-- Has either team used their Impact Player yet?
-- If not, who are the likely Impact Player options and what does each option signal about the team's tactical read of the match?
-- If yes, did the substitution strengthen batting or bowling, and has it changed the effective XI balance?
-State clearly: does Impact Player availability or usage represent an ADVANTAGE for either team beyond what the current scorecard shows?
-
----
-LAYER 8 — VERDICT
-According to all the data from Layers 1-7, who is going to win this match? Pick ONE team with strong, specific reasoning. Be bold and decisive. Reference exact numbers, player names, and match situation. Do not hedge.
-
----
-CRITICAL: Only use IPL 2023-2026 data. Only reference players from the provided squads. Be decisive — never say "too close to call." Always pick a winner."""
-    )
-
-    # Build bowling summary with overs bowled
+    # Build bowling summary
     bowlers_summary = []
     for bw in all_bowlers:
         name = bw.get('name', '?')
         overs = bw.get('overs', 0)
         runs = bw.get('runs', 0)
         wickets = bw.get('wickets', 0)
-        bowlers_summary.append(f"  {name}: {overs} overs, {runs} runs, {wickets} wickets")
+        econ = bw.get('economy', 0)
+        bowlers_summary.append(f"  {name}: {overs}ov, {runs}runs, {wickets}wkts, Econ:{econ}")
     bowlers_summary_text = "\n".join(bowlers_summary) or "  No bowler data"
-
-    # Recent 3 overs scoring
-    recent_overs_text = recent_text
 
     # Pre-game algo probability
     algo_t1_pct = algo_probs.get("ensemble", 0.5) * 100
@@ -1276,10 +1189,53 @@ CRITICAL: Only use IPL 2023-2026 data. Only reference players from the provided 
     if betting_odds_pct is not None and betting_odds_pct > 0:
         market_text = f"{t1_short} {betting_odds_pct}% / {t2_short} {round(100 - betting_odds_pct, 1)}%"
 
-    prompt = f"""CURRENT MATCH STATE:
+    # Toss info
+    toss_info = sm_data.get("toss", {})
+    toss_text = "Toss data not available"
+    if toss_info:
+        toss_winner = toss_info.get("winner", "Unknown")
+        toss_decision = toss_info.get("decision", "unknown")
+        toss_text = f"Toss: {toss_winner} won and chose to {toss_decision}"
+
+    chat = _get_claude_chat(
+        f"sm-live-pred-{uuid.uuid4().hex[:8]}",
+        """You are an expert IPL cricket match prediction analyst with live data access.
+
+CRITICAL RULES:
+
+Rule 1 — Current season data overrides reputation.
+Only IPL 2026 stats drive player threat ratings. Last season's numbers are historical context only, never primary evidence.
+
+Rule 2 — Confirmed absences are highest-priority input.
+Cross-check confirmed XI against full squad. Any expected player missing gets a standalone impact assessment: batting impact, bowling impact, leadership impact — separately.
+
+Rule 3 — Venue data is IPL 2023-2026 only.
+State sample size. If fewer than 6 matches in sample, flag "small sample — reduced venue confidence."
+
+Rule 4 — H2H must pass two filters: last 3 seasons only, and check if squads that produced that record still exist.
+
+Rule 5 — Never invent factors from missing information. Only confirmed data drives analysis.
+
+Rule 6 — Toss scenarios must be mathematically consistent with venue data.
+
+Rule 7 — No cross-format stats as primary evidence. IPL and international T20 only.
+
+FORMAT RULES:
+- All probabilities: whole numbers only. No ranges.
+- Every stat tagged with its source season.
+- Word "unpredictable" is banned. Express all uncertainty as probability or confidence level.
+- Both teams sum to exactly 100%.
+- This is a committed prediction. State it like one."""
+    )
+
+    prompt = f"""ANALYSE THIS LIVE IPL 2026 MATCH. Produce ALL 11 sections.
+
+=== LIVE MATCH STATE ===
 - {team1} ({t1_short}) vs {team2} ({t2_short}) at {venue}
 - {match_date_text}
-- Innings: {"1st" if current_inn == 1 else "2nd"}, Over: {current_score.get('overs',0)}, Score: {current_score.get('runs',0)}/{current_score.get('wickets',0)}{f', Target: {target}' if target else ''}
+- {toss_text}
+- Innings: {"1st" if current_inn == 1 else "2nd"}, Score: {current_score.get('runs',0)}/{current_score.get('wickets',0)} in {current_score.get('overs',0)} overs
+{f"- Target: {target}" if target else ""}
 - CRR: {sm_data.get('crr', 0)} | RRR: {sm_data.get('rrr', 'N/A')}
 - {sm_data.get('note', '')}
 {prev_inn_text}
@@ -1287,26 +1243,13 @@ CRITICAL: Only use IPL 2023-2026 data. Only reference players from the provided 
 === BATSMEN AT CREASE ===
 {active_bat_text}
 
-=== FULL BATTING CARD (this innings) ===
+=== FULL BATTING CARD ===
 {full_bat_text}
 
 === YET TO BAT ===
 {ytb_text}
 
-=== RECENT BALLS (last 12) ===
-{recent_overs_text}
-
-PRE-GAME ALGORITHM PROBABILITY: {t1_short} {round(algo_t1_pct, 1)}% / {t2_short} {round(algo_t2_pct, 1)}%
-CURRENT MARKET ODDS IMPLIED PROBABILITY: {market_text}
-
-PLAYING XIs:
-{team1} ({t1_short}):
-{squad1_text}
-
-{team2} ({t2_short}):
-{squad2_text}
-
-OVERS BOWLED BY EACH BOWLER SO FAR:
+=== BOWLING CARD ===
 {bowlers_summary_text}
 
 === CURRENT BOWLER ===
@@ -1315,34 +1258,119 @@ OVERS BOWLED BY EACH BOWLER SO FAR:
 === YET TO BOWL ===
 {ytbowl_text}
 
-=== WEATHER CONDITIONS ===
+=== RECENT BALLS (last 12) ===
+{recent_text}
+
+=== CONFIRMED PLAYING XIs ===
+{team1} ({t1_short}):
+{squad1_text}
+
+{team2} ({t2_short}):
+{squad2_text}
+
+=== PRE-GAME ALGORITHM PROBABILITY ===
+{t1_short} {round(algo_t1_pct, 1)}% / {t2_short} {round(algo_t2_pct, 1)}%
+
+=== MARKET ODDS ===
+{market_text}
+
+=== WEATHER ===
 {weather_text}
 
-=== LATEST NEWS ===
+=== NEWS ===
 {news_text}
 {user_context_text}
 
-Analyse all 8 layers. For each layer, be specific — reference actual player names, match figures, and IPL 2023-2026 records. Do NOT restate obvious match arithmetic. Focus on what the run-rate model and market odds are MISSING.
-
-Return JSON:
+Return JSON with this EXACT structure:
 {{
-  "layer_1_batters": "Your analysis of batters at crease. Conclude with: ADVANTAGE [team] or DISADVANTAGE [team] or NEUTRAL",
-  "layer_2_bowling": "Your analysis of bowling resources. Conclude with: remaining attack is STRONGER / WEAKER / EQUAL vs model assumption. Include death overs 17-20 assessment.",
-  "layer_3_batting_depth": "Your analysis of batting depth. Conclude with: depth INCREASES or DECREASES probability",
-  "layer_4_pitch_conditions": "Your analysis of actual in-game pitch and conditions. Conclude with: conditions FAVOUR batting or bowling side",
-  "layer_5_matchups": "1-2 specific high-leverage batter vs bowler matchups with IPL records",
-  "layer_6_momentum": "Brief 2-3 sentence momentum/pressure assessment",
-  "layer_7_impact_player": "Impact Player status and tactical implications",
-  "layer_8_verdict": "Bold, decisive verdict: who wins and WHY. Reference specific numbers, players, match situation. Include predicted margin. Like: 'Bottom line: GT should win this comfortably. DC need 53 off 24 balls at 13.25 per over — their current rate is only 9.88. Rashid Khan was devastating (3/17 in 4 overs). Verdict: GT wins by 15-25 runs.'",
-  "contextual_adjustment_pct": number (-30 to +30, positive = favours {t1_short}, negative = favours {t2_short}),
+  "section_0_data_dump": "State all key data: match details, toss, confirmed XIs, current standings, last 5 results, venue stats, H2H. Flag any missing data explicitly.",
+
+  "section_1_match_context": "Teams, venue, date, time, toss result and decision. Day or evening? Dew probability and toss strategy validity.",
+
+  "section_2_squad_strength": {{
+    "analysis": "Confirmed XIs quality. For every absence: batting impact, bowling impact, leadership impact. Rate each XI 1-10.",
+    "team1_xi_rating": number (1-10),
+    "team2_xi_rating": number (1-10),
+    "weight": 22
+  }},
+
+  "section_3_current_form": {{
+    "analysis": "IPL 2026 data ONLY. Per team: W/L/Points/NRR. Per key player: 2026 stats. Flag small sample sizes. Exponential decay: most recent match counts double.",
+    "weight": 18
+  }},
+
+  "section_4_venue_pitch": {{
+    "analysis": "Average first innings score, batting-first win %, powerplay avg, pace vs spin split. Sample size stated. Afternoon=no dew. Evening=state dew probability.",
+    "avg_first_innings": "N/A or number",
+    "bat_first_win_pct": "N/A or number",
+    "sample_size": "N/A or number",
+    "weight": 16
+  }},
+
+  "section_5_h2h": {{
+    "analysis": "Last 3 seasons only. Squad validity check. If key players gone, label 'structurally invalid.' Does H2H favour either team?",
+    "weight": 10
+  }},
+
+  "section_6_key_matchups": {{
+    "analysis": "Exactly 3 matchups most likely to decide this game. Per matchup: batter vs bowler, IPL career record (balls/runs/dismissals), who holds edge, likelihood matchup occurs.",
+    "matchups": [
+      {{"batter": "name", "bowler": "name", "edge": "{t1_short}" or "{t2_short}", "detail": "brief stat-backed reason"}},
+      {{"batter": "name", "bowler": "name", "edge": "{t1_short}" or "{t2_short}", "detail": "brief stat-backed reason"}},
+      {{"batter": "name", "bowler": "name", "edge": "{t1_short}" or "{t2_short}", "detail": "brief stat-backed reason"}}
+    ],
+    "weight": 8
+  }},
+
+  "section_7_bowling_death": {{
+    "analysis": "Per team: all bowlers, overs allocation. Who bowls 17,18,19,20? Rate each: Proven (death econ <9) / Adequate (9-10.5) / Vulnerability (>10.5). Total quality bowling overs per team. Under 16 = structural weakness.",
+    "team1_death_rating": "Proven/Adequate/Vulnerability",
+    "team2_death_rating": "Proven/Adequate/Vulnerability",
+    "weight": 7
+  }},
+
+  "section_8_data_integrity": {{
+    "form_vs_reputation": "Every player labelled a threat — verify IPL 2026 stats support it. Under 80 runs or under 2 wickets = 'reputational, unproven in 2026.'",
+    "absence_verification": "Name every absent player. Rate: Low/Medium/High/Critical impact.",
+    "venue_recency": "Season range and sample size. Flag pre-2023 as 'potentially outdated.'",
+    "h2h_validity": "Squads intact? State explicitly.",
+    "toss_consistency": "Toss probabilities match venue batting-first win %?",
+    "invented_factors_removed": "List any factors removed from speculation/missing data.",
+    "passed": true or false
+  }},
+
+  "section_9_toss_scenarios": {{
+    "team1_bats_first_win_pct": number,
+    "team2_bats_first_win_pct": number,
+    "toss_sensitivity": "Low (<5% swing) / Moderate (5-10%) / High (>10%)"
+  }},
+
+  "section_10_final_prediction": {{
+    "team1_win_pct": number (0-100),
+    "team2_win_pct": number (0-100),
+    "sentence_1_key_factor": "The single factor most responsible for the favoured team's edge.",
+    "sentence_2_underdog_chance": "The single factor keeping the underdog competitive.",
+    "sentence_3_first_6_signal": "The specific event in first 6 overs that confirms which team is on track.",
+    "sentence_4_confidence": "Confidence level — Low/Medium/High — and the one reason for it."
+  }},
+
+  "section_11_revision_triggers": [
+    {{"trigger": "Exact event description", "revise_favour": "{t1_short}" or "{t2_short}", "revise_pct": number}},
+    {{"trigger": "Exact event description", "revise_favour": "{t1_short}" or "{t2_short}", "revise_pct": number}},
+    {{"trigger": "Exact event description", "revise_favour": "{t1_short}" or "{t2_short}", "revise_pct": number}}
+  ],
+
+  "contextual_adjustment_pct": number (-30 to +30, positive = favours {t1_short}),
   "adjustment_confidence": "Low" or "Medium" or "High",
-  "primary_driver": "One sentence — the single most important contextual factor driving the adjustment",
+  "primary_driver": "One sentence — single most important contextual factor",
   "secondary_driver": "One sentence — second most important factor",
-  "market_mispricing": "Yes" or "No" or "Possible",
-  "market_mispricing_detail": "Brief explanation of what the market is missing (if applicable)",
   "predicted_winner": "{t1_short}" or "{t2_short}",
-  "momentum": "BATTING" or "BOWLING" or "EVEN"
-}}"""
+  "momentum": "BATTING" or "BOWLING" or "EVEN",
+  "market_mispricing": "Yes" or "No" or "Possible",
+  "market_mispricing_detail": "What the market is missing (if applicable)"
+}}
+
+CRITICAL: All sections must be completed. No skipping. Be decisive — never say "too close to call." Own the prediction."""
 
     try:
         response = await chat.send_message(UserMessage(text=prompt))
@@ -1354,5 +1382,5 @@ Return JSON:
             "predicted_winner": "N/A",
             "contextual_adjustment_pct": 0,
             "adjustment_confidence": "Low",
-            "layer_8_verdict": f"Claude analysis failed: {e}",
+            "section_10_final_prediction": {"team1_win_pct": 50, "team2_win_pct": 50, "sentence_1_key_factor": f"Analysis failed: {e}"},
         }
