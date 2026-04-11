@@ -1042,7 +1042,7 @@ Return JSON:
 
 # ─── Claude SportMonks Live Win Prediction ────────────────────
 
-async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_info: dict, squads: dict = None, weather: dict = None, news: list = None, gut_feeling: str = None, betting_odds_pct: float = None, dls_info: str = None) -> dict:
+async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_info: dict, squads: dict = None, weather: dict = None, news: list = None, gut_feeling: str = None, betting_odds_pct: float = None, dls_info: str = None, enrichment: dict = None) -> dict:
     """
     Claude Opus: Generate a live win prediction using rich SportMonks data.
     11-section structured analysis with data integrity checks, toss scenarios,
@@ -1160,6 +1160,84 @@ async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_in
         if news_lines:
             news_text = "\n".join(news_lines)
 
+    # ── ENRICHMENT DATA: Real stats from SportMonks ──
+    enrichment = enrichment or {}
+
+    # Venue stats
+    vs = enrichment.get("venue_stats", {})
+    if vs and vs.get("sample_size", 0) > 0:
+        venue_stats_text = (
+            f"Venue: {vs.get('venue', venue)}\n"
+            f"  Sample: {vs['sample_size']} IPL matches ({', '.join(str(y) for y in vs.get('seasons', []))})\n"
+            f"  Avg 1st Innings Score: {vs.get('avg_first_innings_score', 'N/A')}\n"
+            f"  Bat-First Win %: {vs.get('bat_first_win_pct', 'N/A')}%\n"
+            f"  Highest 1st Innings: {vs.get('highest_1st_innings', 'N/A')}\n"
+            f"  Lowest 1st Innings: {vs.get('lowest_1st_innings', 'N/A')}"
+        )
+    else:
+        venue_stats_text = "No venue stats available from SportMonks"
+
+    # H2H record
+    h2h = enrichment.get("h2h", {})
+    if h2h and h2h.get("matches_played", 0) > 0:
+        h2h_text = (
+            f"{h2h['team1']} vs {h2h['team2']} (last {len(h2h.get('seasons_covered', []))} seasons)\n"
+            f"  Matches: {h2h['matches_played']}\n"
+            f"  {h2h['team1']} wins: {h2h['team1_wins']} | {h2h['team2']} wins: {h2h['team2_wins']}"
+            + (f" | No result: {h2h['no_result']}" if h2h.get('no_result') else "") +
+            f"\n  Last meeting: {h2h.get('last_meeting_winner', 'N/A')} won ({h2h.get('last_meeting_date', 'N/A')})"
+            + (f"\n  Result: {h2h['last_meeting_note']}" if h2h.get('last_meeting_note') else "")
+        )
+    else:
+        h2h_text = "No H2H data available"
+
+    # Team standings
+    standings = enrichment.get("standings", [])
+    if standings:
+        standings_lines = ["IPL 2026 Points Table:"]
+        for i, s in enumerate(standings):
+            if isinstance(s, dict):
+                standings_lines.append(
+                    f"  {i+1}. {s.get('team', '?')} — P:{s.get('played',0)} W:{s.get('won',0)} "
+                    f"L:{s.get('lost',0)} Pts:{s.get('points',0)}"
+                    + (f" NRR:{s['nrr']}" if s.get('nrr') else "")
+                )
+        standings_text = "\n".join(standings_lines)
+    else:
+        standings_text = "Standings data not available"
+
+    # Player season stats for Team 1 XI
+    t1_enriched = enrichment.get("team1_enriched_xi", [])
+    t1_stats_lines = []
+    for p in t1_enriched:
+        if not isinstance(p, dict):
+            continue
+        name = p.get("name", "?")
+        ss = p.get("season_stats")
+        if ss:
+            bat_line = f"Bat: {ss['bat_runs']}r in {ss['bat_innings']}inn, Avg:{ss['bat_avg']}, SR:{ss['bat_sr']}" if ss.get("bat_innings", 0) > 0 else "Bat: no innings"
+            bowl_line = f"Bowl: {ss['bowl_wickets']}wkts in {ss['bowl_innings']}inn, Econ:{ss['bowl_economy']}, {ss['bowl_overs']}ov" if ss.get("bowl_innings", 0) > 0 else ""
+            t1_stats_lines.append(f"  {name} ({ss['matches']}m) — {bat_line}" + (f" | {bowl_line}" if bowl_line else ""))
+        else:
+            t1_stats_lines.append(f"  {name} — No IPL 2026 stats available")
+    t1_season_stats_text = "\n".join(t1_stats_lines) or "  No player stats available"
+
+    # Player season stats for Team 2 XI
+    t2_enriched = enrichment.get("team2_enriched_xi", [])
+    t2_stats_lines = []
+    for p in t2_enriched:
+        if not isinstance(p, dict):
+            continue
+        name = p.get("name", "?")
+        ss = p.get("season_stats")
+        if ss:
+            bat_line = f"Bat: {ss['bat_runs']}r in {ss['bat_innings']}inn, Avg:{ss['bat_avg']}, SR:{ss['bat_sr']}" if ss.get("bat_innings", 0) > 0 else "Bat: no innings"
+            bowl_line = f"Bowl: {ss['bowl_wickets']}wkts in {ss['bowl_innings']}inn, Econ:{ss['bowl_economy']}, {ss['bowl_overs']}ov" if ss.get("bowl_innings", 0) > 0 else ""
+            t2_stats_lines.append(f"  {name} ({ss['matches']}m) — {bat_line}" + (f" | {bowl_line}" if bowl_line else ""))
+        else:
+            t2_stats_lines.append(f"  {name} — No IPL 2026 stats available")
+    t2_season_stats_text = "\n".join(t2_stats_lines) or "  No player stats available"
+
     # User context (gut feeling + betting odds + DLS)
     user_context_text = ""
     if gut_feeling and gut_feeling.strip():
@@ -1267,6 +1345,21 @@ FORMAT RULES:
 
 {team2} ({t2_short}):
 {squad2_text}
+
+=== {t1_short} PLAYER IPL 2026 SEASON STATS (last 5 matches) ===
+{t1_season_stats_text}
+
+=== {t2_short} PLAYER IPL 2026 SEASON STATS (last 5 matches) ===
+{t2_season_stats_text}
+
+=== VENUE STATS (SportMonks data) ===
+{venue_stats_text}
+
+=== HEAD-TO-HEAD RECORD ===
+{h2h_text}
+
+=== IPL 2026 STANDINGS ===
+{standings_text}
 
 === PRE-GAME ALGORITHM PROBABILITY ===
 {t1_short} {round(algo_t1_pct, 1)}% / {t2_short} {round(algo_t2_pct, 1)}%

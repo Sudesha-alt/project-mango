@@ -598,6 +598,7 @@ IPL_SEASON_IDS = {2024: 1484, 2025: 1689, 2026: 1795}
 
 # In-memory cache for season fixtures and player stats
 _season_fixtures_cache: Dict[int, list] = {}
+_venue_id_cache: Dict[str, int] = {}  # venue_name_lower → venue_id
 _player_stats_cache: Dict[int, dict] = {}  # player_id -> aggregated stats
 
 
@@ -1365,3 +1366,309 @@ def _parse_fixture_to_schedule(fix: dict) -> dict:
         "toss_won_by": toss_won.get("name", "") if isinstance(toss_won, dict) else "",
         "source": "sportmonks",
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DATA ENRICHMENT — Venue stats, H2H, Team Standings, Player Season Stats
+# Fed directly into Claude's live match prompt for data-driven analysis.
+# ═══════════════════════════════════════════════════════════════════════════
+
+async def fetch_venue_stats(venue_name: str, season_years: list = None) -> dict:
+    """Compute venue stats from finished fixtures across IPL seasons.
+
+    Uses venue_id matching (not name) for accuracy.
+    Returns: avg_1st_innings_score, bat_first_win_pct, sample_size, etc.
+    """
+    if not venue_name:
+        return {}
+
+    if season_years is None:
+        season_years = [2026, 2025, 2024]
+
+    # Step 1: Resolve venue_id from cache or from fixtures
+    venue_lower = venue_name.lower()
+    target_venue_id = _venue_id_cache.get(venue_lower)
+
+    if not target_venue_id:
+        # Collect unique venue_ids from season fixtures and resolve names
+        for year in season_years:
+            sid = IPL_SEASON_IDS.get(year)
+            if not sid:
+                continue
+            fixtures = await fetch_season_fixtures(sid)
+            seen_vids = set()
+            for f in fixtures:
+                vid = f.get("venue_id")
+                if vid and vid not in seen_vids:
+                    seen_vids.add(vid)
+            # Batch resolve venue names
+            for vid in seen_vids:
+                vdata = await _get(f"venues/{vid}")
+                vd = vdata.get("data", {})
+                vd_name = (vd.get("name", "") or "").lower()
+                if vd_name:
+                    _venue_id_cache[vd_name] = vid
+                    if venue_lower in vd_name or vd_name in venue_lower:
+                        target_venue_id = vid
+            if target_venue_id:
+                _venue_id_cache[venue_lower] = target_venue_id
+                break
+
+    if not target_venue_id:
+        return {"sample_size": 0, "note": f"Could not resolve venue_id for '{venue_name}'"}
+
+    # Step 2: Collect all fixtures at this venue
+    venue_fixture_ids = []
+    for year in season_years:
+        sid = IPL_SEASON_IDS.get(year)
+        if not sid:
+            continue
+        fixtures = await fetch_season_fixtures(sid)
+        for f in fixtures:
+            if (f.get("status") or "").lower() == "finished" and f.get("venue_id") == target_venue_id:
+                venue_fixture_ids.append(f)
+
+    if not venue_fixture_ids:
+        return {"venue": venue_name, "venue_id": target_venue_id, "sample_size": 0,
+                "note": "No finished matches at this venue in recent IPL seasons"}
+
+    # Step 3: Fetch runs for each venue fixture
+    first_innings_scores = []
+    bat_first_wins = 0
+    total_with_winner = 0
+
+    for f in venue_fixture_ids:
+        fid = f.get("id")
+        try:
+            detail = await _get(f"fixtures/{fid}", {"include": "runs"})
+            fd = detail.get("data", {})
+            runs_data = fd.get("runs", {})
+            if isinstance(runs_data, dict):
+                runs_data = runs_data.get("data", [])
+
+            inn1_score = None
+            inn1_team_id = None
+            for r in runs_data:
+                if isinstance(r, dict) and r.get("inning") == 1:
+                    inn1_score = r.get("score", 0)
+                    inn1_team_id = r.get("team_id")
+                    break
+
+            if inn1_score is not None:
+                first_innings_scores.append(inn1_score)
+
+            winner_id = fd.get("winner_team_id") or f.get("winner_team_id")
+            if winner_id and inn1_team_id:
+                total_with_winner += 1
+                if winner_id == inn1_team_id:
+                    bat_first_wins += 1
+        except Exception as e:
+            logger.debug(f"Error fetching venue fixture {fid}: {e}")
+
+    avg_1st = round(sum(first_innings_scores) / len(first_innings_scores), 1) if first_innings_scores else None
+    bat_first_pct = round((bat_first_wins / total_with_winner) * 100, 1) if total_with_winner else None
+
+    return {
+        "venue": venue_name,
+        "venue_id": target_venue_id,
+        "sample_size": len(venue_fixture_ids),
+        "seasons": season_years,
+        "avg_first_innings_score": avg_1st,
+        "bat_first_win_pct": bat_first_pct,
+        "highest_1st_innings": max(first_innings_scores) if first_innings_scores else None,
+        "lowest_1st_innings": min(first_innings_scores) if first_innings_scores else None,
+        "total_matches_with_result": total_with_winner,
+    }
+
+
+async def fetch_h2h_record(team1_name: str, team2_name: str, last_n_seasons: int = 3) -> dict:
+    """Head-to-head record between two teams across recent IPL seasons.
+
+    Returns: matches played, wins for each team, last meeting result.
+    """
+    t1_id = _get_team_sm_id(team1_name)
+    t2_id = _get_team_sm_id(team2_name)
+    if not t1_id or not t2_id:
+        return {"error": "Team IDs not found", "team1": team1_name, "team2": team2_name}
+
+    years = sorted(IPL_SEASON_IDS.keys(), reverse=True)[:last_n_seasons]
+    h2h_fixtures = []
+
+    for year in years:
+        sid = IPL_SEASON_IDS.get(year)
+        if not sid:
+            continue
+        fixtures = await fetch_season_fixtures(sid)
+        for f in fixtures:
+            if (f.get("status") or "").lower() != "finished":
+                continue
+            lt = f.get("localteam_id")
+            vt = f.get("visitorteam_id")
+            if {lt, vt} == {t1_id, t2_id}:
+                h2h_fixtures.append({
+                    "fixture_id": f.get("id"),
+                    "season": year,
+                    "date": f.get("starting_at", ""),
+                    "localteam_id": lt,
+                    "visitorteam_id": vt,
+                    "winner_id": f.get("winner_team_id"),
+                    "note": f.get("note", ""),
+                })
+
+    t1_wins = sum(1 for f in h2h_fixtures if f["winner_id"] == t1_id)
+    t2_wins = sum(1 for f in h2h_fixtures if f["winner_id"] == t2_id)
+    no_result = len(h2h_fixtures) - t1_wins - t2_wins
+
+    last_match = h2h_fixtures[0] if h2h_fixtures else None
+    last_winner = (team1_name if last_match and last_match["winner_id"] == t1_id
+                   else team2_name if last_match and last_match["winner_id"] == t2_id
+                   else "N/A")
+
+    return {
+        "team1": team1_name,
+        "team2": team2_name,
+        "matches_played": len(h2h_fixtures),
+        "team1_wins": t1_wins,
+        "team2_wins": t2_wins,
+        "no_result": no_result,
+        "seasons_covered": years,
+        "last_meeting_winner": last_winner,
+        "last_meeting_date": last_match["date"] if last_match else None,
+        "last_meeting_note": last_match["note"] if last_match else None,
+    }
+
+
+async def fetch_team_standings(season_year: int = 2026) -> list:
+    """Fetch team standings (W/L/Points/NRR) for current season from finished fixtures.
+
+    Returns list of team dicts sorted by points desc.
+    """
+    sid = IPL_SEASON_IDS.get(season_year)
+    if not sid:
+        return []
+
+    # Try standings endpoint first
+    data = await _get(f"standings/season/{sid}", {"include": "team"})
+    standings_raw = data.get("data", [])
+
+    if standings_raw:
+        teams = []
+        for s in standings_raw:
+            if isinstance(s, dict):
+                team_data = s.get("team", {}) or {}
+                if isinstance(team_data, dict) and "data" in team_data:
+                    team_data = team_data["data"]
+                team_name = team_data.get("name", "") if isinstance(team_data, dict) else ""
+                # Fallback: resolve from TEAM_SM_IDS
+                if not team_name:
+                    tid = s.get("team_id")
+                    team_name = next((tn for tn, sm_id in TEAM_SM_IDS.items() if sm_id == tid), f"Team {tid}")
+                recent_form = s.get("recent_form", [])
+                form_str = "".join(recent_form) if isinstance(recent_form, list) else str(recent_form)
+                teams.append({
+                    "team": team_name,
+                    "team_id": s.get("team_id"),
+                    "played": s.get("played", 0),
+                    "won": s.get("won", 0),
+                    "lost": s.get("lost", 0),
+                    "draw": s.get("draw", 0),
+                    "points": s.get("points", 0),
+                    "nrr": s.get("netto_run_rate", 0),
+                    "position": s.get("position", 0),
+                    "recent_form": form_str,
+                })
+        if teams:
+            teams.sort(key=lambda x: (-x["points"], -x.get("nrr", 0) if isinstance(x.get("nrr"), (int, float)) else 0))
+            return teams
+
+    # Fallback: compute from fixtures
+    fixtures = await fetch_season_fixtures(sid)
+    finished = [f for f in fixtures if (f.get("status") or "").lower() == "finished"]
+
+    team_records = {}
+    for f in finished:
+        lt_id = f.get("localteam_id")
+        vt_id = f.get("visitorteam_id")
+        winner = f.get("winner_team_id")
+
+        for tid in [lt_id, vt_id]:
+            if tid and tid not in team_records:
+                team_records[tid] = {"played": 0, "won": 0, "lost": 0, "points": 0}
+
+        if lt_id:
+            team_records[lt_id]["played"] += 1
+        if vt_id:
+            team_records[vt_id]["played"] += 1
+
+        if winner:
+            if winner in team_records:
+                team_records[winner]["won"] += 1
+                team_records[winner]["points"] += 2
+            loser = vt_id if winner == lt_id else lt_id
+            if loser and loser in team_records:
+                team_records[loser]["lost"] += 1
+
+    # Resolve team names
+    teams = []
+    for tid, rec in team_records.items():
+        name = next((tn for tn, sm_id in TEAM_SM_IDS.items() if sm_id == tid), f"Team {tid}")
+        teams.append({"team": name, "team_id": tid, **rec})
+
+    teams.sort(key=lambda x: (-x["points"], -x["won"]))
+    return teams
+
+
+async def fetch_player_season_stats_for_xi(playing_xi: list, team_name: str, num_matches: int = 5) -> list:
+    """Get per-player IPL 2026 stats for a confirmed Playing XI.
+
+    Returns enriched player list with batting/bowling stats from last N matches.
+    Uses fetch_team_recent_performance internally.
+    """
+    team_stats = await fetch_team_recent_performance(team_name, num_matches)
+    if not team_stats:
+        return playing_xi  # Return as-is if no stats
+
+    # Match playing XI players to their stats by name similarity
+    enriched = []
+    for player in playing_xi:
+        pname = (player.get("name") or "").lower()
+        matched_stats = None
+
+        for pid, ps in team_stats.items():
+            sm_name = (ps.get("name") or "").lower()
+            if pname == sm_name:
+                matched_stats = ps
+                break
+            # Partial match: last name or substring
+            if pname in sm_name or sm_name in pname:
+                matched_stats = ps
+                break
+            pname_parts = pname.split()
+            sm_parts = sm_name.split()
+            if len(pname_parts) > 0 and len(sm_parts) > 0 and pname_parts[-1] == sm_parts[-1]:
+                matched_stats = ps
+                break
+
+        p_copy = dict(player)
+        if matched_stats:
+            bat = matched_stats.get("batting", {})
+            bowl = matched_stats.get("bowling", {})
+            p_copy["season_stats"] = {
+                "matches": matched_stats.get("matches", 0),
+                "bat_runs": bat.get("runs", 0),
+                "bat_innings": bat.get("innings", 0),
+                "bat_avg": bat.get("avg", 0),
+                "bat_sr": bat.get("sr", 0),
+                "bat_fours": bat.get("fours", 0),
+                "bat_sixes": bat.get("sixes", 0),
+                "bowl_wickets": bowl.get("wickets", 0),
+                "bowl_innings": bowl.get("innings", 0),
+                "bowl_economy": bowl.get("economy", 0),
+                "bowl_runs": bowl.get("runs_conceded", 0),
+                "bowl_overs": bowl.get("overs", 0),
+            }
+        else:
+            p_copy["season_stats"] = None
+        enriched.append(p_copy)
+
+    return enriched

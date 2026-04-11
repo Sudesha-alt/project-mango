@@ -34,7 +34,7 @@ from services.ai_service import (
     claude_deep_match_analysis, claude_live_analysis,
     claude_sportmonks_prediction
 )
-from services.sportmonks_service import fetch_live_match, check_fixture_status, fetch_livescores_ipl, parse_fixture, fetch_fixture_details, fetch_recent_fixtures, fetch_last_played_xi, fetch_playing_xi_from_live, fetch_team_recent_performance, fetch_playing_xi_from_last_match, sync_player_performance_to_db, fetch_season_fixtures, IPL_SEASON_IDS, _get_team_sm_id, fetch_fixture_start_time, fetch_ipl_season_schedule
+from services.sportmonks_service import fetch_live_match, check_fixture_status, fetch_livescores_ipl, parse_fixture, fetch_fixture_details, fetch_recent_fixtures, fetch_last_played_xi, fetch_playing_xi_from_live, fetch_team_recent_performance, fetch_playing_xi_from_last_match, sync_player_performance_to_db, fetch_season_fixtures, IPL_SEASON_IDS, _get_team_sm_id, fetch_fixture_start_time, fetch_ipl_season_schedule, fetch_venue_stats, fetch_h2h_record, fetch_team_standings, fetch_player_season_stats_for_xi
 from services.beta_prediction_engine import run_beta_prediction
 from services.consultant_engine import run_consultation, build_features
 from services.cricdata_service import fetch_live_ipl_details, fetch_venue_stats_from_cricapi
@@ -793,12 +793,69 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
     # ── Fetch news for match context ──
     match_news = await fetch_match_news(team1, team2)
 
-    # ── Claude Win Prediction (pass Playing XI squads + weather + news + user context) ──
+    # ── DATA ENRICHMENT: Gather real stats for Claude's layered analysis ──
+    import asyncio as _aio
+    enrichment_data = {}
+    try:
+        # Parallel fetch: venue stats, H2H, standings, player stats for both teams
+        venue_stats_task = fetch_venue_stats(venue)
+        h2h_task = fetch_h2h_record(team1, team2)
+        standings_task = fetch_team_standings(2026)
+
+        # Fetch player season stats for Playing XI of each team
+        t1_xi_for_stats = sm_data.get("team1_playing_xi", []) if sm_data else []
+        t2_xi_for_stats = sm_data.get("team2_playing_xi", []) if sm_data else []
+
+        async def _noop_list(lst):
+            return lst
+
+        t1_stats_task = fetch_player_season_stats_for_xi(t1_xi_for_stats, team1, 5) if t1_xi_for_stats else _noop_list(t1_xi_for_stats)
+        t2_stats_task = fetch_player_season_stats_for_xi(t2_xi_for_stats, team2, 5) if t2_xi_for_stats else _noop_list(t2_xi_for_stats)
+
+        venue_stats, h2h_record, standings, t1_enriched_xi, t2_enriched_xi = await _aio.gather(
+            venue_stats_task, h2h_task, standings_task, t1_stats_task, t2_stats_task,
+            return_exceptions=True
+        )
+
+        # Handle exceptions gracefully
+        if isinstance(venue_stats, Exception):
+            logger.warning(f"Venue stats fetch failed: {venue_stats}")
+            venue_stats = {}
+        if isinstance(h2h_record, Exception):
+            logger.warning(f"H2H fetch failed: {h2h_record}")
+            h2h_record = {}
+        if isinstance(standings, Exception):
+            logger.warning(f"Standings fetch failed: {standings}")
+            standings = []
+        if isinstance(t1_enriched_xi, Exception):
+            logger.warning(f"T1 stats fetch failed: {t1_enriched_xi}")
+            t1_enriched_xi = t1_xi_for_stats
+        if isinstance(t2_enriched_xi, Exception):
+            logger.warning(f"T2 stats fetch failed: {t2_enriched_xi}")
+            t2_enriched_xi = t2_xi_for_stats
+
+        enrichment_data = {
+            "venue_stats": venue_stats,
+            "h2h": h2h_record,
+            "standings": standings,
+            "team1_enriched_xi": t1_enriched_xi,
+            "team2_enriched_xi": t2_enriched_xi,
+        }
+        logger.info(f"Enrichment data gathered: venue={bool(venue_stats)}, h2h={bool(h2h_record)}, "
+                     f"standings={len(standings) if isinstance(standings, list) else 0}, "
+                     f"t1_stats={len(t1_enriched_xi) if isinstance(t1_enriched_xi, list) else 0}, "
+                     f"t2_stats={len(t2_enriched_xi) if isinstance(t2_enriched_xi, list) else 0}")
+    except Exception as e:
+        logger.error(f"Enrichment data fetch failed: {e}")
+        enrichment_data = {}
+
+    # ── Claude Win Prediction (pass Playing XI squads + weather + news + enrichment + user context) ──
     claude_prediction = None
     if sm_data:
         claude_prediction = await claude_sportmonks_prediction(
             sm_data, probs, match_info, squads=live_squads, weather=match_weather, news=match_news,
-            gut_feeling=body.gut_feeling, betting_odds_pct=body.current_betting_odds, dls_info=body.dls_info
+            gut_feeling=body.gut_feeling, betting_odds_pct=body.current_betting_odds, dls_info=body.dls_info,
+            enrichment=enrichment_data
         )
 
     # ── Apply Claude's prediction to the algo baseline ──
@@ -985,9 +1042,47 @@ async def refresh_claude_prediction(match_id: str, body: RefreshClaudeRequest = 
     refresh_weather = await fetch_weather_for_venue(refresh_city) if refresh_city else None
     # Fetch news for Claude context
     refresh_news = await fetch_match_news(match_info.get("team1", ""), match_info.get("team2", ""))
+
+    # ── DATA ENRICHMENT for refresh ──
+    import asyncio as _aio
+    enrichment_data = {}
+    try:
+        team1 = match_info.get("team1", "")
+        team2 = match_info.get("team2", "")
+        venue = match_info.get("venue", "")
+
+        t1_xi = sm_data.get("team1_playing_xi", [])
+        t2_xi = sm_data.get("team2_playing_xi", [])
+
+        async def _noop_list(lst):
+            return lst
+
+        venue_stats_task = fetch_venue_stats(venue)
+        h2h_task = fetch_h2h_record(team1, team2)
+        standings_task = fetch_team_standings(2026)
+        t1_stats_task = fetch_player_season_stats_for_xi(t1_xi, team1, 5) if t1_xi else _noop_list(t1_xi)
+        t2_stats_task = fetch_player_season_stats_for_xi(t2_xi, team2, 5) if t2_xi else _noop_list(t2_xi)
+
+        venue_stats, h2h_record, standings, t1_enriched, t2_enriched = await _aio.gather(
+            venue_stats_task, h2h_task, standings_task, t1_stats_task, t2_stats_task,
+            return_exceptions=True
+        )
+        for name, val in [("venue_stats", venue_stats), ("h2h", h2h_record), ("standings", standings)]:
+            if isinstance(val, Exception):
+                logger.warning(f"Refresh enrichment {name} failed: {val}")
+        enrichment_data = {
+            "venue_stats": venue_stats if not isinstance(venue_stats, Exception) else {},
+            "h2h": h2h_record if not isinstance(h2h_record, Exception) else {},
+            "standings": standings if not isinstance(standings, Exception) else [],
+            "team1_enriched_xi": t1_enriched if not isinstance(t1_enriched, Exception) else t1_xi,
+            "team2_enriched_xi": t2_enriched if not isinstance(t2_enriched, Exception) else t2_xi,
+        }
+    except Exception as e:
+        logger.error(f"Refresh enrichment failed: {e}")
+
     claude_prediction = await claude_sportmonks_prediction(
         sm_data, old_probs, match_info, squads=live_squads, weather=refresh_weather, news=refresh_news,
-        dls_info=body.dls_info
+        dls_info=body.dls_info, enrichment=enrichment_data
     )
 
     if claude_prediction and not claude_prediction.get("error"):
