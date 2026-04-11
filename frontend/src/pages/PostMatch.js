@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useParams } from "react-router-dom";
 import { useMatchData } from "@/hooks/useMatchData";
+import { API_BASE } from "@/lib/apiBase";
 import { Trophy, MapPin } from "@phosphor-icons/react";
 
 export default function PostMatch() {
@@ -13,7 +14,7 @@ export default function PostMatch() {
     const load = async () => {
       setLoading(true);
       try {
-        const res = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/matches/${matchId}/state`);
+        const res = await fetch(`${API_BASE}/matches/${matchId}/state`);
         const data = await res.json();
         setMatchInfo(data.info || data);
       } catch (e) { console.error(e); }

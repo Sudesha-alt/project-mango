@@ -279,7 +279,8 @@ def _mc_first_innings(runs, wickets, overs, n_simulations, venue_avg, total_over
         projected_scores.append(sim_runs - penalty * 0.3)
 
     median_score = sorted(projected_scores)[n_simulations // 2]
-    prob = 0.5 + (median_score - venue_avg) / (venue_avg * 1.5)
+    va = max(float(venue_avg or 0), float(VENUE_AVG))
+    prob = 0.5 + (median_score - va) / (va * 1.5)
     return round(max(min(prob, 0.95), 0.05), 4), round(median_score, 1)
 
 

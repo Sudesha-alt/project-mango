@@ -6,8 +6,9 @@ import { Lightning, MapPin, Clock, CaretRight, Broadcast, Trophy, CalendarBlank,
 import { Badge } from "@/components/ui/badge";
 import CricApiLivePanel from "@/components/CricApiLivePanel";
 import InfoTooltip from "@/components/InfoTooltip";
+import { API_BASE } from "@/lib/apiBase";
 
-const API = process.env.REACT_APP_BACKEND_URL + "/api";
+const API = API_BASE;
 
 export default function MatchSelector() {
   const navigate = useNavigate();

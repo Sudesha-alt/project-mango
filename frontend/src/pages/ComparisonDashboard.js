@@ -2,8 +2,9 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Sparkle, Robot, ArrowLeft, Trophy, Equals, ArrowRight, Lightning } from "@phosphor-icons/react";
 import axios from "axios";
+import { API_BASE } from "@/lib/apiBase";
 
-const API = process.env.REACT_APP_BACKEND_URL + "/api";
+const API = API_BASE;
 
 function ProbBar({ label, pct, color }) {
   return (

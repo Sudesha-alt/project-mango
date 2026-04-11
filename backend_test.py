@@ -36,11 +36,10 @@ class PPLBoardAPITester:
                     response_data = response.json()
                     print(f"   Response keys: {list(response_data.keys()) if isinstance(response_data, dict) else 'Non-dict response'}")
                     return True, response_data
-                except:
+                except ValueError:
                     print(f"   Response: {response.text[:200]}...")
                     return True, response.text
             else:
-                self.tests_passed += 1 if response.status_code in [200, 201, 202] else 0
                 print(f"❌ Failed - Expected {expected_status}, got {response.status_code}")
                 print(f"   Response: {response.text[:200]}...")
                 self.failed_tests.append({

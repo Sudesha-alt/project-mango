@@ -1,7 +1,9 @@
 import { useState, useEffect } from "react";
 import { Newspaper, ArrowSquareOut } from "@phosphor-icons/react";
 
-const API = process.env.REACT_APP_BACKEND_URL + "/api";
+import { API_BASE } from "@/lib/apiBase";
+
+const API = API_BASE;
 
 export function NewsCard({ matchId }) {
   const [news, setNews] = useState(null);

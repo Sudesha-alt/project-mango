@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import { Lightning, Spinner, ArrowsClockwise, Warning, Database } from "@phosphor-icons/react";
+import { API_BASE } from "@/lib/apiBase";
 
-const API = process.env.REACT_APP_BACKEND_URL + "/api";
+const API = API_BASE;
 
 export default function CricApiLivePanel() {
   const [data, setData] = useState(null);

@@ -40,8 +40,9 @@ async def scrape_url(url: str, timeout: int = 15) -> str:
             }
             resp = await client.get(url, headers=headers)
             resp.raise_for_status()
+            html = resp.text
 
-        soup = BeautifulSoup(resp.text, "html.parser")
+        soup = BeautifulSoup(html, "html.parser")
         for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
             tag.decompose()
 

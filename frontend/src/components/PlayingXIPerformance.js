@@ -2,8 +2,9 @@ import { useState, useEffect } from "react";
 import axios from "axios";
 import { Spinner, Lightning, TrendUp, TrendDown, Minus, UsersThree, ChatDots } from "@phosphor-icons/react";
 import InfoTooltip from "./InfoTooltip";
+import { API_BASE } from "@/lib/apiBase";
 
-const API = process.env.REACT_APP_BACKEND_URL + "/api";
+const API = API_BASE;
 
 export default function PlayingXIPerformance({ matchId, team1, team2 }) {
   const [data, setData] = useState(null);

@@ -2,8 +2,9 @@ import { useState, useEffect } from "react";
 import axios from "axios";
 import { Spinner, Scales, TrendUp, UsersThree, House, TrendDown, Minus, ArrowsClockwise, Target, CloudSun, Lightning, CoinVertical } from "@phosphor-icons/react";
 import InfoTooltip from "./InfoTooltip";
+import { API_BASE } from "@/lib/apiBase";
 
-const API = process.env.REACT_APP_BACKEND_URL + "/api";
+const API = API_BASE;
 
 function FactorBar({ label, weight, logit, icon: Icon, tooltip, team1, team2, team1Detail, team2Detail }) {
   // logit > 0 favors team1, logit < 0 favors team2

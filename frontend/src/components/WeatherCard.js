@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
 import { CloudRain, Sun, Wind, Drop, Thermometer, CloudFog } from "@phosphor-icons/react";
+import { API_BASE } from "@/lib/apiBase";
 
-const API = process.env.REACT_APP_BACKEND_URL + "/api";
+const API = API_BASE;
 
 export function WeatherCard({ matchId, city, compact = false }) {
   const [weather, setWeather] = useState(null);

@@ -45,9 +45,16 @@ from services.schedule_data import get_schedule_documents, TEAM_SHORT_CODES, CIT
 from services.web_scraper import fetch_match_news
 from services.form_service import fetch_team_form, fetch_momentum, generate_expected_xi
 
-mongo_url = os.environ['MONGO_URL']
+def _require_env(name: str) -> str:
+    val = os.environ.get(name, "").strip()
+    if not val:
+        raise RuntimeError(f"Missing or empty required environment variable: {name}")
+    return val
+
+
+mongo_url = _require_env("MONGO_URL")
 client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+db = client[_require_env("DB_NAME")]
 
 
 app = FastAPI()
@@ -508,10 +515,7 @@ async def get_match_weather(match_id: str):
     match_date = None
     dt_gmt = match_info.get("dateTimeGMT", "")
     if dt_gmt:
-        try:
-            match_date = dt_gmt[:10]  # Extract YYYY-MM-DD
-        except Exception:
-            pass
+        match_date = str(dt_gmt)[:10]  # YYYY-MM-DD
 
     weather = await fetch_weather_for_venue(city, match_date)
     weather["matchId"] = match_id
@@ -753,8 +757,10 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
         elif b in ["0", "\u2022"]:
             ball_obj["runs"] = 0
         else:
-            try: ball_obj["runs"] = int(b)
-            except: pass
+            try:
+                ball_obj["runs"] = int(b)
+            except (ValueError, TypeError):
+                ball_obj["runs"] = 0
         ball_objects.append(ball_obj)
 
     # Betting odds input
@@ -3224,6 +3230,10 @@ async def websocket_endpoint(websocket: WebSocket, match_id: str):
             msg = json.loads(data)
             if msg.get("type") == "PING":
                 await websocket.send_json({"type": "PONG"})
+            elif msg.get("type") == "REQUEST_UPDATE":
+                cached = live_match_state.get(match_id)
+                if cached:
+                    await websocket.send_json({"type": "LIVE_UPDATE", **cached})
     except WebSocketDisconnect:
         ws_connections[match_id].remove(websocket)
     except Exception as e:
@@ -3360,6 +3370,8 @@ async def auto_sync_results_and_invalidate():
             return
 
         now = datetime.now(timezone.utc)
+        schedule_matches = await db.ipl_schedule.find({}, {"_id": 0}).to_list(2000)
+
         synced = 0
         for result in results:
             sm_t1 = (result.get("team1", "") or "").lower()
@@ -3368,7 +3380,7 @@ async def auto_sync_results_and_invalidate():
             if not winner:
                 continue
 
-            async for match in db.ipl_schedule.find({}, {"_id": 0}):
+            for match in schedule_matches:
                 # GUARD: Skip future matches
                 dt_str = match.get("dateTimeGMT", "")
                 if dt_str:
@@ -3441,10 +3453,15 @@ async def shutdown():
 
 app.include_router(api_router)
 
+_cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()] or ["*"]
+_cors_allow_credentials = os.environ.get("CORS_ALLOW_CREDENTIALS", "true").lower() in ("1", "true", "yes")
+if "*" in _cors_origins:
+    _cors_allow_credentials = False  # Browsers forbid credentials with wildcard origin
+
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_credentials=_cors_allow_credentials,
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

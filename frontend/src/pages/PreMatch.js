@@ -11,8 +11,9 @@ import NewsCard from "@/components/NewsCard";
 import { WinProbabilityChart, AlgorithmRadarChart, PreMatchRadarChart } from "@/components/Charts";
 import { ArrowRight, Spinner, MapPin, CalendarBlank } from "@phosphor-icons/react";
 import axios from "axios";
+import { API_BASE } from "@/lib/apiBase";
 
-const API = process.env.REACT_APP_BACKEND_URL + "/api";
+const API = API_BASE;
 
 export default function PreMatch() {
   const { matchId } = useParams();
@@ -32,7 +33,7 @@ export default function PreMatch() {
       try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 8000);
-        const res = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/matches/${matchId}/state`, { signal: controller.signal });
+        const res = await fetch(`${API}/matches/${matchId}/state`, { signal: controller.signal });
         clearTimeout(timeout);
         const data = await res.json();
         const info = data.info || data;

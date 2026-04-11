@@ -1,7 +1,8 @@
 import { useState, useCallback } from "react";
 import axios from "axios";
+import { API_BASE } from "@/lib/apiBase";
 
-const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+const API = API_BASE;
 
 // Global timeout — prevent infinite hangs when background tasks block the server
 axios.defaults.timeout = 30000;

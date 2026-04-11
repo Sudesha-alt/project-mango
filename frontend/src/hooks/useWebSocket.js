@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+import { BACKEND_URL } from "@/lib/apiBase";
 
 export function useWebSocket(matchId) {
   const [data, setData] = useState(null);
@@ -9,9 +8,9 @@ export function useWebSocket(matchId) {
   const reconnectRef = useRef(null);
 
   const connect = useCallback(() => {
-    if (!matchId) return;
-    const protocol = BACKEND_URL?.startsWith("https") ? "wss" : "ws";
-    const host = BACKEND_URL?.replace(/^https?:\/\//, "");
+    if (!matchId || !BACKEND_URL) return;
+    const protocol = BACKEND_URL.startsWith("https") ? "wss" : "ws";
+    const host = BACKEND_URL.replace(/^https?:\/\//, "");
     const url = `${protocol}://${host}/api/ws/${matchId}`;
 
     try {
