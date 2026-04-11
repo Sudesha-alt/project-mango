@@ -276,6 +276,57 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
         />
       </div>
 
+      {/* Expected Playing XI — SportMonks last match + impact points */}
+      {data.playing_xi?.team1_xi?.length > 0 && (
+        <div className="border border-[#262626] rounded-md p-3 space-y-2" data-testid="prematch-playing-xi">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[10px] text-[#737373] uppercase tracking-[0.15em] font-semibold flex items-center gap-1">
+              <UsersThree weight="fill" className="w-3.5 h-3.5 text-[#7C3AED]" />
+              Expected Playing XI
+              <InfoTooltip text={data.playing_xi.xi_lineup_note || "XI from SportMonks when available; impact_points match the Lucky 11 model card rating."} />
+            </p>
+            <span className="text-[9px] font-mono text-[#525252]">
+              {data.playing_xi.source === "last_match" ? "Last IPL match" : data.playing_xi.source === "squad_estimate" ? "Squad estimate" : data.playing_xi.source || "—"}
+              {data.playing_xi.stats_lookback_matches ? ` · last ${data.playing_xi.stats_lookback_matches} stats` : ""}
+            </span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <p className="text-[9px] font-bold uppercase tracking-wider text-[#007AFF] mb-1">{t1}</p>
+              <ul className="space-y-1 max-h-48 overflow-y-auto pr-1">
+                {(data.playing_xi.team1_xi || []).map((p, i) => (
+                  <li key={i} className="flex items-center justify-between text-[10px] gap-2 border-b border-[#1E1E1E] pb-1 last:border-0">
+                    <span className="text-[#E5E5E5] truncate">{p.name}</span>
+                    <span className="text-[#A1A1AA] font-mono flex-shrink-0">
+                      {p.impact_points != null ? <span className="text-[#FFCC00] font-bold">{p.impact_points}</span> : "—"}
+                      {p.recent_form_impact != null && (
+                        <span className="text-[#525252] ml-1">frm {Math.round(p.recent_form_impact)}</span>
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <p className="text-[9px] font-bold uppercase tracking-wider text-[#FF3B30] mb-1">{t2}</p>
+              <ul className="space-y-1 max-h-48 overflow-y-auto pr-1">
+                {(data.playing_xi.team2_xi || []).map((p, i) => (
+                  <li key={i} className="flex items-center justify-between text-[10px] gap-2 border-b border-[#1E1E1E] pb-1 last:border-0">
+                    <span className="text-[#E5E5E5] truncate">{p.name}</span>
+                    <span className="text-[#A1A1AA] font-mono flex-shrink-0">
+                      {p.impact_points != null ? <span className="text-[#FFCC00] font-bold">{p.impact_points}</span> : "—"}
+                      {p.recent_form_impact != null && (
+                        <span className="text-[#525252] ml-1">frm {Math.round(p.recent_form_impact)}</span>
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      )}
+
       <p className="text-[9px] text-[#737373] font-mono text-right">
         Computed: {new Date(data.computed_at).toLocaleString()}
       </p>

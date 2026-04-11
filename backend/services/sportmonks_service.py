@@ -6,24 +6,39 @@ from typing import Dict, Optional
 logger = logging.getLogger(__name__)
 
 SPORTMONKS_TOKEN = os.environ.get("SPORTMONKS_API_TOKEN", "")
+# Cricket API v2.0 — see https://docs.sportmonks.com/v2/cricket-api
 BASE_URL = "https://cricket.sportmonks.com/api/v2.0"
 
 
+def _sm_response_failed(payload) -> bool:
+    """True if _get returned an error placeholder (see _get exception path)."""
+    if not isinstance(payload, dict):
+        return True
+    return bool(payload.get("error"))
+
+
 async def _get(endpoint: str, params: dict = None) -> dict:
-    """Make a GET request to SportMonks Cricket API."""
+    """Make a GET request to SportMonks Cricket API v2.0 (token query param)."""
     if not SPORTMONKS_TOKEN:
         return {"error": "SPORTMONKS_API_TOKEN not configured"}
-    
+
     url = f"{BASE_URL}/{endpoint}"
     query = {"api_token": SPORTMONKS_TOKEN}
     if params:
         query.update(params)
-    
+
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.get(url, params=query)
             resp.raise_for_status()
-            return resp.json()
+            body = resp.json()
+            if (
+                isinstance(body, dict)
+                and body.get("message")
+                and body.get("data") is None
+            ):
+                logger.warning(f"SportMonks {endpoint}: {body.get('message')}")
+            return body
     except Exception as e:
         logger.error(f"SportMonks API error: {e}")
         return {"error": str(e)}
@@ -42,7 +57,10 @@ async def fetch_fixture_details(fixture_id: int) -> dict:
     data = await _get(f"fixtures/{fixture_id}", {
         "include": "localteam,visitorteam,scoreboards,batting,bowling,runs,balls,venue,tosswon,manofmatch,lineup"
     })
-    return data.get("data", {})
+    if _sm_response_failed(data):
+        logger.warning(f"fetch_fixture_details({fixture_id}): {data.get('error') or data.get('message')}")
+        return {}
+    return data.get("data") or {}
 
 
 def parse_fixture(raw: dict) -> dict:
@@ -411,49 +429,41 @@ async def fetch_live_match(team1: str, team2: str, fixture_id: int = None) -> Op
 async def fetch_livescores_ipl() -> list:
     """Fetch all currently live IPL matches from SportMonks livescores endpoint.
     Returns list of parsed fixtures with teams, scores, status."""
-    url = f"{BASE_URL}/livescores"
-    params = {
-        "api_token": SPORTMONKS_TOKEN,
+    payload = await _get("livescores", {
         "include": "localteam,visitorteam,runs,batting,bowling,lineup,venue",
-    }
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(url, params=params)
-            if resp.status_code != 200:
-                logger.warning(f"SportMonks livescores {resp.status_code}")
-                return []
-            data = resp.json().get("data", [])
-            # Filter for T20 / IPL-like matches (league filtering if available)
-            results = []
-            for m in data:
-                lt = m.get("localteam", {}).get("name", "")
-                vt = m.get("visitorteam", {}).get("name", "")
-                status = m.get("status", "")
-                note = m.get("note", "")
-                fixture_id = m.get("id")
-                # Include all — we'll match to our schedule later
-                entry = {
-                    "fixture_id": fixture_id,
-                    "team1": lt,
-                    "team2": vt,
-                    "status": status,
-                    "note": note,
-                    "league_id": m.get("league_id"),
-                    "is_live": status.lower() in ["1st innings", "2nd innings", "innings break", "int.", "live", "ns"],
-                    "is_finished": status.lower() in ["finished", "aban.", "cancelled", "no result"],
-                }
-                # Parse scores
-                runs_data = m.get("runs", [])
-                for r in runs_data:
-                    inn = r.get("inning", 1)
-                    entry[f"inn{inn}_runs"] = r.get("score", 0)
-                    entry[f"inn{inn}_wickets"] = r.get("wickets", 0)
-                    entry[f"inn{inn}_overs"] = r.get("overs", 0)
-                results.append(entry)
-            return results
-    except Exception as e:
-        logger.error(f"SportMonks livescores error: {e}")
+    })
+    if _sm_response_failed(payload):
         return []
+    data = payload.get("data", [])
+    if not isinstance(data, list):
+        return []
+    results = []
+    for m in data:
+        lt = m.get("localteam", {}).get("name", "")
+        vt = m.get("visitorteam", {}).get("name", "")
+        status = m.get("status", "")
+        note = m.get("note", "")
+        fixture_id = m.get("id")
+        entry = {
+            "fixture_id": fixture_id,
+            "team1": lt,
+            "team2": vt,
+            "status": status,
+            "note": note,
+            "league_id": m.get("league_id"),
+            "is_live": status.lower() in ["1st innings", "2nd innings", "innings break", "int.", "live", "ns"],
+            "is_finished": status.lower() in ["finished", "aban.", "cancelled", "no result"],
+        }
+        runs_data = m.get("runs", [])
+        if isinstance(runs_data, dict):
+            runs_data = runs_data.get("data", [])
+        for r in runs_data:
+            inn = r.get("inning", 1)
+            entry[f"inn{inn}_runs"] = r.get("score", 0)
+            entry[f"inn{inn}_wickets"] = r.get("wickets", 0)
+            entry[f"inn{inn}_overs"] = r.get("overs", 0)
+        results.append(entry)
+    return results
 
 
 async def check_fixture_status(team1: str, team2: str) -> dict:
@@ -622,6 +632,10 @@ async def fetch_season_fixtures(season_id: int) -> list:
         return _season_fixtures_cache[season_id]
 
     data = await _get(f"seasons/{season_id}", {"include": "fixtures"})
+    if _sm_response_failed(data):
+        logger.error(f"SportMonks seasons/{season_id} failed: {data.get('error') or data.get('message')}")
+        return []
+
     raw_fixtures = data.get("data", {}).get("fixtures", {})
     if isinstance(raw_fixtures, dict):
         raw_fixtures = raw_fixtures.get("data", [])
@@ -727,10 +741,28 @@ async def _enrich_players(players: list) -> list:
     return enriched
 
 
+def _lineup_team_player_ids(lineup_raw: list, team_id: int) -> set:
+    """Player IDs listed in lineup for a team (handles nested lineup pivot like parse_fixture)."""
+    ids = set()
+    for p in lineup_raw:
+        pivot = p.get("lineup") or {}
+        if not isinstance(pivot, dict):
+            pivot = {}
+        if pivot.get("team_id") == team_id and p.get("id"):
+            ids.add(p.get("id"))
+    return ids
+
+
 async def fetch_fixture_batting_bowling(fixture_id: int) -> dict:
     """Fetch batting and bowling scorecard data for a fixture."""
     data = await _get(f"fixtures/{fixture_id}", {"include": "batting,bowling,lineup"})
-    fixture = data.get("data", {})
+    if _sm_response_failed(data):
+        logger.warning(f"fetch_fixture_batting_bowling({fixture_id}): {data.get('error') or data.get('message')}")
+        return {"fixture_id": fixture_id, "batting": [], "bowling": [], "player_names": {}}
+
+    fixture = data.get("data") or {}
+    if not fixture:
+        return {"fixture_id": fixture_id, "batting": [], "bowling": [], "player_names": {}}
 
     batting_raw = fixture.get("batting", {})
     if isinstance(batting_raw, dict):
@@ -744,6 +776,11 @@ async def fetch_fixture_batting_bowling(fixture_id: int) -> dict:
     if isinstance(lineup_raw, dict):
         lineup_raw = lineup_raw.get("data", [])
 
+    local_id = fixture.get("localteam_id")
+    visitor_id = fixture.get("visitorteam_id")
+    team_a_ids = _lineup_team_player_ids(lineup_raw, local_id) if local_id else set()
+    team_b_ids = _lineup_team_player_ids(lineup_raw, visitor_id) if visitor_id else set()
+
     # Build player name map from lineup
     player_names = {}
     for p in lineup_raw:
@@ -751,30 +788,44 @@ async def fetch_fixture_batting_bowling(fixture_id: int) -> dict:
 
     batting = []
     for b in batting_raw:
+        pid = b.get("player_id")
+        tid = b.get("team_id")
+        if tid is None and pid:
+            if pid in team_a_ids and pid not in team_b_ids:
+                tid = local_id
+            elif pid in team_b_ids and pid not in team_a_ids:
+                tid = visitor_id
         batting.append({
-            "player_id": b.get("player_id"),
-            "player_name": player_names.get(b.get("player_id"), ""),
+            "player_id": pid,
+            "player_name": player_names.get(pid, ""),
             "runs": b.get("score", 0),
             "balls": b.get("ball", 0),
             "fours": b.get("four_x", 0),
             "sixes": b.get("six_x", 0),
             "strike_rate": round((b.get("score", 0) / max(b.get("ball", 1), 1)) * 100, 1),
             "scoreboard": b.get("scoreboard", "S1"),
-            "team_id": b.get("team_id"),
+            "team_id": tid,
         })
 
     bowling = []
     for bw in bowling_raw:
+        pid = bw.get("player_id")
+        tid = bw.get("team_id")
+        if tid is None and pid:
+            if pid in team_a_ids and pid not in team_b_ids:
+                tid = local_id
+            elif pid in team_b_ids and pid not in team_a_ids:
+                tid = visitor_id
         bowling.append({
-            "player_id": bw.get("player_id"),
-            "player_name": player_names.get(bw.get("player_id"), ""),
+            "player_id": pid,
+            "player_name": player_names.get(pid, ""),
             "overs": bw.get("overs", 0),
             "wickets": bw.get("wickets", 0),
             "runs_conceded": bw.get("runs", 0),
             "economy": bw.get("rate", 0),
             "maidens": bw.get("medians", 0),
             "scoreboard": bw.get("scoreboard", "S1"),
-            "team_id": bw.get("team_id"),
+            "team_id": tid,
         })
 
     return {
@@ -836,8 +887,11 @@ async def fetch_team_recent_performance(team_name: str, num_matches: int = 5) ->
 
         # Aggregate batting — ONLY for this team's players
         for b in data.get("batting", []):
-            if b.get("team_id") and b["team_id"] != team_id:
-                continue  # Skip opponent's players
+            tid = b.get("team_id")
+            if tid is None:
+                continue
+            if tid != team_id:
+                continue
             pid = b["player_id"]
             if pid not in player_stats:
                 player_stats[pid] = {
@@ -855,8 +909,11 @@ async def fetch_team_recent_performance(team_name: str, num_matches: int = 5) ->
 
         # Aggregate bowling — ONLY for this team's players
         for bw in data.get("bowling", []):
-            if bw.get("team_id") and bw["team_id"] != team_id:
-                continue  # Skip opponent's bowlers
+            tid = bw.get("team_id")
+            if tid is None:
+                continue
+            if tid != team_id:
+                continue
             pid = bw["player_id"]
             if pid not in player_stats:
                 player_stats[pid] = {
@@ -875,11 +932,13 @@ async def fetch_team_recent_performance(team_name: str, num_matches: int = 5) ->
         # Count match appearances (only this team's players)
         seen_players = set()
         for b in data.get("batting", []):
-            if b.get("team_id") and b["team_id"] != team_id:
+            tid = b.get("team_id")
+            if tid is None or tid != team_id:
                 continue
             seen_players.add(b["player_id"])
         for bw in data.get("bowling", []):
-            if bw.get("team_id") and bw["team_id"] != team_id:
+            tid = bw.get("team_id")
+            if tid is None or tid != team_id:
                 continue
             seen_players.add(bw["player_id"])
         for pid in seen_players:
@@ -1234,6 +1293,12 @@ async def fetch_ipl_season_schedule(season_id: int = None) -> list:
 
     # Step 1: Get fixture IDs from season endpoint (lightweight)
     season_data = await _get(f"seasons/{season_id}", {"include": "fixtures"})
+    if _sm_response_failed(season_data):
+        logger.error(
+            f"fetch_ipl_season_schedule: seasons/{season_id} failed: "
+            f"{season_data.get('error') or season_data.get('message')}"
+        )
+        return []
     raw_fixtures = season_data.get("data", {}).get("fixtures", {})
     if isinstance(raw_fixtures, dict):
         raw_fixtures = raw_fixtures.get("data", [])
@@ -1618,15 +1683,24 @@ async def fetch_team_standings(season_year: int = 2026) -> list:
     return teams
 
 
-async def fetch_player_season_stats_for_xi(playing_xi: list, team_name: str, num_matches: int = 5) -> list:
-    """Get per-player IPL 2026 stats for a confirmed Playing XI.
+async def fetch_player_season_stats_for_xi(
+    playing_xi: list,
+    team_name: str,
+    num_matches: int = 5,
+    team_stats_override: Optional[dict] = None,
+) -> list:
+    """Get per-player IPL stats for a Playing XI from last ``num_matches`` finished games.
 
-    Returns enriched player list with batting/bowling stats from last N matches.
-    Uses fetch_team_recent_performance internally.
+    If ``team_stats_override`` is provided (e.g. already fetched for pre-match), it is reused
+    so callers avoid duplicate SportMonks fixture calls.
     """
-    team_stats = await fetch_team_recent_performance(team_name, num_matches)
+    if not playing_xi:
+        return []
+    team_stats = team_stats_override
+    if team_stats is None:
+        team_stats = await fetch_team_recent_performance(team_name, num_matches)
     if not team_stats:
-        return playing_xi  # Return as-is if no stats
+        return [dict(p) for p in playing_xi]
 
     # Match playing XI players to their stats by name similarity
     enriched = []

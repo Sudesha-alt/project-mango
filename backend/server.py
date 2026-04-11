@@ -38,7 +38,7 @@ from services.sportmonks_service import fetch_live_match, check_fixture_status, 
 from services.beta_prediction_engine import run_beta_prediction
 from services.consultant_engine import run_consultation, build_features
 from services.cricdata_service import fetch_live_ipl_details, fetch_venue_stats_from_cricapi
-from services.pre_match_predictor import compute_prediction
+from services.pre_match_predictor import compute_prediction, STAR_PLAYERS
 from services.live_predictor import compute_live_prediction, compute_combined_prediction, detect_match_phase
 from services.weather_service import fetch_weather_for_venue
 from services.schedule_data import get_schedule_documents, TEAM_SHORT_CODES, CITY_STADIUMS
@@ -81,6 +81,88 @@ async def _get_squads_for_match(team1: str, team2: str) -> dict:
         if doc:
             squads[team_name] = doc.get("players", [])
     return squads
+
+
+def _recent_form_impact_score(season_stats: Optional[dict]) -> Optional[float]:
+    """0-100 score from SportMonks last-N aggregates (batting and/or bowling), same spirit as form_service."""
+    if not season_stats:
+        return None
+    bi = int(season_stats.get("bat_innings") or 0)
+    bii = int(season_stats.get("bowl_innings") or 0)
+    if bi == 0 and bii == 0:
+        return None
+    parts = []
+    if bi > 0:
+        avg = float(season_stats.get("bat_avg") or 0)
+        sr = float(season_stats.get("bat_sr") or 0)
+        parts.append(min(100.0, max(0.0, avg * 2.0 + sr * 0.2)))
+    if bii > 0:
+        econ = float(season_stats.get("bowl_economy") or 12)
+        w = float(season_stats.get("bowl_wickets") or 0)
+        wpi = w / max(bii, 1)
+        econ_score = max(0.0, min(100.0, (14.0 - econ) * 10.0))
+        wicket_score = min(100.0, wpi * 40.0)
+        parts.append(econ_score * 0.5 + wicket_score * 0.5)
+    if not parts:
+        return None
+    return round(sum(parts) / len(parts), 1)
+
+
+async def _enrich_playing_xi_with_impact(
+    xi_data: dict,
+    team1: str,
+    team2: str,
+    player_performance: dict,
+) -> dict:
+    """Attach SportMonks last-5 stats per XI player + Lucky 11 impact_points (model card rating)."""
+    if not xi_data:
+        return xi_data
+    t1 = xi_data.get("team1_xi") or []
+    t2 = xi_data.get("team2_xi") or []
+    if not t1 and not t2:
+        return xi_data
+    try:
+        t1_e = await fetch_player_season_stats_for_xi(
+            [dict(p) for p in t1],
+            team1,
+            5,
+            team_stats_override=player_performance.get("team1"),
+        )
+        t2_e = await fetch_player_season_stats_for_xi(
+            [dict(p) for p in t2],
+            team2,
+            5,
+            team_stats_override=player_performance.get("team2"),
+        )
+    except Exception as e:
+        logger.warning(f"Playing XI SportMonks enrichment failed: {e}")
+        t1_e, t2_e = t1, t2
+
+    def stamp(players: list) -> list:
+        out = []
+        for p in players:
+            d = dict(p)
+            nm = (d.get("name") or "").strip()
+            d["impact_points"] = int(STAR_PLAYERS.get(nm, 65))
+            ss = d.get("season_stats")
+            rf = _recent_form_impact_score(ss)
+            if rf is not None:
+                d["recent_form_impact"] = rf
+            d["is_captain"] = bool(d.get("isCaptain") or d.get("is_captain"))
+            d["is_overseas"] = bool(d.get("isOverseas") or d.get("is_overseas"))
+            out.append(d)
+        return out
+
+    merged = dict(xi_data)
+    merged["team1_xi"] = stamp(t1_e)
+    merged["team2_xi"] = stamp(t2_e)
+    merged["stats_lookback_matches"] = 5
+    merged["xi_lineup_note"] = (
+        "XI from SportMonks (live fixture if in progress, otherwise each side's last completed IPL match). "
+        "impact_points = Lucky 11 card rating (same scale as the 8-factor model). "
+        "season_stats / recent_form_impact = last-5-match aggregates from SportMonks."
+    )
+    return merged
 
 
 def _filter_squads_to_playing_xi(match_squads: dict, sm_data: dict, team1: str, team2: str) -> dict:
@@ -224,7 +306,16 @@ async def manual_promote():
 
 async def sync_live_scores_to_schedule():
     """Sync any existing live snapshot scores to the schedule collection for match cards."""
-    snapshots = await db.live_snapshots.find({}, {"_id": 0, "matchId": 1, "liveData": 1, "team1Short": 1}).to_list(100)
+    try:
+        snapshots = await db.live_snapshots.find({}, {"_id": 0, "matchId": 1, "liveData": 1, "team1Short": 1}).to_list(100)
+    except Exception as e:
+        # Do not fail application startup if MongoDB is unreachable (SSL/network/Atlas allowlist).
+        logger.warning(
+            "sync_live_scores_to_schedule: could not read live_snapshots (%s). "
+            "Fix MONGO_URL / network / Atlas IP access if schedule endpoints stay empty.",
+            e,
+        )
+        return
     for snap in snapshots:
         mid = snap.get("matchId")
         ld = snap.get("liveData", {})
@@ -240,13 +331,16 @@ async def sync_live_scores_to_schedule():
         score_text = f"{t1_short} {runs}/{wickets} ({overs} ov)"
         if target:
             score_text += f" | Target: {target}"
-        await db.ipl_schedule.update_one(
-            {"matchId": mid},
-            {"$set": {
-                "score": score_text,
-                "liveScore": {"runs": runs, "wickets": wickets, "overs": overs, "target": target, "innings": innings},
-            }}
-        )
+        try:
+            await db.ipl_schedule.update_one(
+                {"matchId": mid},
+                {"$set": {
+                    "score": score_text,
+                    "liveScore": {"runs": runs, "wickets": wickets, "overs": overs, "target": target, "innings": innings},
+                }}
+            )
+        except Exception as e:
+            logger.warning("sync_live_scores_to_schedule: update failed for %s: %s", mid, e)
 
 
 # ─── IPL SCHEDULE (AI-powered + cached in MongoDB) ──────────
@@ -1904,6 +1998,15 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
         momentum_data=momentum_data,
         player_performance=player_performance,
     )
+
+    # Expected XI: last-match (or live) lineups already in xi_data — add SportMonks last-5 stats + impact_points
+    if xi_data:
+        try:
+            xi_data = await _enrich_playing_xi_with_impact(
+                xi_data, team1, team2, player_performance
+            )
+        except Exception as e:
+            logger.warning(f"Playing XI impact enrichment skipped: {e}")
 
     # Compute odds direction vs previous prediction
     odds_direction = {"team1": "new", "team2": "new"}
