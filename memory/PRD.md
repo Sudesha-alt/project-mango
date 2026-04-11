@@ -22,28 +22,30 @@ Build a full-stack cricket prediction app for IPL 2026 with an 8-category math m
 
 ### Claude Opus Pre-Match: 7-Layer Analysis
 ### Claude Opus Live Match: 11-Section Structured Prediction
+
 ### Performance Optimizations (asyncio.to_thread, cancel endpoints, timeouts)
 
 ### Playing XI Extraction Fix (Apr 11, 2026)
 - Multi-layer validation — robust pivot parsing, scorecard-based team resolution, hard cap of 12 per team
-- 10 unit tests all passing
 
 ### SportMonks Schedule Loading (Apr 11, 2026)
-- **Changed**: Schedule now loads directly from SportMonks API (`fetch_ipl_season_schedule()`)
-- **Removed**: GPT web scraping for schedule loading
-- **Fallback**: Uses seed data from `schedule_data.py` only if SportMonks API fails
-- **74 matches loaded** with real teams, venues, scores, winners, toss data
-- Merge strategy preserves existing predictions/analysis when refreshing
-- `fixture_id` stored per match for direct SportMonks lookups
+- Schedule loads directly from SportMonks API (74 matches)
+- Merge strategy preserves existing predictions when refreshing
+
+### Data Enrichment for Claude Live Analysis (Apr 11, 2026)
+- **Player Season Stats**: Per-player batting avg/SR, bowling economy/wickets from last 5 IPL 2026 matches
+- **Venue Stats**: Avg 1st innings score, bat-first win%, sample size from IPL 2024-2026 (venue_id-based matching)
+- **H2H Record**: Matches played, wins per team, last meeting result across 3 seasons
+- **Team Standings**: Points table with W/L/Points/NRR/Recent Form for all 10 teams
+- All data fetched in parallel via asyncio.gather and fed into Claude prompt
+- Enrichment applies to both `/fetch-live` and `/refresh-claude-prediction` endpoints
 
 ### Key Endpoints
-- `GET /api/schedule/load` — Fetches full season from SportMonks API (use `?force=true` to refresh)
-- `POST /api/schedule/seed-official` — Fallback: seed from hardcoded PDF data
-- `POST /api/schedule/sync-results` — Sync completed match results from SportMonks
+- `GET /api/schedule/load` — Fetches full season from SportMonks API
+- `POST /api/matches/{id}/fetch-live` — Live scores + enriched 11-section Claude analysis
+- `POST /api/matches/{id}/refresh-claude-prediction` — Re-run live Claude with enrichment
 - `POST /api/matches/{id}/pre-match-predict` — 8-category prediction
 - `POST /api/matches/{id}/claude-analysis` — 7-layer pre-match Claude
-- `POST /api/matches/{id}/fetch-live` — Live scores + 11-section Claude
-- `POST /api/matches/{id}/refresh-claude-prediction` — Re-run live Claude
 
 ## Backlog
 - [ ] P1: Celery migration for background jobs
