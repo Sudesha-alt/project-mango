@@ -170,9 +170,9 @@ export function useMatchData() {
     }
   }, []);
 
-  const refreshClaudePrediction = useCallback(async (matchId) => {
+  const refreshClaudePrediction = useCallback(async (matchId, body = {}) => {
     try {
-      const res = await axios.post(`${API}/matches/${matchId}/refresh-claude-prediction`);
+      const res = await axios.post(`${API}/matches/${matchId}/refresh-claude-prediction`, body);
       return res.data;
     } catch (e) {
       console.error("Claude refresh error:", e);

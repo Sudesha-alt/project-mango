@@ -474,15 +474,16 @@ async def get_schedule():
             except Exception:
                 pass
 
-        # Future-dated match = always upcoming (regardless of DB status)
-        if match_dt and match_dt > now:
-            upcoming.append(m)
+        # Status field takes priority — if explicitly completed, always completed
+        if status_lower in ["completed", "result"]:
+            completed.append(m)
         elif status_lower in ["live", "in progress"]:
             live.append(m)
+        elif match_dt and match_dt > now:
+            # Future-dated match with no result = upcoming
+            upcoming.append(m)
         elif match_dt and (now - match_dt).total_seconds() > 6 * 3600:
-            # Match date passed > 6 hours ago → completed
-            completed.append(m)
-        elif status_lower in ["completed", "result"]:
+            # Match date passed > 6 hours ago with no explicit status → completed
             completed.append(m)
         else:
             upcoming.append(m)
@@ -538,6 +539,7 @@ class FetchLiveRequest(BaseModel):
     betting_confidence: Optional[float] = None  # 0-100
     gut_feeling: Optional[str] = None           # User's gut feeling text
     current_betting_odds: Optional[float] = None  # 0-100, team1 implied probability from market
+    dls_info: Optional[str] = None               # DLS/overs reduced context from user
 
 class BetaPredictRequest(BaseModel):
     market_team1_pct: Optional[float] = None    # 0-100 probability %
@@ -711,7 +713,7 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
     if sm_data:
         claude_prediction = await claude_sportmonks_prediction(
             sm_data, probs, match_info, squads=live_squads, weather=match_weather, news=match_news,
-            gut_feeling=body.gut_feeling, betting_odds_pct=body.current_betting_odds
+            gut_feeling=body.gut_feeling, betting_odds_pct=body.current_betting_odds, dls_info=body.dls_info
         )
 
     # ── Apply Claude's CONTEXTUAL ADJUSTMENT to the algo baseline ──
@@ -835,8 +837,11 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
     return result
 
 
+class RefreshClaudeRequest(BaseModel):
+    dls_info: Optional[str] = None
+
 @api_router.post("/matches/{match_id}/refresh-claude-prediction")
-async def refresh_claude_prediction(match_id: str):
+async def refresh_claude_prediction(match_id: str, body: RefreshClaudeRequest = RefreshClaudeRequest()):
     """Re-run Claude prediction using cached SportMonks data (no API refetch)."""
     cached = live_match_state.get(match_id)
     if not cached:
@@ -871,7 +876,8 @@ async def refresh_claude_prediction(match_id: str):
     # Fetch news for Claude context
     refresh_news = await fetch_match_news(match_info.get("team1", ""), match_info.get("team2", ""))
     claude_prediction = await claude_sportmonks_prediction(
-        sm_data, old_probs, match_info, squads=live_squads, weather=refresh_weather, news=refresh_news
+        sm_data, old_probs, match_info, squads=live_squads, weather=refresh_weather, news=refresh_news,
+        dls_info=body.dls_info
     )
 
     if claude_prediction and not claude_prediction.get("error"):
@@ -2019,24 +2025,58 @@ async def api_cricdata_venue(venue_name: str):
 playing_xi_tasks: Dict[str, Dict] = {}
 
 async def _bg_fetch_playing_xi(match_id: str, team1: str, team2: str, venue: str):
-    """Background task to generate Expected Playing XI from squad roster (NO scraping)."""
-    playing_xi_tasks[match_id] = {"status": "running", "progress": "Generating from official squad roster..."}
+    """Background task to fetch Expected Playing XI from SportMonks API (last match lineup).
+    Falls back to squad-based estimate only if API returns no data."""
+    playing_xi_tasks[match_id] = {"status": "running", "progress": "Fetching Playing XI from SportMonks API..."}
     try:
-        match_squads = await _get_squads_for_match(team1, team2)
-        squad_names = list(match_squads.keys()) if match_squads else []
+        # ── Step 1: Try API-verified Playing XI from last completed match ──
+        from services.sportmonks_service import _season_fixtures_cache
+        _season_fixtures_cache.clear()  # Fresh data on refresh
+
+        t1_xi_raw = await fetch_last_played_xi(team1)
+        t2_xi_raw = await fetch_last_played_xi(team2)
 
         xi_data = {}
-        if len(squad_names) >= 2:
-            t1_xi = generate_expected_xi(match_squads.get(squad_names[0], []))
-            t2_xi = generate_expected_xi(match_squads.get(squad_names[1], []))
+        source = "api-verified"
+
+        if t1_xi_raw and len(t1_xi_raw) >= 8 and t2_xi_raw and len(t2_xi_raw) >= 8:
+            # Use API-verified lineup — cross-reference with DB squads for enrichment
+            match_squads = await _get_squads_for_match(team1, team2)
+            squad_names = list(match_squads.keys()) if match_squads else []
+
+            xi_sm_data = {"team1_playing_xi": t1_xi_raw, "team2_playing_xi": t2_xi_raw}
+            filtered = _filter_squads_to_playing_xi(match_squads, xi_sm_data, team1, team2)
+
+            t1_key = squad_names[0] if len(squad_names) > 0 else team1
+            t2_key = squad_names[1] if len(squad_names) > 1 else team2
+
             xi_data = {
-                "team1_xi": t1_xi,
-                "team2_xi": t2_xi,
-                "confidence": "squad-based",
+                "team1_xi": filtered.get(t1_key, []),
+                "team2_xi": filtered.get(t2_key, []),
+                "confidence": "api-verified",
+                "source": "last_match",
             }
+            logger.info(f"Playing XI refresh: API-verified {len(xi_data['team1_xi'])}+{len(xi_data['team2_xi'])} players")
         else:
-            playing_xi_tasks[match_id] = {"status": "error", "error": "Squad data not available for both teams."}
-            return
+            # Fallback: generate from full squad roster
+            playing_xi_tasks[match_id]["progress"] = "API data insufficient, generating from squad roster..."
+            match_squads = await _get_squads_for_match(team1, team2)
+            squad_names = list(match_squads.keys()) if match_squads else []
+
+            if len(squad_names) >= 2:
+                t1_xi = generate_expected_xi(match_squads.get(squad_names[0], []))
+                t2_xi = generate_expected_xi(match_squads.get(squad_names[1], []))
+                xi_data = {
+                    "team1_xi": t1_xi,
+                    "team2_xi": t2_xi,
+                    "confidence": "squad-based",
+                    "source": "squad_estimate",
+                }
+                source = "squad-based"
+                logger.info(f"Playing XI refresh: squad-based fallback {len(t1_xi)}+{len(t2_xi)} players")
+            else:
+                playing_xi_tasks[match_id] = {"status": "error", "error": "Squad data not available for both teams."}
+                return
 
         xi_data["matchId"] = match_id
         xi_data["venue"] = venue
@@ -2055,14 +2095,15 @@ async def _bg_fetch_playing_xi(match_id: str, team1: str, team2: str, venue: str
             {"$set": {
                 "playing_xi.team1_xi": xi_data.get("team1_xi", []),
                 "playing_xi.team2_xi": xi_data.get("team2_xi", []),
-                "playing_xi.confidence": xi_data.get("confidence", "squad-based"),
+                "playing_xi.confidence": xi_data.get("confidence", source),
+                "playing_xi.source": xi_data.get("source", "last_match"),
             }}
         )
 
         playing_xi_tasks[match_id] = {"status": "done", "data": xi_data}
-        logger.info(f"Playing XI generated for {match_id}: {len(xi_data.get('team1_xi', []))}+{len(xi_data.get('team2_xi', []))} players")
+        logger.info(f"Playing XI refreshed for {match_id}: {len(xi_data.get('team1_xi', []))}+{len(xi_data.get('team2_xi', []))} players ({source})")
     except Exception as e:
-        logger.error(f"Playing XI generation error for {match_id}: {e}")
+        logger.error(f"Playing XI fetch error for {match_id}: {e}")
         playing_xi_tasks[match_id] = {"status": "error", "error": str(e)}
 
 @api_router.post("/matches/{match_id}/playing-xi")

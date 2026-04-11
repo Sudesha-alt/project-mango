@@ -37,6 +37,7 @@ export default function LiveMatch() {
   const [matchCompleted, setMatchCompleted] = useState(null);
   const [gutFeeling, setGutFeeling] = useState("");
   const [currentBettingOdds, setCurrentBettingOdds] = useState("");
+  const [dlsInfo, setDlsInfo] = useState("");
 
   useEffect(() => {
     const load = async () => {
@@ -71,6 +72,7 @@ export default function LiveMatch() {
       ...(bettingOdds || {}),
       gut_feeling: gutFeeling || null,
       current_betting_odds: currentBettingOdds ? parseFloat(currentBettingOdds) : null,
+      dls_info: dlsInfo || null,
     };
     const data = await fetchLiveData(matchId, body);
     if (data && !data.error) {
@@ -86,7 +88,7 @@ export default function LiveMatch() {
       }
     }
     setFetchingLive(false);
-  }, [matchId, fetchLiveData, bettingOdds, gutFeeling, currentBettingOdds]);
+  }, [matchId, fetchLiveData, bettingOdds, gutFeeling, currentBettingOdds, dlsInfo]);
 
   const handleFetchPlayers = useCallback(async () => {
     setFetchingPlayers(true);
@@ -101,7 +103,9 @@ export default function LiveMatch() {
 
   const handleRefreshClaude = async () => {
     setRefreshingClaude(true);
-    const res = await refreshClaudePrediction(matchId);
+    const res = await refreshClaudePrediction(matchId, {
+      dls_info: dlsInfo || null,
+    });
     if (res && !res.error) {
       setMatchState(prev => ({
         ...prev,
@@ -368,6 +372,27 @@ export default function LiveMatch() {
                     )}
                   </div>
                 )}
+
+                {/* ═══ DLS / OVERS REDUCED INPUT ═══ */}
+                <div className="bg-[#141414] border border-[#FF9500]/20 rounded-md p-3" data-testid="dls-input-section">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Warning weight="fill" className="w-3.5 h-3.5 text-[#FF9500]" />
+                    <h4 className="text-[10px] uppercase tracking-[0.15em] font-bold text-[#FF9500]" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
+                      DLS / Overs Reduced
+                    </h4>
+                  </div>
+                  <textarea
+                    data-testid="dls-info-input"
+                    value={dlsInfo}
+                    onChange={(e) => setDlsInfo(e.target.value)}
+                    placeholder="e.g. Match reduced to 15 overs per side due to rain. Revised target: 142 in 15 overs. DLS par score at 10 overs: 98..."
+                    className="w-full bg-[#0A0A0A] border border-white/10 rounded px-3 py-2 text-xs text-white placeholder-[#525252] focus:border-[#FF9500]/50 focus:outline-none resize-none"
+                    rows={2}
+                  />
+                  {dlsInfo && (
+                    <p className="text-[9px] text-[#FF9500]/70 mt-1">This info will be passed to Claude for DLS-adjusted prediction analysis</p>
+                  )}
+                </div>
 
                 {/* ═══ COMBINED PREDICTION (Phase-Based Blend) ═══ */}
                 {combinedPred && (

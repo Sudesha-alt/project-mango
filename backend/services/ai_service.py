@@ -884,7 +884,7 @@ Return JSON:
 
 # ─── Claude SportMonks Live Win Prediction ────────────────────
 
-async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_info: dict, squads: dict = None, weather: dict = None, news: list = None, gut_feeling: str = None, betting_odds_pct: float = None) -> dict:
+async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_info: dict, squads: dict = None, weather: dict = None, news: list = None, gut_feeling: str = None, betting_odds_pct: float = None, dls_info: str = None) -> dict:
     """
     Claude Opus: Generate a live win prediction using rich SportMonks data.
     Passes full batting card, bowling card, yet-to-bat, yet-to-bowl lineups,
@@ -1013,6 +1013,8 @@ async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_in
         user_context_text += f"\n=== USER'S GUT FEELING (weigh this as a qualitative signal) ===\n{gut_feeling}\n"
     if betting_odds_pct is not None and betting_odds_pct > 0:
         user_context_text += f"\n=== CURRENT BETTING MARKET ODDS ===\n{t1_short} implied probability: {betting_odds_pct}% | {t2_short} implied probability: {round(100 - betting_odds_pct, 1)}%\nNote: Market odds reflect live money flow and crowd sentiment. Factor this into your analysis.\n"
+    if dls_info and dls_info.strip():
+        user_context_text += f"\n=== DLS / OVERS REDUCED (CRITICAL — this SIGNIFICANTLY changes win probabilities) ===\n{dls_info}\nIMPORTANT: If overs are reduced, DLS par scores and revised targets fundamentally change win probabilities. A team ahead of DLS par has a significant advantage. Adjust your analysis accordingly.\n"
 
     chat = _get_claude_chat(
         f"sm-live-pred-{uuid.uuid4().hex[:8]}",
