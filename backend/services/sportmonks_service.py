@@ -159,14 +159,21 @@ def parse_fixture(raw: dict) -> dict:
     team2_lineup = []
     team1_playing_xi = []
     team2_playing_xi = []
+    unassigned_players = []
+
     for p in lineup_raw:
-        pivot = p.get("lineup", {})
-        if isinstance(pivot, dict):
-            tid = pivot.get("team_id")
-            is_sub = pivot.get("substitution", False)
-        else:
-            tid = None
-            is_sub = False
+        # Robust pivot extraction — handle dict, None, or unexpected types
+        pivot = p.get("lineup") or {}
+        if not isinstance(pivot, dict):
+            pivot = {}
+
+        tid = pivot.get("team_id")
+        is_sub = pivot.get("substitution", False)
+
+        # Normalize substitution flag (API may return int 0/1 instead of bool)
+        if isinstance(is_sub, int):
+            is_sub = bool(is_sub)
+
         player = {
             "id": p.get("id"),
             "name": p.get("fullname", f"{p.get('firstname', '')} {p.get('lastname', '')}".strip()),
@@ -176,6 +183,7 @@ def parse_fixture(raw: dict) -> dict:
             "image": p.get("image_path", ""),
             "is_sub": is_sub,
         }
+
         if tid == team1_id:
             team1_lineup.append(player)
             if not is_sub:
@@ -185,15 +193,71 @@ def parse_fixture(raw: dict) -> dict:
             if not is_sub:
                 team2_playing_xi.append(player)
         else:
-            # Fallback: first 11 to team1, rest to team2
-            if len(team1_lineup) < 11:
+            # No team_id from pivot — track for scorecard-based resolution
+            unassigned_players.append(player)
+
+    # ── Layer 2: Build confirmed player→team map from batting/bowling scorecard ──
+    inn1_bat_tid = innings_scores.get("1", {}).get("team_id")
+    inn2_bat_tid = innings_scores.get("2", {}).get("team_id")
+    bowl_inn1_tid = (team2_id if inn1_bat_tid == team1_id else
+                     team1_id if inn1_bat_tid == team2_id else None)
+    bowl_inn2_tid = (team2_id if inn2_bat_tid == team1_id else
+                     team1_id if inn2_bat_tid == team2_id else None)
+
+    scorecard_team_map = {}  # player_id → confirmed team_id
+    for b in batsmen_inn1:
+        if inn1_bat_tid:
+            scorecard_team_map[b.get("player_id")] = inn1_bat_tid
+    for b in batsmen_inn2:
+        if inn2_bat_tid:
+            scorecard_team_map[b.get("player_id")] = inn2_bat_tid
+    for bw in bowlers_inn1:
+        if bowl_inn1_tid:
+            scorecard_team_map[bw.get("player_id")] = bowl_inn1_tid
+    for bw in bowlers_inn2:
+        if bowl_inn2_tid:
+            scorecard_team_map[bw.get("player_id")] = bowl_inn2_tid
+
+    # ── Layer 2b: Resolve unassigned players using scorecard evidence ──
+    if unassigned_players:
+        logger.warning(f"Lineup pivot missing team_id for {len(unassigned_players)}/{len(lineup_raw)} players")
+        for player in unassigned_players:
+            pid = player["id"]
+            confirmed_tid = scorecard_team_map.get(pid)
+            if confirmed_tid == team1_id:
                 team1_lineup.append(player)
-                if not is_sub:
-                    team1_playing_xi.append(player)
-            else:
+                team1_playing_xi.append(player)
+            elif confirmed_tid == team2_id:
                 team2_lineup.append(player)
-                if not is_sub:
-                    team2_playing_xi.append(player)
+                team2_playing_xi.append(player)
+            else:
+                logger.debug(f"Skipping unresolvable player {player['name']} (id={pid})")
+
+    # ── Layer 3: Validate & cap Playing XI (max 12 = 11 + 1 impact sub) ──
+    MAX_XI = 12
+    t1_confirmed_ids = {pid for pid, tid in scorecard_team_map.items() if tid == team1_id}
+    t2_confirmed_ids = {pid for pid, tid in scorecard_team_map.items() if tid == team2_id}
+
+    def _prune_xi(xi_list, confirmed_ids, team_label):
+        """Prune oversized playing XI using scorecard-confirmed players."""
+        if len(xi_list) <= MAX_XI:
+            return xi_list
+        logger.warning(f"{team_label} playing XI too large ({len(xi_list)}), pruning to {MAX_XI}")
+        if confirmed_ids:
+            confirmed = [p for p in xi_list if p["id"] in confirmed_ids]
+            unconfirmed = [p for p in xi_list if p["id"] not in confirmed_ids]
+            pruned = confirmed + unconfirmed[:max(0, MAX_XI - len(confirmed))]
+        else:
+            pruned = xi_list[:MAX_XI]
+        return pruned
+
+    team1_playing_xi = _prune_xi(team1_playing_xi, t1_confirmed_ids, "T1")
+    team2_playing_xi = _prune_xi(team2_playing_xi, t2_confirmed_ids, "T2")
+
+    logger.info(f"Lineup parsed: T1 XI={len(team1_playing_xi)}/{len(team1_lineup)}, "
+                f"T2 XI={len(team2_playing_xi)}/{len(team2_lineup)}, "
+                f"scorecard confirmed={len(scorecard_team_map)}, "
+                f"unassigned={len(unassigned_players)}")
 
     # Build player name map from lineup
     player_names = {}
@@ -953,13 +1017,19 @@ async def sync_player_performance_to_db(db) -> dict:
 
 
 def _parse_lineup(lineup_data: list, team_id: int) -> list:
-    """Extract Playing XI (non-subs) for a specific team from SportMonks lineup data."""
+    """Extract Playing XI (non-subs) for a specific team from SportMonks lineup data.
+    Caps at 12 players (11 + 1 impact sub) to prevent full-squad leakage."""
     xi = []
     for p in lineup_data:
-        lineup_info = p.get("lineup", {}) or {}
+        lineup_info = p.get("lineup") or {}
+        if not isinstance(lineup_info, dict):
+            lineup_info = {}
         if lineup_info.get("team_id") != team_id:
             continue
-        if lineup_info.get("substitution", False):
+        is_sub = lineup_info.get("substitution", False)
+        if isinstance(is_sub, int):
+            is_sub = bool(is_sub)
+        if is_sub:
             continue  # Skip impact player subs
         xi.append({
             "name": p.get("fullname", ""),
@@ -969,6 +1039,10 @@ def _parse_lineup(lineup_data: list, team_id: int) -> list:
             "is_captain": lineup_info.get("captain", False),
             "is_wicketkeeper": lineup_info.get("wicketkeeper", False),
         })
+    # Hard cap at 12 (11 + impact sub)
+    if len(xi) > 12:
+        logger.warning(f"_parse_lineup: team {team_id} has {len(xi)} non-sub players, capping to 12")
+        xi = xi[:12]
     return xi
 
 

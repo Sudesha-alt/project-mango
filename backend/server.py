@@ -78,13 +78,24 @@ async def _get_squads_for_match(team1: str, team2: str) -> dict:
 
 def _filter_squads_to_playing_xi(match_squads: dict, sm_data: dict, team1: str, team2: str) -> dict:
     """Filter full DB squads down to the 11 active Playing XI using SportMonks lineup data.
-    Falls back to full squad if lineup data is unavailable or name matching is too low."""
+    Falls back to full squad if lineup data is unavailable or name matching is too low.
+    Hard-caps at 12 players per team (11 + 1 impact sub) to prevent full-squad leakage."""
     if not sm_data or not match_squads:
         return match_squads
 
-    # Prefer playing_xi (non-subs) over full lineup
-    t1_lineup = sm_data.get("team1_playing_xi") or sm_data.get("team1_lineup", [])
-    t2_lineup = sm_data.get("team2_playing_xi") or sm_data.get("team2_lineup", [])
+    # Strictly prefer playing_xi (non-subs); only fall back to lineup if playing_xi is empty
+    t1_lineup = sm_data.get("team1_playing_xi", [])
+    t2_lineup = sm_data.get("team2_playing_xi", [])
+
+    # Only fall back to full lineup if playing_xi is genuinely absent
+    if not t1_lineup:
+        t1_lineup = sm_data.get("team1_lineup", [])
+        if t1_lineup:
+            logger.warning(f"team1_playing_xi empty, falling back to team1_lineup ({len(t1_lineup)} players)")
+    if not t2_lineup:
+        t2_lineup = sm_data.get("team2_lineup", [])
+        if t2_lineup:
+            logger.warning(f"team2_playing_xi empty, falling back to team2_lineup ({len(t2_lineup)} players)")
 
     if not t1_lineup and not t2_lineup:
         logger.info("No lineup data in SportMonks response, using full squads")
@@ -98,20 +109,19 @@ def _filter_squads_to_playing_xi(match_squads: dict, sm_data: dict, team1: str, 
     t1_lineup_names = {p.get("name", "").lower() for p in t1_lineup if p.get("name")}
     t2_lineup_names = {p.get("name", "").lower() for p in t2_lineup if p.get("name")}
 
+    logger.info(f"Playing XI filter: T1 names={len(t1_lineup_names)}, T2 names={len(t2_lineup_names)}")
+
     def _match_player(player_name: str, lineup_names: set) -> bool:
         """Check if a DB player name matches any lineup name (exact or partial)."""
         pn = player_name.lower()
         if pn in lineup_names:
             return True
-        # Partial match: check if last name matches or name is substring
         for ln in lineup_names:
             if pn in ln or ln in pn:
                 return True
-            # Compare last names (common for Indian cricket names)
             pn_parts = pn.split()
             ln_parts = ln.split()
             if len(pn_parts) > 1 and len(ln_parts) > 1 and pn_parts[-1] == ln_parts[-1]:
-                # Also check first initial matches
                 if pn_parts[0][0] == ln_parts[0][0]:
                     return True
         return False
@@ -123,19 +133,21 @@ def _filter_squads_to_playing_xi(match_squads: dict, sm_data: dict, team1: str, 
     t2_filtered = [p for p in match_squads.get(squad_names[1], [])
                    if _match_player(p.get("name", ""), t2_lineup_names)]
 
-    # Only use filtered if we matched at least 8 players per team (tolerance for name mismatches)
+    # Only use filtered if we matched at least 8 players per team
+    MAX_XI_CAP = 12  # 11 + 1 impact sub
     filtered_squads = {}
+
     if len(t1_filtered) >= 8 and t1_lineup_names:
-        filtered_squads[squad_names[0]] = t1_filtered
-        logger.info(f"Filtered {squad_names[0]} to {len(t1_filtered)} Playing XI players")
+        filtered_squads[squad_names[0]] = t1_filtered[:MAX_XI_CAP]
+        logger.info(f"Filtered {squad_names[0]} to {len(filtered_squads[squad_names[0]])} Playing XI players")
     else:
         filtered_squads[squad_names[0]] = match_squads.get(squad_names[0], [])
         if t1_lineup_names:
             logger.warning(f"Low XI match for {squad_names[0]} ({len(t1_filtered)}/{len(t1_lineup_names)}), using full squad")
 
     if len(t2_filtered) >= 8 and t2_lineup_names:
-        filtered_squads[squad_names[1]] = t2_filtered
-        logger.info(f"Filtered {squad_names[1]} to {len(t2_filtered)} Playing XI players")
+        filtered_squads[squad_names[1]] = t2_filtered[:MAX_XI_CAP]
+        logger.info(f"Filtered {squad_names[1]} to {len(filtered_squads[squad_names[1]])} Playing XI players")
     else:
         filtered_squads[squad_names[1]] = match_squads.get(squad_names[1], [])
         if t2_lineup_names:

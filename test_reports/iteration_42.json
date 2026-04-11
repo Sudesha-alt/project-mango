@@ -1,0 +1,73 @@
+{
+  "summary": "Bug fix verification for Playing XI extraction - ALL 10 unit tests PASSED. Live API endpoints working correctly with proper XI filtering (11 players per team, Pat Cummins correctly excluded from playing XI).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_playing_xi_extraction.py",
+    "/app/backend/tests/test_filter_squads.py",
+    "/app/test_reports/pytest/iteration42_playing_xi_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "100%",
+    "frontend": "N/A (backend only testing)"
+  },
+  "test_credentials": "No auth required",
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Playing XI extraction bug is FIXED. The parse_fixture() function in sportmonks_service.py now correctly: (1) Uses pivot-based team_id + substitution parsing, (2) Falls back to scorecard-based resolution for unassigned players, (3) Prunes oversized XI using confirmed player IDs, (4) Hard caps at 12 players per team. The _filter_squads_to_playing_xi() in server.py also enforces the 12-player cap. Live match endpoint returns exactly 11 players per team in playing_xi arrays.",
+  "tests_executed": {
+    "unit_tests": {
+      "test_playing_xi_extraction.py": {
+        "test_normal_xi_extraction": "PASSED",
+        "test_substitution_flag_unreliable_with_scorecard": "PASSED",
+        "test_no_pivot_data_scorecard_resolves": "PASSED",
+        "test_impact_sub_within_cap": "PASSED",
+        "test_empty_lineup": "PASSED",
+        "test_second_innings_resolution": "PASSED"
+      },
+      "test_filter_squads.py": {
+        "test_hard_cap_applied": "PASSED",
+        "test_normal_11_passes_through": "PASSED",
+        "test_empty_playing_xi_falls_back_to_lineup": "PASSED",
+        "test_no_data_returns_full_squads": "PASSED"
+      }
+    },
+    "api_tests": {
+      "GET /api/": {
+        "status": 200,
+        "result": "PASSED - API healthy"
+      },
+      "POST /api/matches/{match_id}/fetch-live": {
+        "status": 200,
+        "result": "PASSED - Returns correct playing XI (11 per team)",
+        "verification": "Pat Cummins NOT in playing XI (correct behavior)"
+      },
+      "POST /api/matches/{match_id}/refresh-claude-prediction": {
+        "status": 200,
+        "result": "PASSED - Returns refreshed Claude prediction"
+      }
+    }
+  },
+  "bug_verification": {
+    "original_bug": "Claude was evaluating non-playing squad members (e.g., Pat Cummins) because Playing XI was not properly filtered from live API response",
+    "fix_verified": true,
+    "evidence": {
+      "team1_playing_xi_count": 11,
+      "team2_playing_xi_count": 11,
+      "team1_lineup_count": 16,
+      "team2_lineup_count": 16,
+      "pat_cummins_in_playing_xi": false
+    }
+  }
+}
