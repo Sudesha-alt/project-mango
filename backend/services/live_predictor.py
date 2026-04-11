@@ -22,7 +22,7 @@ Phase-Based Dynamic Weighting (Algorithm vs Claude):
 """
 import math
 import logging
-from typing import Dict, Optional, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -126,9 +126,121 @@ def compute_squad_strength_differential(xi_data: dict) -> float:
     return round(1.0 / (1.0 + math.exp(-6 * (raw - 0.5))), 4)
 
 
+def _norm_factor(v: Any, default: float = 0.5) -> float:
+    """Normalize a 0–1 or 0–100 historical factor to 0–1."""
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return default
+    if x > 1.0:
+        x = x / 100.0
+    return max(0.0, min(1.0, x))
+
+
+def _standings_win_rate(standings: List, team_name: str) -> Optional[float]:
+    if not standings or not team_name:
+        return None
+    tn = team_name.lower()
+    for s in standings:
+        if not isinstance(s, dict):
+            continue
+        name = (s.get("team") or "").lower()
+        if not name:
+            continue
+        if tn in name or name in tn or any(
+            len(w) > 3 and w in name for w in tn.split()
+        ):
+            played = max(1, int(s.get("played", 0) or 0))
+            won = int(s.get("won", 0) or 0)
+            return won / played
+    return None
+
+
+def _toss_edge_for_team1(sm_data: dict, team1: str, team2: str) -> float:
+    toss = (sm_data or {}).get("toss") or {}
+    winner = (toss.get("winner") or "").strip()
+    if not winner:
+        return 0.5
+    w = winner.lower()
+    t1 = (team1 or "").lower()
+    t2 = (team2 or "").lower()
+    t1_hit = t1 and (t1 in w or w in t1 or any(len(x) > 3 and x in w for x in t1.split()))
+    t2_hit = t2 and (t2 in w or w in t2 or any(len(x) > 3 and x in w for x in t2.split()))
+    if t1_hit and not t2_hit:
+        return 0.58
+    if t2_hit and not t1_hit:
+        return 0.42
+    return 0.5
+
+
+def build_historical_factors_from_enrichment(
+    enrichment: Optional[Dict],
+    match_info: Dict,
+    sm_data: Optional[Dict],
+) -> Dict[str, float]:
+    """
+    Derive H-factor inputs from SportMonks enrichment when Claude omits them.
+    Values are team1-centric probabilities in [0, 1].
+    """
+    out = {
+        "h2h_win_pct": 0.5,
+        "venue_win_pct": 0.5,
+        "recent_form_pct": 0.5,
+        "toss_advantage_pct": 0.5,
+    }
+    enrichment = enrichment or {}
+    team1 = match_info.get("team1", "")
+    team2 = match_info.get("team2", "")
+
+    h2h = enrichment.get("h2h") or {}
+    if isinstance(h2h, dict) and h2h.get("matches_played", 0) > 0:
+        t1w = float(h2h.get("team1_wins", 0))
+        t2w = float(h2h.get("team2_wins", 0))
+        dec = t1w + t2w
+        if dec > 0:
+            out["h2h_win_pct"] = max(0.05, min(0.95, t1w / dec))
+
+    vs = enrichment.get("venue_stats") or {}
+    if isinstance(vs, dict):
+        bf = vs.get("bat_first_win_pct")
+        if bf is not None:
+            try:
+                out["venue_win_pct"] = max(0.1, min(0.9, float(bf) / 100.0))
+            except (TypeError, ValueError):
+                pass
+
+    standings = enrichment.get("standings") or []
+    r1 = _standings_win_rate(standings, team1)
+    r2 = _standings_win_rate(standings, team2)
+    if r1 is not None and r2 is not None and (r1 + r2) > 0:
+        out["recent_form_pct"] = max(0.05, min(0.95, r1 / (r1 + r2)))
+
+    if sm_data:
+        out["toss_advantage_pct"] = _toss_edge_for_team1(sm_data, team1, team2)
+
+    return out
+
+
+def merge_historical_factors(
+    api_defaults: Dict[str, float],
+    claude_hf: Optional[Dict],
+) -> Dict[str, float]:
+    """Claude-provided factors override API-derived defaults when present."""
+    keys = ("h2h_win_pct", "venue_win_pct", "recent_form_pct", "toss_advantage_pct")
+    merged = dict(api_defaults)
+    if not claude_hf:
+        return merged
+    for k in keys:
+        if k not in claude_hf or claude_hf[k] is None:
+            continue
+        merged[k] = _norm_factor(claude_hf[k], merged.get(k, 0.5))
+    return merged
+
+
 def compute_live_prediction(sm_data: dict, claude_prediction: dict,
                             match_info: dict, pre_match_prob: Optional[float] = None,
-                            xi_data: Optional[dict] = None) -> dict:
+                            xi_data: Optional[dict] = None,
+                            enrichment: Optional[Dict] = None) -> dict:
     """
     Alpha-blended H×L Live Prediction.
 
@@ -140,6 +252,9 @@ def compute_live_prediction(sm_data: dict, claude_prediction: dict,
 
     Claude's win % is passed directly as the pre-match base anchor and
     also blended into the final output via phase-based weighting.
+
+    `enrichment` (venue_stats, h2h, standings) fills `historical_factors` when
+    the LLM omits them, so H is not stuck at neutral 0.5 for four factors.
     """
     if not sm_data:
         return None
@@ -178,11 +293,13 @@ def compute_live_prediction(sm_data: dict, claude_prediction: dict,
     alpha = compute_alpha(total_balls_bowled, innings)
 
     # ━━━━━━ H: Historical/Structural Factors ━━━━━━
-    hf = claude_prediction.get("historical_factors", {}) if claude_prediction else {}
-    h2h = float(hf.get("h2h_win_pct", 0.5))
-    venue_pct = float(hf.get("venue_win_pct", 0.5))
-    form_pct = float(hf.get("recent_form_pct", 0.5))
-    toss_pct = float(hf.get("toss_advantage_pct", 0.5))
+    api_hf = build_historical_factors_from_enrichment(enrichment, match_info, sm_data)
+    claude_hf = (claude_prediction or {}).get("historical_factors")
+    hf = merge_historical_factors(api_hf, claude_hf if isinstance(claude_hf, dict) else None)
+    h2h = hf["h2h_win_pct"]
+    venue_pct = hf["venue_win_pct"]
+    form_pct = hf["recent_form_pct"]
+    toss_pct = hf["toss_advantage_pct"]
 
     # Fix 3: Squad strength from Playing XI
     squad_pct = compute_squad_strength_differential(xi_data) if xi_data else 0.5
@@ -203,10 +320,11 @@ def compute_live_prediction(sm_data: dict, claude_prediction: dict,
             actual_rrr = (runs_needed / innings_balls_remaining) * 6
         else:
             actual_rrr = 99 if runs_needed > 0 else 0
-        if actual_rrr > 0:
-            ratio = crr / actual_rrr if actual_rrr < 50 else 0
+        if actual_rrr > 1e-6:
+            ratio = crr / actual_rrr
         else:
-            ratio = 2.0
+            ratio = 2.0 if runs_needed <= 0 else 0.0
+        ratio = max(0.0, min(ratio, 4.0))
         score_vs_par = 1.0 / (1.0 + math.exp(-6 * (ratio - 1.0)))
     else:
         # 1st innings: compare score to venue-specific par
@@ -392,7 +510,7 @@ def compute_live_prediction(sm_data: dict, claude_prediction: dict,
 # ── Phase Detection & Dynamic Algo/Claude Weighting ──
 
 PHASE_WEIGHTS = {
-    "pre_game":       {"algo": 0.70, "claude": 0.30, "label": "Post-Toss"},
+    "pre_game":       {"algo": 0.70, "claude": 0.30, "label": "Early 1st innings / Post-Toss"},
     "mid_1st_inn":    {"algo": 0.40, "claude": 0.60, "label": "Mid 1st Innings"},
     "end_1st_inn":    {"algo": 0.20, "claude": 0.80, "label": "End 1st Innings"},
     "mid_2nd_inn":    {"algo": 0.10, "claude": 0.90, "label": "Mid 2nd Innings"},

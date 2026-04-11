@@ -923,7 +923,10 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
     pre_match_cached = await db.pre_match_predictions.find_one({"matchId": match_id}, {"_id": 0})
     pre_match_prob = pre_match_cached.get("prediction", {}).get("team1_win_prob") if pre_match_cached else None
     cached_xi = pre_match_cached.get("playing_xi") if pre_match_cached else None
-    weighted_pred = compute_live_prediction(sm_data, claude_prediction, match_info, pre_match_prob=pre_match_prob, xi_data=cached_xi) if sm_data else None
+    weighted_pred = compute_live_prediction(
+        sm_data, claude_prediction, match_info,
+        pre_match_prob=pre_match_prob, xi_data=cached_xi, enrichment=enrichment_data,
+    ) if sm_data else None
 
     # ── Phase-Based Combined Prediction (Algo vs Claude dynamic blend) ──
     combined_pred = compute_combined_prediction(
@@ -1156,7 +1159,15 @@ async def refresh_claude_prediction(match_id: str, body: RefreshClaudeRequest = 
     # Recompute weighted prediction with new Claude factors (6-factor model)
     pre_match_cached = await db.pre_match_predictions.find_one({"matchId": match_id}, {"_id": 0})
     pre_match_prob = pre_match_cached.get("prediction", {}).get("team1_win_prob") if pre_match_cached else None
-    weighted_pred = compute_live_prediction(sm_data, claude_prediction, match_info, pre_match_prob=pre_match_prob) if sm_data else None
+    cached_xi = pre_match_cached.get("playing_xi") if pre_match_cached else None
+    weighted_pred = compute_live_prediction(
+        sm_data,
+        claude_prediction,
+        match_info,
+        pre_match_prob=pre_match_prob,
+        xi_data=cached_xi,
+        enrichment=enrichment_data,
+    ) if sm_data else None
     if weighted_pred:
         cached["weightedPrediction"] = weighted_pred
         live_match_state[match_id] = cached
