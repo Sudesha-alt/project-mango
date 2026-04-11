@@ -502,6 +502,10 @@ def compute_combined_prediction(
     combined_t1 = round(max(1, min(99, combined_t1)), 1)
     combined_t2 = round(100 - combined_t1, 1)
 
+    # Extract Section 10 data for transparency
+    s10 = claude_pred.get("section_10_final_prediction", {}) if claude_pred else {}
+    revision_triggers = claude_pred.get("section_11_revision_triggers", []) if claude_pred else []
+
     return {
         "team1_pct": combined_t1,
         "team2_pct": combined_t2,
@@ -513,8 +517,12 @@ def compute_combined_prediction(
         "odds_weight": round(odds_weight, 3),
         "algo_t1_pct": round(algo_t1_pct, 1),
         "claude_t1_pct": round(claude_t1_pct, 1),
+        "claude_source": claude_pred.get("source", "unknown") if claude_pred else "none",
+        "claude_section10_t1": s10.get("team1_win_pct") if s10 else None,
+        "claude_confidence": s10.get("sentence_4_confidence", "") if s10 else "",
+        "revision_triggers": revision_triggers[:3] if revision_triggers else [],
         "gut_feeling": gut_feeling or None,
         "gut_t1_adj": round(gut_t1_adj, 1),
         "betting_odds_t1_pct": round(odds_t1_pct, 1) if betting_odds_pct else None,
-        "model": "phase-weighted-v1",
+        "model": "phase-weighted-v2",
     }

@@ -722,32 +722,57 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
             gut_feeling=body.gut_feeling, betting_odds_pct=body.current_betting_odds, dls_info=body.dls_info
         )
 
-    # ── Apply Claude's CONTEXTUAL ADJUSTMENT to the algo baseline ──
-    # Claude no longer produces direct win %. Instead it produces a +/- adjustment
-    # that gets applied on top of the algorithm's structural baseline.
+    # ── Apply Claude's prediction to the algo baseline ──
+    # The 11-section format provides BOTH:
+    #   1. contextual_adjustment_pct — a delta applied to algo baseline
+    #   2. section_10_final_prediction.team1_win_pct — Claude's committed direct probability
+    # We use the direct probability for the combined blend (it's Claude's full analysis),
+    # and keep the adjustment for transparency/logging.
     if claude_prediction and not claude_prediction.get("error"):
+        # Extract Claude's direct committed probability from Section 10
+        s10 = claude_prediction.get("section_10_final_prediction", {})
+        claude_direct_t1 = None
+        claude_direct_t2 = None
+        if s10 and s10.get("team1_win_pct") is not None:
+            try:
+                claude_direct_t1 = float(s10["team1_win_pct"])
+            except (TypeError, ValueError):
+                claude_direct_t1 = None
+
+        # Also extract contextual_adjustment_pct for the delta system
         adjustment = claude_prediction.get("contextual_adjustment_pct", 0)
         try:
             adjustment = float(adjustment)
         except (TypeError, ValueError):
             adjustment = 0.0
-        adjustment = max(-30, min(30, adjustment))  # Cap at +/- 30%
+        adjustment = max(-30, min(30, adjustment))
 
         algo_t1_pct = probs.get("ensemble", 0.5) * 100
-        # Apply adjustment: positive favours team1, negative favours team2
-        adjusted_t1_pct = algo_t1_pct + adjustment
-        adjusted_t1_pct = max(1, min(99, adjusted_t1_pct))
-        adjusted_t2_pct = 100 - adjusted_t1_pct
 
-        claude_prediction["team1_win_pct"] = round(adjusted_t1_pct, 1)
-        claude_prediction["team2_win_pct"] = round(adjusted_t2_pct, 1)
+        # If Claude provided a direct committed probability (Section 10), use that
+        # as the "claude_t1_pct" for the combined prediction blend.
+        # Otherwise, fall back to the algo + adjustment method.
+        if claude_direct_t1 is not None:
+            adjusted_t1_pct = max(1, min(99, claude_direct_t1))
+            adjusted_t2_pct = 100 - adjusted_t1_pct
+            claude_prediction["team1_win_pct"] = round(adjusted_t1_pct, 1)
+            claude_prediction["team2_win_pct"] = round(adjusted_t2_pct, 1)
+            claude_prediction["source"] = "section_10_direct"
+        else:
+            # Legacy: apply adjustment to algo baseline
+            adjusted_t1_pct = algo_t1_pct + adjustment
+            adjusted_t1_pct = max(1, min(99, adjusted_t1_pct))
+            adjusted_t2_pct = 100 - adjusted_t1_pct
+            claude_prediction["team1_win_pct"] = round(adjusted_t1_pct, 1)
+            claude_prediction["team2_win_pct"] = round(adjusted_t2_pct, 1)
+            claude_prediction["source"] = "algo_plus_adjustment"
+
         claude_prediction["algo_baseline_t1_pct"] = round(algo_t1_pct, 1)
         claude_prediction["adjustment_applied"] = round(adjustment, 1)
 
-        # Update ensemble with the adjusted probability
+        # Update ensemble with Claude-informed probability
         probs["ensemble"] = round(adjusted_t1_pct / 100, 4)
-        probs["source"] = "algo+claude_adjustment"
-        # Recalculate odds from adjusted probability
+        probs["source"] = "algo+claude"
         team1_odds = calculate_odds_from_probability(probs["ensemble"])
         team2_odds = calculate_odds_from_probability(1 - probs["ensemble"])
 
@@ -887,32 +912,56 @@ async def refresh_claude_prediction(match_id: str, body: RefreshClaudeRequest = 
     )
 
     if claude_prediction and not claude_prediction.get("error"):
-        # Extract win probabilities — support both new 11-section and legacy format
-        claude_t1 = claude_prediction.get(f"{t1_short}_win_pct")
-        claude_t2 = claude_prediction.get(f"{t2_short}_win_pct")
+        # Extract Claude's direct committed probability from Section 10
+        s10 = claude_prediction.get("section_10_final_prediction", {})
+        claude_direct_t1 = None
+        if s10 and s10.get("team1_win_pct") is not None:
+            try:
+                claude_direct_t1 = float(s10["team1_win_pct"])
+            except (TypeError, ValueError):
+                claude_direct_t1 = None
 
-        # New format: section_10_final_prediction
-        if claude_t1 is None:
-            s10 = claude_prediction.get("section_10_final_prediction", {})
-            if s10:
-                claude_t1 = s10.get("team1_win_pct")
-                claude_t2 = s10.get("team2_win_pct")
+        # Also extract contextual_adjustment_pct
+        adjustment = claude_prediction.get("contextual_adjustment_pct", 0)
+        try:
+            adjustment = float(adjustment)
+        except (TypeError, ValueError):
+            adjustment = 0.0
+        adjustment = max(-30, min(30, adjustment))
 
-        # Fallback: predicted_winner + win_pct
-        if claude_t1 is None:
-            winner = claude_prediction.get("predicted_winner", "")
-            win_pct = claude_prediction.get("win_pct", 50)
-            if winner == t1_short:
-                claude_t1, claude_t2 = win_pct, 100 - win_pct
-            else:
-                claude_t2, claude_t1 = win_pct, 100 - win_pct
-        claude_t1 = float(claude_t1 or 50)
-        claude_t2 = float(claude_t2 or 50)
+        algo_t1_pct = old_probs.get("ensemble", 0.5) * 100
+
+        if claude_direct_t1 is not None:
+            # Use Claude's committed Section 10 probability directly
+            claude_t1 = max(1, min(99, claude_direct_t1))
+            claude_t2 = 100 - claude_t1
+            claude_prediction["source"] = "section_10_direct"
+        else:
+            # Fallback chain: team_short_win_pct → predicted_winner → algo+adjustment
+            claude_t1 = claude_prediction.get(f"{t1_short}_win_pct")
+            claude_t2 = claude_prediction.get(f"{t2_short}_win_pct")
+            if claude_t1 is None:
+                winner = claude_prediction.get("predicted_winner", "")
+                win_pct = claude_prediction.get("win_pct", 50)
+                if winner == t1_short:
+                    claude_t1, claude_t2 = win_pct, 100 - win_pct
+                elif winner == t2_short:
+                    claude_t2, claude_t1 = win_pct, 100 - win_pct
+                else:
+                    claude_t1 = algo_t1_pct + adjustment
+            claude_t1 = float(claude_t1 or 50)
+            claude_t2 = float(claude_t2 or (100 - claude_t1))
+            claude_t1 = max(1, min(99, claude_t1))
+            claude_t2 = 100 - claude_t1
+            claude_prediction["source"] = "legacy_fallback"
+
         claude_prediction["team1_win_pct"] = round(claude_t1, 1)
         claude_prediction["team2_win_pct"] = round(claude_t2, 1)
+        claude_prediction["algo_baseline_t1_pct"] = round(algo_t1_pct, 1)
+        claude_prediction["adjustment_applied"] = round(adjustment, 1)
 
         # Update cached state
-        new_probs = {**old_probs, "ensemble": round(claude_t1 / 100, 4), "source": "claude"}
+        new_probs = {**old_probs, "ensemble": round(claude_t1 / 100, 4), "source": "algo+claude"}
         cached["claudePrediction"] = claude_prediction
         cached["probabilities"] = new_probs
         live_match_state[match_id] = cached
