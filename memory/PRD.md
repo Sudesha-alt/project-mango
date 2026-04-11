@@ -12,40 +12,38 @@ Build a full-stack cricket prediction app for IPL 2026 with an 8-category math m
 
 ### Pre-Match Prediction (8-Category Model)
 1. Squad Strength & Balance (25%)
-2. Current Season Form (21%) — W/L form (60%) + player-level performance (40%)
+2. Current Season Form (21%)
 3. Venue + Pitch + Home (18%)
 4. Head-to-Head (11%)
 5. Toss Impact (9%) — 3-tier day/afternoon/evening classification
 6. Bowling Depth (8%)
-7. Conditions (5%) — dew/swing/spin, afternoon-aware
-8. Team Momentum (3%) — Last 2 matches, logit 0.9*win_diff (max 2.0), 1.3x boost for 2-0 streaks
+7. Conditions (5%)
+8. Team Momentum (3%)
 
 ### Claude Opus Pre-Match: 7-Layer Analysis
-Layers: Squad Strength, Key Matchups, Venue/Pitch, Bowling Depth, Death Bowling, H2H, Impact Player.
-
 ### Claude Opus Live Match: 11-Section Structured Prediction
-S0-S11: Live Data Dump through Mid-Game Revision Triggers.
-
-### Performance Optimizations (Apr 2026)
-- asyncio.to_thread wrapping for LiteLLM, cancel endpoints, axios timeouts
+### Performance Optimizations (asyncio.to_thread, cancel endpoints, timeouts)
 
 ### Playing XI Extraction Fix (Apr 11, 2026)
-- **Bug**: Claude evaluated full squad (16+ players) instead of Playing XI (11)
-- **Fix**: Multi-layer validation — robust pivot parsing, scorecard-based team resolution, hard cap of 12 per team
-- **Tests**: 10 unit tests all passing
+- Multi-layer validation — robust pivot parsing, scorecard-based team resolution, hard cap of 12 per team
+- 10 unit tests all passing
 
-### Full Schedule Loading Fix (Apr 11, 2026)
-- **Bug**: DB only had 10 matches (GPT-generated), IPL 2026 has 70 matches
-- **Fix**: Loaded all 70 matches from official PDF seed data, merged with existing results
-- **Schedule/load endpoint**: Now uses merge strategy — preserves existing results, inserts missing matches
+### SportMonks Schedule Loading (Apr 11, 2026)
+- **Changed**: Schedule now loads directly from SportMonks API (`fetch_ipl_season_schedule()`)
+- **Removed**: GPT web scraping for schedule loading
+- **Fallback**: Uses seed data from `schedule_data.py` only if SportMonks API fails
+- **74 matches loaded** with real teams, venues, scores, winners, toss data
+- Merge strategy preserves existing predictions/analysis when refreshing
+- `fixture_id` stored per match for direct SportMonks lookups
 
 ### Key Endpoints
+- `GET /api/schedule/load` — Fetches full season from SportMonks API (use `?force=true` to refresh)
+- `POST /api/schedule/seed-official` — Fallback: seed from hardcoded PDF data
+- `POST /api/schedule/sync-results` — Sync completed match results from SportMonks
 - `POST /api/matches/{id}/pre-match-predict` — 8-category prediction
 - `POST /api/matches/{id}/claude-analysis` — 7-layer pre-match Claude
 - `POST /api/matches/{id}/fetch-live` — Live scores + 11-section Claude
 - `POST /api/matches/{id}/refresh-claude-prediction` — Re-run live Claude
-- `GET /api/schedule/load` — Loads full 70-match schedule (merge strategy)
-- `POST /api/schedule/seed-official` — Force-seed from official PDF data
 
 ## Backlog
 - [ ] P1: Celery migration for background jobs

@@ -34,7 +34,7 @@ from services.ai_service import (
     claude_deep_match_analysis, claude_live_analysis,
     claude_sportmonks_prediction
 )
-from services.sportmonks_service import fetch_live_match, check_fixture_status, fetch_livescores_ipl, parse_fixture, fetch_fixture_details, fetch_recent_fixtures, fetch_last_played_xi, fetch_playing_xi_from_live, fetch_team_recent_performance, fetch_playing_xi_from_last_match, sync_player_performance_to_db, fetch_season_fixtures, IPL_SEASON_IDS, _get_team_sm_id, fetch_fixture_start_time
+from services.sportmonks_service import fetch_live_match, check_fixture_status, fetch_livescores_ipl, parse_fixture, fetch_fixture_details, fetch_recent_fixtures, fetch_last_played_xi, fetch_playing_xi_from_live, fetch_team_recent_performance, fetch_playing_xi_from_last_match, sync_player_performance_to_db, fetch_season_fixtures, IPL_SEASON_IDS, _get_team_sm_id, fetch_fixture_start_time, fetch_ipl_season_schedule
 from services.beta_prediction_engine import run_beta_prediction
 from services.consultant_engine import run_consultation, build_features
 from services.cricdata_service import fetch_live_ipl_details, fetch_venue_stats_from_cricapi
@@ -246,33 +246,91 @@ async def sync_live_scores_to_schedule():
 
 @api_router.get("/schedule/load")
 async def load_ipl_schedule(force: bool = False):
-    """Load IPL 2026 schedule from official seed data. Merges with existing DB matches
-    to preserve results, scores, and predictions for completed/live matches."""
+    """Load IPL 2026 schedule from SportMonks API and store in MongoDB.
+    Merges with existing DB matches to preserve predictions and cached analysis."""
     existing = await db.ipl_schedule.count_documents({})
     if existing >= 70 and not force:
-        return {"status": "already_loaded", "count": existing}
+        return {"status": "already_loaded", "count": existing, "message": "Use ?force=true to refresh from SportMonks"}
 
-    # Use official PDF schedule (70 matches) as the source of truth
-    docs = get_schedule_documents()
-    if not docs:
-        return {"status": "error", "message": "No schedule data available"}
+    logger.info("Fetching IPL 2026 schedule from SportMonks API...")
+    matches = await fetch_ipl_season_schedule()
 
-    # Build map of existing DB matches to preserve their results/status
+    if not matches:
+        # Fallback to seed data if SportMonks API fails
+        logger.warning("SportMonks returned 0 fixtures, falling back to seed data")
+        docs = get_schedule_documents()
+        if not docs:
+            return {"status": "error", "message": "No schedule data available from SportMonks or seed"}
+        # Merge seed data
+        existing_map = {}
+        async for m in db.ipl_schedule.find({}, {"_id": 0}):
+            existing_map[m.get("matchId")] = m
+        inserted = 0
+        for doc in docs:
+            if doc["matchId"] not in existing_map:
+                doc["loadedAt"] = datetime.now(timezone.utc).isoformat()
+                await db.ipl_schedule.insert_one(doc)
+                inserted += 1
+        total = await db.ipl_schedule.count_documents({})
+        return {"status": "loaded", "count": total, "source": "seed_fallback", "inserted": inserted}
+
+    # Build map of existing DB matches to preserve predictions/cached data
     existing_map = {}
     async for m in db.ipl_schedule.find({}, {"_id": 0}):
         existing_map[m.get("matchId")] = m
 
     inserted = 0
-    for doc in docs:
-        mid = doc["matchId"]
-        if mid not in existing_map:
-            doc["loadedAt"] = datetime.now(timezone.utc).isoformat()
-            await db.ipl_schedule.insert_one(doc)
+    updated = 0
+    preserved = 0
+
+    for match in matches:
+        mid = match["matchId"]
+        match["loadedAt"] = datetime.now(timezone.utc).isoformat()
+
+        if mid in existing_map:
+            old = existing_map[mid]
+            # Update with fresh SportMonks data but preserve predictions and analysis keys
+            update_fields = {
+                "team1": match["team1"],
+                "team2": match["team2"],
+                "team1Short": match["team1Short"],
+                "team2Short": match["team2Short"],
+                "team1_id": match.get("team1_id"),
+                "team2_id": match.get("team2_id"),
+                "venue": match["venue"],
+                "city": match["city"],
+                "dateTimeGMT": match["dateTimeGMT"],
+                "fixture_id": match.get("fixture_id"),
+                "source": "sportmonks",
+                "loadedAt": match["loadedAt"],
+            }
+            # Update status/winner/scores only if SportMonks says completed (don't overwrite live state)
+            if match.get("winner") and match["status"] == "Completed":
+                update_fields["winner"] = match["winner"]
+                update_fields["status"] = "Completed"
+                update_fields["note"] = match.get("note", "")
+                update_fields["score"] = match.get("score", "")
+                update_fields["team1_score"] = match.get("team1_score", "")
+                update_fields["team2_score"] = match.get("team2_score", "")
+                update_fields["toss_won_by"] = match.get("toss_won_by", "")
+            elif old.get("status", "").lower() not in ("completed", "live"):
+                update_fields["status"] = match["status"]
+
+            await db.ipl_schedule.update_one({"matchId": mid}, {"$set": update_fields})
+            updated += 1
+        else:
+            await db.ipl_schedule.insert_one(match)
             inserted += 1
 
     total = await db.ipl_schedule.count_documents({})
-    logger.info(f"Schedule load: preserved {len(existing_map)}, inserted {inserted}, total {total}")
-    return {"status": "loaded", "count": total, "inserted": inserted, "preserved": len(existing_map)}
+    logger.info(f"SportMonks schedule: {inserted} inserted, {updated} updated, {total} total")
+    return {
+        "status": "loaded",
+        "count": total,
+        "source": "sportmonks",
+        "inserted": inserted,
+        "updated": updated,
+    }
 
 
 @api_router.post("/schedule/resolve-venues")

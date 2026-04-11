@@ -1220,3 +1220,148 @@ async def fetch_fixture_start_time(team1: str, team2: str) -> Optional[str]:
                 return starting_at
     
     return None
+
+
+async def fetch_ipl_season_schedule(season_id: int = None) -> list:
+    """Fetch the full IPL season schedule from SportMonks API.
+
+    Returns a list of match dicts in our DB schema format, ready for upsert.
+    Each match includes: teams, venue, date, status, scores, winner, toss.
+    """
+    if season_id is None:
+        season_id = IPL_SEASON_IDS.get(2026, 1795)
+
+    # Step 1: Get fixture IDs from season endpoint (lightweight)
+    season_data = await _get(f"seasons/{season_id}", {"include": "fixtures"})
+    raw_fixtures = season_data.get("data", {}).get("fixtures", {})
+    if isinstance(raw_fixtures, dict):
+        raw_fixtures = raw_fixtures.get("data", [])
+
+    if not raw_fixtures:
+        logger.warning(f"No fixtures returned from SportMonks for season {season_id}")
+        return []
+
+    fixture_ids = [f.get("id") for f in raw_fixtures if f.get("id")]
+    logger.info(f"SportMonks season {season_id}: found {len(fixture_ids)} fixture IDs")
+
+    # Step 2: Fetch each fixture with full includes (batch in groups of 5)
+    import asyncio
+    matches = []
+
+    async def _fetch_one(fid):
+        data = await _get(f"fixtures/{fid}", {
+            "include": "localteam,visitorteam,venue,runs,tosswon"
+        })
+        return data.get("data", {})
+
+    batch_size = 5
+    for i in range(0, len(fixture_ids), batch_size):
+        batch = fixture_ids[i:i + batch_size]
+        results = await asyncio.gather(*[_fetch_one(fid) for fid in batch], return_exceptions=True)
+        for fix in results:
+            if isinstance(fix, Exception) or not fix:
+                continue
+            parsed = _parse_fixture_to_schedule(fix)
+            if parsed:
+                matches.append(parsed)
+
+    # Sort by starting_at and assign match numbers
+    matches.sort(key=lambda x: x.get("dateTimeGMT", ""))
+    for idx, m in enumerate(matches):
+        m["match_number"] = idx + 1
+        m["matchId"] = f"ipl2026_{idx + 1:03d}"
+
+    logger.info(f"Fetched {len(matches)} full fixtures from SportMonks season {season_id}")
+    return matches
+
+
+def _parse_fixture_to_schedule(fix: dict) -> dict:
+    """Parse a single SportMonks fixture into our schedule DB format."""
+    if not fix:
+        return None
+
+    local = fix.get("localteam", {}) or {}
+    visitor = fix.get("visitorteam", {}) or {}
+    venue_data = fix.get("venue", {}) or {}
+    toss_won = fix.get("tosswon", {}) or {}
+
+    # Handle nested data wrappers
+    if isinstance(local, dict) and "data" in local:
+        local = local["data"]
+    if isinstance(visitor, dict) and "data" in visitor:
+        visitor = visitor["data"]
+    if isinstance(venue_data, dict) and "data" in venue_data:
+        venue_data = venue_data["data"]
+    if isinstance(toss_won, dict) and "data" in toss_won:
+        toss_won = toss_won["data"]
+
+    team1 = local.get("name", "")
+    team2 = visitor.get("name", "")
+    if not team1 or not team2:
+        return None
+
+    t1_code = local.get("code", "")
+    t2_code = visitor.get("code", "")
+
+    # Status mapping
+    raw_status = (fix.get("status") or "").lower()
+    if raw_status in ("finished", "aban.", "no result"):
+        status = "Completed"
+    elif raw_status in ("1st innings", "2nd innings", "innings break", "int.", "live"):
+        status = "live"
+    else:
+        status = "Upcoming"
+
+    # Winner
+    winner = None
+    winner_team_id = fix.get("winner_team_id")
+    if winner_team_id:
+        if winner_team_id == local.get("id"):
+            winner = team1
+        elif winner_team_id == visitor.get("id"):
+            winner = team2
+
+    # Scores
+    runs_data = fix.get("runs", []) or []
+    if isinstance(runs_data, dict):
+        runs_data = runs_data.get("data", [])
+    team1_score = ""
+    team2_score = ""
+    for r in runs_data:
+        if isinstance(r, dict):
+            tid = r.get("team_id")
+            s = f"{r.get('score', 0)}/{r.get('wickets', 0)} ({r.get('overs', 0)})"
+            if tid == local.get("id"):
+                team1_score = s
+            elif tid == visitor.get("id"):
+                team2_score = s
+
+    score_text = ""
+    if team1_score or team2_score:
+        score_text = f"{t1_code} {team1_score} - {t2_code} {team2_score}".strip()
+
+    venue_name = venue_data.get("name", "") if isinstance(venue_data, dict) else ""
+    city = venue_data.get("city", "") if isinstance(venue_data, dict) else ""
+
+    return {
+        "fixture_id": fix.get("id"),
+        "team1": team1,
+        "team2": team2,
+        "team1Short": t1_code,
+        "team2Short": t2_code,
+        "team1_id": local.get("id"),
+        "team2_id": visitor.get("id"),
+        "venue": venue_name,
+        "city": city,
+        "dateTimeGMT": fix.get("starting_at", ""),
+        "matchType": "T20",
+        "series": "IPL 2026",
+        "status": status,
+        "winner": winner,
+        "note": fix.get("note", ""),
+        "score": score_text if status == "Completed" else "",
+        "team1_score": team1_score,
+        "team2_score": team2_score,
+        "toss_won_by": toss_won.get("name", "") if isinstance(toss_won, dict) else "",
+        "source": "sportmonks",
+    }
