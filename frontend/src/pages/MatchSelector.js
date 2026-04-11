@@ -81,6 +81,26 @@ export default function MatchSelector() {
     setRefreshingLive(false);
   };
 
+  const [syncingResults, setSyncingResults] = useState(false);
+  const [syncResult, setSyncResult] = useState(null);
+  const handleSyncResults = async () => {
+    setSyncingResults(true);
+    setSyncResult(null);
+    try {
+      const res = await axios.post(`${API}/schedule/sync-results`);
+      setSyncResult(res.data);
+      // Reload schedule + predictions to reflect fresh results
+      await loadSchedule();
+      const predRes = await axios.get(`${API}/predictions/upcoming`);
+      const map = {};
+      for (const p of predRes.data.predictions || []) map[p.matchId] = p;
+      setPredictions(map);
+    } catch (e) {
+      console.error("Sync results error:", e);
+    }
+    setSyncingResults(false);
+  };
+
   const handlePredictAll = async () => {
     const upcoming = schedule.upcoming || [];
     const unpredicted = upcoming.filter(m => !predictions[m.matchId]);
@@ -199,6 +219,17 @@ export default function MatchSelector() {
 
           {tab === "upcoming" && upcomingCount > 0 && (
             <div className="flex gap-2">
+              <button onClick={handleSyncResults} disabled={syncingResults} data-testid="sync-results-btn"
+                className="flex items-center gap-2 bg-[#141414] border border-[#34C759]/30 text-white px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider hover:border-[#34C759] transition-colors disabled:opacity-40">
+                {syncingResults ? (
+                  <><Spinner className="w-3.5 h-3.5 animate-spin" /> Syncing...</>
+                ) : (
+                  <><ArrowsClockwise weight="bold" className="w-3.5 h-3.5 text-[#34C759]" /> Sync Results</>
+                )}
+              </button>
+              {syncResult && (
+                <span className="self-center text-[10px] text-[#34C759]">{syncResult.updated || 0} updated</span>
+              )}
               {predictedCount > 0 && (
                 <button onClick={handleRepredictAll} disabled={repredicting || predictingAll} data-testid="repredict-all-btn"
                   className="flex items-center gap-2 bg-[#1A0A2E] border border-[#7C3AED]/30 text-white px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider hover:border-[#7C3AED] transition-colors disabled:opacity-40">

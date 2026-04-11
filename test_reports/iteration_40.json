@@ -1,0 +1,92 @@
+{
+  "summary": "Iteration 40 - Testing Schedule Categorization Fixes. All 8 backend tests passed. Frontend verification confirmed: Upcoming tab shows 55 matches with Sync Results button visible, Completed tab shows 15 matches all with winner info. Playing XI refresh returns api-verified confidence from last_match source. Pre-match prediction works with all 8 categories having non-zero weights.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Live Match Page",
+        "issues": ["DLS input section only appears after live data is loaded (hasLiveData=true). This is correct behavior since DLS is only relevant during live matches."]
+      }
+    ]
+  },
+  "passed_tests": [
+    "GET /api/schedule - Returns 15 completed matches (all with winners) and 55 upcoming matches",
+    "GET /api/schedule - All completed matches have winner field populated",
+    "GET /api/schedule - No future dates found in completed matches",
+    "POST /api/schedule/sync-results - Does not create false completed matches for future dates (updated=0)",
+    "POST /api/matches/ipl2026_017/playing-xi then GET status - Returns api-verified confidence with last_match source",
+    "POST /api/matches/ipl2026_019/pre-match-predict?force=true - All 8 categories have non-zero weights",
+    "POST /api/matches/ipl2026_019/pre-match-predict?force=true - Playing XI includes source field (api-verified/last_match)",
+    "GET /api/ - Health check returns scheduleLoaded=true, squadsLoaded=true, matchesInDB=70"
+  ],
+  "frontend_verification": {
+    "homepage_loads": "VERIFIED - 70 matches displayed",
+    "upcoming_tab": "VERIFIED - Shows 55 matches with Sync Results button visible",
+    "completed_tab": "VERIFIED - Shows 15 matches, all with winner info displayed",
+    "sync_results_button": "VERIFIED - Button visible in Upcoming tab with green border",
+    "live_match_page": "VERIFIED - Fetch Live Scores button, Gut Feeling input, Current Betting Odds input all present",
+    "dls_input_section": "VERIFIED - DLS input section is in code (data-testid='dls-input-section') but only renders when hasLiveData=true (correct behavior)"
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration40_schedule_fixes.py",
+    "/app/test_reports/pytest/iteration40_schedule_fixes_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Schedule categorization at line ~467 correctly uses winner-based logic: has winner = completed, else upcoming",
+    "sync-results at line ~289 has date guard to prevent future match contamination",
+    "_bg_fetch_playing_xi at line ~2037 correctly returns api-verified confidence when API data is available",
+    "DLS input section in LiveMatch.js (lines 376-395) correctly renders only when hasLiveData=true"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration40_schedule_fixes.py"
+  ],
+  "success_rate": {
+    "backend": "100% (8/8 tests passed)",
+    "frontend": "100% (all UI elements verified)"
+  },
+  "test_credentials": "No authentication required - open access app",
+  "seed_data_creation": "Used existing seeded schedule and squad data",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 40 complete. Schedule categorization fixes verified: (1) 15 completed matches all have winners, (2) 55 upcoming matches, (3) No future dates in completed, (4) sync-results does not create false completions, (5) Playing XI refresh returns api-verified from last_match, (6) Pre-match prediction has all 8 categories with non-zero weights. DLS input section is correctly implemented but only visible during live matches.",
+  "feature_verification": {
+    "schedule_categorization": {
+      "status": "WORKING",
+      "description": "Winner-based logic: matches with winner = completed, else upcoming. 15 completed, 55 upcoming."
+    },
+    "sync_results_date_guard": {
+      "status": "WORKING",
+      "description": "sync-results endpoint has date guard to prevent future match contamination. Updated=0 on re-sync."
+    },
+    "playing_xi_api_verified": {
+      "status": "WORKING",
+      "description": "Playing XI refresh returns api-verified confidence with last_match source when API data available."
+    },
+    "8_category_prediction": {
+      "status": "WORKING",
+      "description": "All 8 categories (squad_strength, current_form, venue_pitch_home, h2h, toss_impact, bowling_depth, conditions, momentum) have non-zero weights."
+    },
+    "sync_results_button": {
+      "status": "WORKING",
+      "description": "Sync Results button visible in Upcoming tab with green border styling."
+    },
+    "dls_input_section": {
+      "status": "WORKING",
+      "description": "DLS input section implemented with data-testid='dls-input-section', renders only when hasLiveData=true (correct behavior for live matches only)."
+    }
+  },
+  "schedule_verification": {
+    "total_matches": 70,
+    "completed_count": 15,
+    "upcoming_count": 55,
+    "live_count": 0,
+    "all_completed_have_winners": true,
+    "no_future_dates_in_completed": true
+  }
+}

@@ -302,11 +302,13 @@ async def seed_official_schedule(force: bool = False):
 
 @api_router.post("/schedule/sync-results")
 async def sync_results_from_sportmonks():
-    """Fetch actual match results from SportMonks and update DB schedule with winners."""
+    """Fetch actual match results from SportMonks and update DB schedule with winners.
+    Only updates matches whose date has already passed (prevents future match contamination)."""
     results = await fetch_recent_fixtures()
     if not results:
         return {"status": "no_results", "message": "No completed fixtures found from SportMonks"}
 
+    now = datetime.now(timezone.utc)
     updated = 0
     for result in results:
         sm_t1 = (result.get("team1", "") or "").lower()
@@ -321,6 +323,18 @@ async def sync_results_from_sportmonks():
             db_t1 = (match.get("team1", "") or "").lower()
             db_t2 = (match.get("team2", "") or "").lower()
 
+            # GUARD: Only update matches whose date has passed
+            dt_str = match.get("dateTimeGMT", "")
+            if dt_str:
+                try:
+                    match_dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+                    if match_dt.tzinfo is None:
+                        match_dt = match_dt.replace(tzinfo=timezone.utc)
+                    if match_dt > now:
+                        continue  # Skip future matches — they haven't been played yet
+                except (ValueError, TypeError):
+                    pass
+
             # Check if both teams match (order-independent)
             t1_words = [w for w in sm_t1.split() if len(w) > 3]
             t2_words = [w for w in sm_t2.split() if len(w) > 3]
@@ -332,8 +346,7 @@ async def sync_results_from_sportmonks():
             rev_t2_match = any(w in db_t2 for w in t1_words) or any(w in sm_t1 for w in db_t2.split() if len(w) > 3)
             rev = rev_t1_match and rev_t2_match
 
-            if (fwd or rev) and match.get("status", "").lower() != "upcoming":
-                # Match found - update with result
+            if fwd or rev:
                 # Map SportMonks winner name to our DB team name
                 db_winner = None
                 winner_lower = winner.lower()
@@ -360,7 +373,6 @@ async def sync_results_from_sportmonks():
                     logger.info(f"Synced result: {match.get('matchId')} -> winner: {db_winner}")
 
                     # ── Invalidate stale pre-match predictions ──
-                    # Any upcoming match involving either team now has stale form/XI data
                     invalidated = await _invalidate_team_predictions(
                         match.get("team1", ""), match.get("team2", "")
                     )
@@ -466,27 +478,21 @@ async def get_schedule():
     completed = []
     for m in matches:
         status_lower = m.get("status", "").lower()
-        dt_str = m.get("dateTimeGMT", "")
-        match_dt = None
-        if dt_str:
-            try:
-                match_dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
-            except Exception:
-                pass
+        has_winner = bool(m.get("winner"))
 
-        # Status field takes priority — if explicitly completed, always completed
-        if status_lower in ["completed", "result"]:
+        # A match is completed ONLY if it has a winner (regardless of status field)
+        if has_winner:
             completed.append(m)
         elif status_lower in ["live", "in progress"]:
             live.append(m)
-        elif match_dt and match_dt > now:
-            # Future-dated match with no result = upcoming
-            upcoming.append(m)
-        elif match_dt and (now - match_dt).total_seconds() > 6 * 3600:
-            # Match date passed > 6 hours ago with no explicit status → completed
-            completed.append(m)
         else:
+            # Everything else is upcoming (including matches with status=completed but no winner)
             upcoming.append(m)
+
+    # Sort upcoming by date
+    upcoming.sort(key=lambda x: x.get("dateTimeGMT", ""))
+    # Sort completed by date descending (most recent first)
+    completed.sort(key=lambda x: x.get("dateTimeGMT", ""), reverse=True)
 
     return {
         "matches": matches,
@@ -2847,13 +2853,15 @@ async def auto_scrape_live_matches():
 
 async def auto_sync_results_and_invalidate():
     """Background job: Auto-sync results from SportMonks, invalidate stale predictions,
-    and clear caches when new match results are detected."""
+    and clear caches when new match results are detected.
+    Only syncs matches whose date has already passed (prevents future contamination)."""
     logger.info("[Auto-Sync] Checking for new match results...")
     try:
         results = await fetch_recent_fixtures()
         if not results:
             return
 
+        now = datetime.now(timezone.utc)
         synced = 0
         for result in results:
             sm_t1 = (result.get("team1", "") or "").lower()
@@ -2863,6 +2871,18 @@ async def auto_sync_results_and_invalidate():
                 continue
 
             async for match in db.ipl_schedule.find({}, {"_id": 0}):
+                # GUARD: Skip future matches
+                dt_str = match.get("dateTimeGMT", "")
+                if dt_str:
+                    try:
+                        match_dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+                        if match_dt.tzinfo is None:
+                            match_dt = match_dt.replace(tzinfo=timezone.utc)
+                        if match_dt > now:
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+
                 db_t1 = (match.get("team1", "") or "").lower()
                 db_t2 = (match.get("team2", "") or "").lower()
                 t1_words = [w for w in sm_t1.split() if len(w) > 3]
