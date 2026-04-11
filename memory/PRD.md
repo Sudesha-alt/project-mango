@@ -11,80 +11,59 @@ Build a full-stack cricket prediction app for IPL 2026 with an 8-category math m
 ## What's Been Implemented
 
 ### Pre-Match Prediction (8-Category Model)
-1. Squad Strength & Balance (25%) — dynamically adjusted by actual player performance stats
-2. Current Season Form (21%) — W/L form (60%) + player-level performance form (40%) from SportMonks
-3. Venue + Pitch + Home (18%) — pitch type, pace/spin assist, secondary home venues
-4. Head-to-Head (11%) — IPL 2023-2025 H2H (all 45 team pairs)
-5. Toss Impact (9%) — **3-tier match time classification**: day/afternoon/evening with time-aware dew multipliers
-6. Bowling Depth (8%) — venue-weighted quality
-7. Conditions (5%) — dew/swing/spin team-specific, afternoon-aware
-8. Team Momentum (3%)
+1. Squad Strength & Balance (25%)
+2. Current Season Form (21%) — W/L form (60%) + player-level performance (40%)
+3. Venue + Pitch + Home (18%)
+4. Head-to-Head (11%)
+5. Toss Impact (9%) — 3-tier day/afternoon/evening classification
+6. Bowling Depth (8%)
+7. Conditions (5%) — dew/swing/spin, afternoon-aware
+8. Team Momentum (3%) — **Last 2 matches, logit 0.9*win_diff (max 2.0), 1.3x boost for 2-0 streaks**
 
-### Match Time Classification (Apr 2026)
-- `_classify_match_time`: 3-tier day/afternoon/evening
-  - `day` (before 2 PM IST) — no dew
-  - `afternoon` (2-5 PM IST, 3:30 PM slot) — minimal dew, dew_multiplier=0.55
-  - `evening` (after 5 PM IST, 7:30 PM slot) — significant dew, dew_multiplier=1.0
-- SportMonks cross-reference: `starting_at` from API verified on every prediction
+### Match Time Classification
+- `_classify_match_time`: day (<2PM IST) / afternoon (2-5PM IST) / evening (>5PM IST)
+- SportMonks `starting_at` cross-reference on every prediction
 
-### Claude Opus 7-Layer Pre-Match Analysis (Apr 2026)
-Completely rewritten to produce structured, data-driven, layered match previews:
-- **Layer 1**: Squad Strength & Current Form (with SportMonks form data)
-- **Layer 2**: Key Matchups (batter vs bowler, decisive duel)
-- **Layer 3**: Venue & Pitch Analysis (time-of-day aware)
-- **Layer 4**: Bowling Depth & Attack Quality (by phase)
-- **Layer 5**: Death Bowling Identity (overs 16-20)
-- **Layer 6**: Head-to-Head (recency-weighted)
-- **Layer 7**: Impact Player Options
-- **Algorithm Predictions table**: Shows POTM, Top Batters/Bowlers from algo
-- **Analyst POTM**: Claude's own pick with 3 stat-backed reasons
-- **Algorithm vs Analyst Divergence**: Explicitly notes when predictions differ by >10%
-- **Deciding Factor & First 6 Overs Signal**: Tactical guidance
-- **Data inputs**: Expected XI, algo output, player performance, weather, form/H2H, news
+### Claude Opus 7-Layer Pre-Match Analysis
+- Layer 1: Squad Strength & Current Form
+- Layer 2: Key Matchups (batter vs bowler)
+- Layer 3: Venue & Pitch Analysis
+- Layer 4: Bowling Depth & Attack Quality
+- Layer 5: Death Bowling Identity (overs 16-20)
+- Layer 6: Head-to-Head (recency-weighted)
+- Layer 7: Impact Player Options
+- Algorithm Predictions table, Analyst POTM, Divergence notes, Toss Scenarios, Deciding Factor, First 6 Overs Signal
 
-### Playing XI Integration
-- Pipeline: Live fixtures -> Last completed match -> Squad estimate fallback
-- Refresh button always returns API-verified Playing XI
-- Status endpoint falls back to DB cache
+### Re-Run Claude All (Apr 2026)
+- Dedicated button on upcoming page to re-run Claude 7-layer analysis for ALL matches
+- Background task with cancellation support
+- Progress banner with cancel button
+- Status polling every 6s with timeout protection
 
-### Schedule Management
-- Winner-based categorization (match completed ONLY if winner present)
-- Sync Results button with date guard
-
-### DLS / Overs Reduced
-- User input in live match page, passed to Claude via `dls_info`
-
-### Re-Predict All
-- Deletes old predictions + Claude analysis
-- Recalculates with fresh Playing XI + player performance + Claude for ALL upcoming matches
-- Now passes algo data, player perf, weather, form to Claude 7-layer prompt
+### Performance Optimizations (Apr 2026)
+- Global axios timeout (30s default) prevents infinite hangs
+- Individual timeouts on all API calls (5-15s for fast, 180s for Claude generation)
+- Background tasks yield to event loop via `asyncio.sleep(0.5)` between matches
+- Cancel endpoints for both Re-Predict All and Claude Rerun tasks
+- AbortController on fetch() calls for match state loading
 
 ### Key Endpoints
 - `POST /api/matches/{id}/pre-match-predict` — 8-category prediction
-- `POST /api/matches/{id}/claude-analysis` — 7-layer Claude analysis (enriched with algo data)
-- `GET /api/matches/{id}/claude-analysis` — cached Claude analysis
-- `DELETE /api/matches/{id}/claude-analysis` — clear cached analysis
-- `POST /api/matches/{id}/fetch-live` — Live scores + Claude + combined prediction
-- `POST /api/matches/{id}/refresh-claude-prediction` — Re-run Claude live
-- `POST /api/matches/{id}/playing-xi` — Refresh Playing XI (API-verified)
-- `POST /api/schedule/sync-results` — Sync results with date guard
-- `POST /api/predictions/repredict-all` — Background full re-prediction
+- `POST /api/matches/{id}/claude-analysis` — 7-layer Claude analysis
+- `POST /api/predictions/claude-rerun-all` — Background Claude re-analysis (all matches)
+- `GET /api/predictions/claude-rerun-status` — Claude rerun progress
+- `POST /api/predictions/claude-rerun-cancel` — Cancel Claude rerun
+- `POST /api/predictions/repredict-cancel` — Cancel Re-Predict All
 
 ## Completed Tasks
 - [x] All 8 pre-match categories with non-zero values
-- [x] Playing XI from SportMonks (API-verified, not squad-based)
-- [x] Player performance stats from last 5 matches per team
-- [x] Form = W/L (60%) + player performance (40%)
-- [x] Re-Predict All: deletes old, runs algo + Claude for ALL matches
-- [x] All Claude endpoints use filtered Playing XI
-- [x] Schedule fix: winner-based categorization
-- [x] DLS/Overs Reduced input in live match page
-- [x] Playing XI refresh returns API-verified
-- [x] Match time classification: 3-tier day/afternoon/evening
-- [x] SportMonks start time cross-reference
-- [x] Afternoon match dew reduction
-- [x] **Claude 7-layer pre-match analysis** with algo data, player perf, weather, form, news
-- [x] **Frontend: New ClaudeAnalysis component** with collapsible layers, dual probability bars, algo vs analyst divergence, POTM, deciding factor, first 6 signal
+- [x] Playing XI from SportMonks (API-verified)
+- [x] Player performance stats from last 5 matches
+- [x] Match time classification: day/afternoon/evening
+- [x] Claude 7-layer pre-match analysis with algo data
+- [x] Re-Run Claude All button with progress banner + cancel
+- [x] Momentum fix: logit increased to 0.9*win_diff (was 0.25*win_diff)
+- [x] Performance: axios timeouts, event loop yielding, cancel endpoints
 
 ## Backlog
 - [ ] P2: Shareable prediction card

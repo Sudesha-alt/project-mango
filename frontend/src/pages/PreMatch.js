@@ -30,11 +30,14 @@ export default function PreMatch() {
     const load = async () => {
       setLoading(true);
       try {
-        const res = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/matches/${matchId}/state`);
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 8000);
+        const res = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/matches/${matchId}/state`, { signal: controller.signal });
+        clearTimeout(timeout);
         const data = await res.json();
         const info = data.info || data;
         setMatchInfo(info);
-      } catch (e) { console.error(e); }
+      } catch (e) { console.error("Match state load:", e.name === "AbortError" ? "Timeout" : e); }
       setLoading(false);
     };
     if (matchId) load();
@@ -44,10 +47,10 @@ export default function PreMatch() {
   useEffect(() => {
     const loadAlgo = async () => {
       try {
-        const res = await axios.get(`${API}/predictions/upcoming`);
+        const res = await axios.get(`${API}/predictions/upcoming`, { timeout: 10000 });
         const match = (res.data.predictions || []).find(p => p.matchId === matchId);
         if (match) setAlgoData(match);
-      } catch (e) { /* ignore */ }
+      } catch (e) { /* ignore timeout */ }
     };
     if (matchId) loadAlgo();
   }, [matchId]);

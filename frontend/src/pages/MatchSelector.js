@@ -33,7 +33,7 @@ export default function MatchSelector() {
   useEffect(() => {
     const discoverLive = async () => {
       try {
-        const res = await axios.post(`${API}/matches/refresh-live-status`);
+        const res = await axios.post(`${API}/matches/refresh-live-status`, {}, { timeout: 15000 });
         const data = res.data;
         if (data.promoted_count > 0 || data.completed_count > 0) {
           // Reload schedule to reflect changes
@@ -52,7 +52,7 @@ export default function MatchSelector() {
   useEffect(() => {
     const loadPredictions = async () => {
       try {
-        const res = await axios.get(`${API}/predictions/upcoming`);
+        const res = await axios.get(`${API}/predictions/upcoming`, { timeout: 10000 });
         const map = {};
         for (const p of res.data.predictions || []) {
           map[p.matchId] = p;
@@ -89,7 +89,7 @@ export default function MatchSelector() {
     setSyncingResults(true);
     setSyncResult(null);
     try {
-      const res = await axios.post(`${API}/schedule/sync-results`);
+      const res = await axios.post(`${API}/schedule/sync-results`, {}, { timeout: 15000 });
       setSyncResult(res.data);
       // Reload schedule + predictions to reflect fresh results
       await loadSchedule();
@@ -128,22 +128,20 @@ export default function MatchSelector() {
     setRepredicting(true);
     try {
       await axios.post(`${API}/predictions/repredict-all`);
-      // Poll status every 5s
       const poll = setInterval(async () => {
         try {
-          const res = await axios.get(`${API}/predictions/repredict-status`);
+          const res = await axios.get(`${API}/predictions/repredict-status`, { timeout: 5000 });
           setRepredictStatus(res.data);
           if (!res.data.running) {
             clearInterval(poll);
             setRepredicting(false);
-            // Reload predictions
-            const predRes = await axios.get(`${API}/predictions/upcoming`);
+            const predRes = await axios.get(`${API}/predictions/upcoming`, { timeout: 10000 });
             const map = {};
             for (const p of predRes.data.predictions || []) map[p.matchId] = p;
             setPredictions(map);
           }
-        } catch (e) { /* ignore */ }
-      }, 5000);
+        } catch (e) { /* ignore timeout */ }
+      }, 6000);
     } catch (e) {
       setRepredicting(false);
     }
@@ -153,20 +151,35 @@ export default function MatchSelector() {
     setClaudeRerunning(true);
     setClaudeRerunStatus(null);
     try {
-      await axios.post(`${API}/predictions/claude-rerun-all`);
+      const res = await axios.post(`${API}/predictions/claude-rerun-all`);
+      if (res.data.status === "already_running") {
+        setClaudeRerunStatus(res.data.progress);
+      }
       const poll = setInterval(async () => {
         try {
-          const res = await axios.get(`${API}/predictions/claude-rerun-status`);
+          const res = await axios.get(`${API}/predictions/claude-rerun-status`, { timeout: 5000 });
           setClaudeRerunStatus(res.data);
           if (!res.data.running) {
             clearInterval(poll);
             setClaudeRerunning(false);
           }
-        } catch (e) { /* ignore */ }
-      }, 5000);
+        } catch (e) { /* ignore timeout */ }
+      }, 6000);
     } catch (e) {
       setClaudeRerunning(false);
     }
+  };
+
+  const handleCancelClaudeRerun = async () => {
+    try {
+      await axios.post(`${API}/predictions/claude-rerun-cancel`, {}, { timeout: 5000 });
+    } catch (e) { /* ignore */ }
+  };
+
+  const handleCancelRepredict = async () => {
+    try {
+      await axios.post(`${API}/predictions/repredict-cancel`, {}, { timeout: 5000 });
+    } catch (e) { /* ignore */ }
   };
 
   const selectMatch = (match) => {
@@ -315,8 +328,9 @@ export default function MatchSelector() {
                 {repredictStatus.completed}/{repredictStatus.total} complete &middot; {repredictStatus.failed} failed &middot; {repredictStatus.phase || repredictStatus.current_match}
               </p>
             </div>
-            <div className="text-right">
+            <div className="flex items-center gap-2">
               <p className="text-xs font-mono text-[#7C3AED]">{repredictStatus.total > 0 ? Math.round(repredictStatus.completed / repredictStatus.total * 100) : 0}%</p>
+              <button onClick={handleCancelRepredict} className="text-[10px] px-2 py-1 rounded bg-[#FF3B30]/20 text-[#FF3B30] hover:bg-[#FF3B30]/30 font-bold" data-testid="cancel-repredict-btn">Cancel</button>
             </div>
           </div>
         )}
@@ -330,8 +344,9 @@ export default function MatchSelector() {
                 {claudeRerunStatus.completed}/{claudeRerunStatus.total} complete &middot; {claudeRerunStatus.failed} failed &middot; {claudeRerunStatus.phase || claudeRerunStatus.current_match}
               </p>
             </div>
-            <div className="text-right">
+            <div className="flex items-center gap-2">
               <p className="text-xs font-mono text-[#A78BFA]">{claudeRerunStatus.total > 0 ? Math.round(claudeRerunStatus.completed / claudeRerunStatus.total * 100) : 0}%</p>
+              <button onClick={handleCancelClaudeRerun} className="text-[10px] px-2 py-1 rounded bg-[#FF3B30]/20 text-[#FF3B30] hover:bg-[#FF3B30]/30 font-bold" data-testid="cancel-claude-rerun-btn">Cancel</button>
             </div>
           </div>
         )}

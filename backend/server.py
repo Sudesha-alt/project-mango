@@ -1823,7 +1823,7 @@ async def api_get_upcoming_predictions():
 
 # ─── BACKGROUND RE-PREDICTION ────────────────────────────────
 
-repredict_status = {"running": False, "total": 0, "completed": 0, "failed": 0, "current_match": "", "started_at": None, "phase": ""}
+repredict_status = {"running": False, "total": 0, "completed": 0, "failed": 0, "current_match": "", "started_at": None, "phase": "", "cancelled": False}
 
 async def _background_repredict_all():
     """Background task: re-predict ALL upcoming matches from scratch.
@@ -1840,7 +1840,7 @@ async def _background_repredict_all():
     repredict_status = {
         "running": True, "total": 0, "completed": 0, "failed": 0,
         "current_match": "", "started_at": datetime.now(timezone.utc).isoformat(),
-        "phase": "init",
+        "phase": "init", "cancelled": False,
     }
 
     # Clear SportMonks season fixtures cache so fresh data is fetched
@@ -1856,8 +1856,12 @@ async def _background_repredict_all():
     logger.info(f"[RePredict] Starting for {len(upcoming)} upcoming matches")
 
     for i, match in enumerate(upcoming):
-        # Yield to event loop between matches so other requests can be served
-        await asyncio.sleep(0.1)
+        # ── Check cancellation ──
+        if repredict_status.get("cancelled"):
+            logger.info(f"[RePredict] Cancelled at {i}/{len(upcoming)}")
+            break
+        # Yield to event loop between matches
+        await asyncio.sleep(0.5)
         mid = match.get("matchId", "")
         team1 = match.get("team1", "")
         team2 = match.get("team2", "")
@@ -1959,10 +1963,11 @@ async def _background_repredict_all():
             repredict_status["failed"] += 1
             logger.error(f"[RePredict] Failed {mid}: {e}")
 
+    was_cancelled = repredict_status.get("cancelled", False)
     repredict_status["running"] = False
-    repredict_status["phase"] = "done"
-    repredict_status["current_match"] = "Done"
-    logger.info(f"[RePredict] Complete: {repredict_status['completed']}/{repredict_status['total']} predicted, {repredict_status['failed']} failed")
+    repredict_status["phase"] = "cancelled" if was_cancelled else "done"
+    repredict_status["current_match"] = "Cancelled" if was_cancelled else "Done"
+    logger.info(f"[RePredict] {'Cancelled' if was_cancelled else 'Complete'}: {repredict_status['completed']}/{repredict_status['total']} predicted, {repredict_status['failed']} failed")
 
 
 @api_router.post("/predictions/repredict-all")
@@ -1987,14 +1992,16 @@ async def api_repredict_status():
 
 # ─── BACKGROUND CLAUDE-ONLY RE-RUN ──────────────────────────
 
-claude_rerun_status = {"running": False, "total": 0, "completed": 0, "failed": 0, "current_match": "", "started_at": None, "phase": ""}
+claude_rerun_status = {"running": False, "total": 0, "completed": 0, "failed": 0, "current_match": "", "started_at": None, "phase": "", "cancelled": False}
 
 async def _background_claude_rerun_all():
-    """Background task: re-run Claude 7-layer analysis for ALL upcoming matches."""
+    """Background task: re-run Claude 7-layer analysis for ALL upcoming matches.
+    Includes cancellation support and proper event-loop yielding."""
     global claude_rerun_status
     claude_rerun_status = {
         "running": True, "total": 0, "completed": 0, "failed": 0,
-        "current_match": "", "started_at": datetime.now(timezone.utc).isoformat(), "phase": "starting"
+        "current_match": "", "started_at": datetime.now(timezone.utc).isoformat(),
+        "phase": "starting", "cancelled": False
     }
 
     upcoming = []
@@ -2008,8 +2015,14 @@ async def _background_claude_rerun_all():
     logger.info(f"[Claude Rerun] Starting for {len(upcoming)} upcoming matches")
 
     for i, match in enumerate(upcoming):
-        # Yield to event loop so other requests can be served
-        await asyncio.sleep(0.1)
+        # ── Check cancellation ──
+        if claude_rerun_status.get("cancelled"):
+            logger.info(f"[Claude Rerun] Cancelled at {i}/{len(upcoming)}")
+            break
+
+        # Yield generously between matches
+        await asyncio.sleep(0.5)
+
         mid = match.get("matchId")
         team1 = match.get("team1", "")
         team2 = match.get("team2", "")
@@ -2021,10 +2034,8 @@ async def _background_claude_rerun_all():
         claude_rerun_status["phase"] = f"claude {i+1}/{len(upcoming)}: {t1_short} vs {t2_short}"
 
         try:
-            # Delete old Claude analysis
             await db.claude_analysis.delete_one({"matchId": mid})
 
-            # Get squads + filter to Playing XI
             match_squads = await _get_squads_for_match(team1, team2)
             playing_xi_squads = match_squads
             try:
@@ -2038,21 +2049,18 @@ async def _background_claude_rerun_all():
             except Exception as e:
                 logger.warning(f"[Claude Rerun] XI filter failed for {mid}: {e}")
 
-            # Fetch enrichment data
             algo_pred = await db.pre_match_predictions.find_one({"matchId": mid}, {"_id": 0})
             player_perf = {}
             try:
                 t1p = await db.player_performance.find_one({"team": team1}, {"_id": 0})
                 t2p = await db.player_performance.find_one({"team": team2}, {"_id": 0})
-                if t1p:
-                    player_perf["team1"] = t1p.get("players", t1p)
-                if t2p:
-                    player_perf["team2"] = t2p.get("players", t2p)
+                if t1p: player_perf["team1"] = t1p.get("players", t1p)
+                if t2p: player_perf["team2"] = t2p.get("players", t2p)
             except Exception:
                 pass
             weather_data = None
             try:
-                city_name = match.get("city", "") or venue.split(",")[-1].strip() if venue else ""
+                city_name = match.get("city", "") or (venue.split(",")[-1].strip() if venue else "")
                 if city_name:
                     weather_data = await get_weather(city_name, match.get("dateTimeGMT"))
             except Exception:
@@ -2070,17 +2078,17 @@ async def _background_claude_rerun_all():
                 algo_prediction=algo_pred, player_performance=player_perf,
                 weather=weather_data, form_data=form_data,
             )
+
+            # Yield after the heavy Claude call
+            await asyncio.sleep(0.5)
+
             if analysis and "error" not in analysis:
                 await db.claude_analysis.update_one(
                     {"matchId": mid},
                     {"$set": {
-                        "matchId": mid,
-                        "team1": team1,
-                        "team2": team2,
-                        "team1Short": t1_short,
-                        "team2Short": t2_short,
-                        "venue": venue,
-                        "analysis": analysis,
+                        "matchId": mid, "team1": team1, "team2": team2,
+                        "team1Short": t1_short, "team2Short": t2_short,
+                        "venue": venue, "analysis": analysis,
                         "generatedAt": datetime.now(timezone.utc).isoformat(),
                         "model": "claude-opus-4.5",
                     }},
@@ -2091,16 +2099,15 @@ async def _background_claude_rerun_all():
                 logger.warning(f"[Claude Rerun] Error for {mid}: {analysis.get('error', '')}")
 
             claude_rerun_status["completed"] += 1
-            # Yield to event loop after each Claude call completes
-            await asyncio.sleep(1)
         except Exception as e:
             logger.error(f"[Claude Rerun] Failed for {mid}: {e}")
             claude_rerun_status["failed"] += 1
 
+    was_cancelled = claude_rerun_status.get("cancelled", False)
     claude_rerun_status["running"] = False
-    claude_rerun_status["phase"] = "done"
-    claude_rerun_status["current_match"] = "Done"
-    logger.info(f"[Claude Rerun] Complete: {claude_rerun_status['completed']}/{claude_rerun_status['total']}, {claude_rerun_status['failed']} failed")
+    claude_rerun_status["phase"] = "cancelled" if was_cancelled else "done"
+    claude_rerun_status["current_match"] = "Cancelled" if was_cancelled else "Done"
+    logger.info(f"[Claude Rerun] {'Cancelled' if was_cancelled else 'Complete'}: {claude_rerun_status['completed']}/{claude_rerun_status['total']}, {claude_rerun_status['failed']} failed")
 
 
 @api_router.post("/predictions/claude-rerun-all")
@@ -2118,6 +2125,24 @@ async def api_claude_rerun_all():
 async def api_claude_rerun_status():
     """Get the current status of the Claude re-run task."""
     return claude_rerun_status
+
+
+@api_router.post("/predictions/claude-rerun-cancel")
+async def api_claude_rerun_cancel():
+    """Cancel the running Claude re-run task."""
+    if not claude_rerun_status["running"]:
+        return {"status": "not_running"}
+    claude_rerun_status["cancelled"] = True
+    return {"status": "cancelling", "message": "Claude re-run will stop after current match completes."}
+
+
+@api_router.post("/predictions/repredict-cancel")
+async def api_repredict_cancel():
+    """Cancel the running Re-Predict All task."""
+    if not repredict_status["running"]:
+        return {"status": "not_running"}
+    repredict_status["cancelled"] = True
+    return {"status": "cancelling", "message": "Re-prediction will stop after current match completes."}
 
 @api_router.get("/data-source")
 async def api_data_source():

@@ -3,6 +3,9 @@ import axios from "axios";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
+// Global timeout — prevent infinite hangs when background tasks block the server
+axios.defaults.timeout = 30000;
+
 export function useMatchData() {
   const [schedule, setSchedule] = useState({ matches: [], live: [], upcoming: [], completed: [], loaded: false });
   const [squads, setSquads] = useState([]);
@@ -20,9 +23,9 @@ export function useMatchData() {
   const loadSchedule = useCallback(async (force = false) => {
     setLoading(true);
     try {
-      // Trigger GPT load if needed
-      await axios.get(`${API}/schedule/load${force ? "?force=true" : ""}`);
-      const res = await axios.get(`${API}/schedule`);
+      // Trigger GPT load if needed — short timeout, OK to fail
+      await axios.get(`${API}/schedule/load${force ? "?force=true" : ""}`, { timeout: 10000 });
+      const res = await axios.get(`${API}/schedule`, { timeout: 15000 });
       setSchedule(res.data);
       return res.data;
     } catch (e) {
@@ -34,8 +37,8 @@ export function useMatchData() {
 
   const loadSquads = useCallback(async (force = false) => {
     try {
-      await axios.get(`${API}/squads/load${force ? "?force=true" : ""}`);
-      const res = await axios.get(`${API}/squads`);
+      await axios.get(`${API}/squads/load${force ? "?force=true" : ""}`, { timeout: 10000 });
+      const res = await axios.get(`${API}/squads`, { timeout: 10000 });
       setSquads(res.data.squads || []);
       return res.data.squads;
     } catch (e) { console.error("Squads load error:", e); }
@@ -51,7 +54,7 @@ export function useMatchData() {
   const fetchLiveData = useCallback(async (matchId, bettingOdds = null) => {
     try {
       const body = bettingOdds || {};
-      const res = await axios.post(`${API}/matches/${matchId}/fetch-live`, body);
+      const res = await axios.post(`${API}/matches/${matchId}/fetch-live`, body, { timeout: 30000 });
       return res.data;
     } catch (e) {
       console.error("Live fetch error:", e);
@@ -61,7 +64,7 @@ export function useMatchData() {
 
   const getMatchState = useCallback(async (matchId) => {
     try {
-      const res = await axios.get(`${API}/matches/${matchId}/state`);
+      const res = await axios.get(`${API}/matches/${matchId}/state`, { timeout: 10000 });
       return res.data;
     } catch (e) { return null; }
   }, []);
@@ -140,12 +143,12 @@ export function useMatchData() {
   const fetchClaudeAnalysis = useCallback(async (matchId, forceRefresh = false) => {
     try {
       if (forceRefresh) {
-        // POST triggers generation (with web scraping)
-        const res = await axios.post(`${API}/matches/${matchId}/claude-analysis`);
+        // POST triggers generation — long timeout for Claude Opus
+        const res = await axios.post(`${API}/matches/${matchId}/claude-analysis`, {}, { timeout: 180000 });
         return res.data;
       } else {
-        // GET retrieves cached only
-        const res = await axios.get(`${API}/matches/${matchId}/claude-analysis`);
+        // GET retrieves cached only — should be fast
+        const res = await axios.get(`${API}/matches/${matchId}/claude-analysis`, { timeout: 10000 });
         return res.data;
       }
     } catch (e) {
@@ -156,7 +159,7 @@ export function useMatchData() {
 
   const clearClaudeAnalysis = useCallback(async (matchId) => {
     try {
-      await axios.delete(`${API}/matches/${matchId}/claude-analysis`);
+      await axios.delete(`${API}/matches/${matchId}/claude-analysis`, { timeout: 5000 });
     } catch (e) { console.error(e); }
   }, []);
 
