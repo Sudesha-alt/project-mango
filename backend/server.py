@@ -295,6 +295,22 @@ async def root():
     }
 
 
+@api_router.get("/health")
+async def health_alive():
+    """Liveness: does not touch MongoDB (use after fixing startup crashes)."""
+    return {"ok": True, "service": "predictability-api"}
+
+
+@api_router.get("/health/db")
+async def health_db():
+    """MongoDB connectivity — if this fails, upcoming/completed/live schedule routes will fail too."""
+    try:
+        n = await db.ipl_schedule.count_documents({})
+        return {"ok": True, "mongodb": "connected", "ipl_schedule_documents": n}
+    except Exception as e:
+        return {"ok": False, "mongodb": "error", "error": str(e)[:500]}
+
+
 @api_router.post("/scheduler/promote-now")
 async def manual_promote():
     """Manually trigger match promotion to LIVE (same as scheduled 4PM/7PM)."""
