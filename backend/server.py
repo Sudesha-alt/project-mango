@@ -2136,7 +2136,6 @@ async def api_playing_xi_status(match_id: str):
     
     if status == "done":
         data = task.get("data", {})
-        # Clear after retrieval
         playing_xi_tasks.pop(match_id, None)
         return data
     elif status == "error":
@@ -2146,6 +2145,10 @@ async def api_playing_xi_status(match_id: str):
     elif status == "running":
         return {"status": "running", "progress": task.get("progress", "Fetching...")}
     else:
+        # Check DB for previously cached Playing XI
+        cached = await db.playing_xi.find_one({"matchId": match_id}, {"_id": 0})
+        if cached:
+            return cached
         return {"status": "idle"}
 
 
