@@ -306,7 +306,16 @@ async def manual_promote():
 
 async def sync_live_scores_to_schedule():
     """Sync any existing live snapshot scores to the schedule collection for match cards."""
-    snapshots = await db.live_snapshots.find({}, {"_id": 0, "matchId": 1, "liveData": 1, "team1Short": 1}).to_list(100)
+    try:
+        snapshots = await db.live_snapshots.find({}, {"_id": 0, "matchId": 1, "liveData": 1, "team1Short": 1}).to_list(100)
+    except Exception as e:
+        # Do not fail application startup if MongoDB is unreachable (SSL/network/Atlas allowlist).
+        logger.warning(
+            "sync_live_scores_to_schedule: could not read live_snapshots (%s). "
+            "Fix MONGO_URL / network / Atlas IP access if schedule endpoints stay empty.",
+            e,
+        )
+        return
     for snap in snapshots:
         mid = snap.get("matchId")
         ld = snap.get("liveData", {})
@@ -322,13 +331,16 @@ async def sync_live_scores_to_schedule():
         score_text = f"{t1_short} {runs}/{wickets} ({overs} ov)"
         if target:
             score_text += f" | Target: {target}"
-        await db.ipl_schedule.update_one(
-            {"matchId": mid},
-            {"$set": {
-                "score": score_text,
-                "liveScore": {"runs": runs, "wickets": wickets, "overs": overs, "target": target, "innings": innings},
-            }}
-        )
+        try:
+            await db.ipl_schedule.update_one(
+                {"matchId": mid},
+                {"$set": {
+                    "score": score_text,
+                    "liveScore": {"runs": runs, "wickets": wickets, "overs": overs, "target": target, "innings": innings},
+                }}
+            )
+        except Exception as e:
+            logger.warning("sync_live_scores_to_schedule: update failed for %s: %s", mid, e)
 
 
 # ─── IPL SCHEDULE (AI-powered + cached in MongoDB) ──────────
