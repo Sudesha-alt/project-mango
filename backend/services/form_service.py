@@ -1,16 +1,12 @@
 """
 Team Form & Momentum Data Fetcher — The Lucky 11
-Uses SportMonks API and DB schedule data. NO web scraping.
+Uses MongoDB schedule (completed matches) for W/L form; player stats are supplied by callers
+(e.g. server + services.sportmonks_service.fetch_team_recent_performance). NO web scraping.
 """
-import os
 import logging
-import httpx
 from typing import Dict, List
 
 logger = logging.getLogger(__name__)
-
-SPORTMONKS_TOKEN = os.environ.get("SPORTMONKS_API_TOKEN", "")
-BASE_URL = "https://cricket.sportmonks.com/api/v2.0"
 
 # Historical IPL H2H records (2023-2025 seasons only, alphabetical key pair)
 # Format: ("team_a_short", "team_b_short"): (a_wins, b_wins)
@@ -107,24 +103,6 @@ def _get_historical_h2h(team1: str, team2: str):
         return {"team1_wins": a_wins, "team2_wins": b_wins, "source": "historical_ipl"}
     else:
         return {"team1_wins": b_wins, "team2_wins": a_wins, "source": "historical_ipl"}
-
-
-async def _sm_get(endpoint: str, params: dict = None) -> dict:
-    """Make a GET request to SportMonks Cricket API."""
-    if not SPORTMONKS_TOKEN:
-        return {"error": "SPORTMONKS_API_TOKEN not configured"}
-    url = f"{BASE_URL}/{endpoint}"
-    query = {"api_token": SPORTMONKS_TOKEN}
-    if params:
-        query.update(params)
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.get(url, params=query)
-            resp.raise_for_status()
-            return resp.json()
-    except Exception as e:
-        logger.error(f"SportMonks form API error: {e}")
-        return {"error": str(e)}
 
 
 async def fetch_team_form(db, team1: str, team2: str, player_performance: Dict = None) -> Dict:

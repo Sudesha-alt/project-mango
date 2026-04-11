@@ -316,6 +316,21 @@ ROLE_WEIGHTS = {
 
 ALLROUNDER_IMPACT_MULTIPLIER = 1.35
 
+# Roles counted as batting contributors for dew/chase heuristics (must match DB seed labels)
+BAT_ROLES_DEW = frozenset({"Batsman", "Wicketkeeper", "WK-Batsman", "All-rounder"})
+
+# Short labels for overall favourite explanation (weighted driver)
+FACTOR_SUMMARY_PHRASES = {
+    "squad_strength": "squad depth and balance",
+    "current_form": "recent league form",
+    "venue_pitch_home": "venue, pitch fit, and home advantage",
+    "h2h": "head-to-head record",
+    "toss_impact": "evening dew and chase dynamics at this ground",
+    "bowling_depth": "bowling depth matched to this venue",
+    "conditions": "match-day weather and conditions",
+    "momentum": "momentum from the last two games",
+}
+
 # Bowler type classification for conditions matching
 PACE_BOWLERS = {
     "Jasprit Bumrah", "Mohammed Siraj", "Arshdeep Singh", "Josh Hazlewood",
@@ -360,6 +375,33 @@ def _match_venue(venue_str: str) -> Optional[str]:
 def _is_home(team_name: str, venue_key: str) -> bool:
     team_venues = HOME_GROUNDS.get(team_name.lower().strip(), [])
     return venue_key in team_venues if team_venues else False
+
+
+def _favours_from_logit(logit: float, eps: float = 0.015) -> str:
+    """Map a team1-oriented logit to which side is favoured."""
+    if logit > eps:
+        return "team1"
+    if logit < -eps:
+        return "team2"
+    return "neutral"
+
+
+def _chase_strength_index(players: List[dict]) -> float:
+    """0–1 index: stronger top-order chasing depth → higher. Neutral 0.5 if no data."""
+    ratings = []
+    for p in players:
+        if p.get("role") not in BAT_ROLES_DEW:
+            continue
+        ratings.append(STAR_PLAYERS.get(p.get("name", ""), 65))
+    if not ratings:
+        return 0.5
+    top6 = sorted(ratings, reverse=True)[:6]
+    avg = sum(top6) / len(top6)
+    return max(0.0, min(1.0, (avg - 50.0) / 45.0))
+
+
+def _team_label(team_key: str, team1: str, team2: str) -> str:
+    return team1 if team_key == "team1" else team2 if team_key == "team2" else team_key
 
 
 def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
@@ -533,14 +575,21 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
         h2h_logit = 0.0
 
     # ━━━━━━ Category 5: Toss Impact (venue-specific, 9%) ━━━━━━
-    toss_logit, toss_detail = _compute_toss_impact(venue_key, match_time, weather)
+    toss_logit, toss_detail = _compute_toss_impact(
+        venue_key,
+        match_time,
+        weather,
+        remapped_squads if remapped_squads else None,
+        team1=team1,
+        team2=team2,
+    )
 
     # ━━━━━━ Category 6: Bowling Attack Depth (8%) ━━━━━━
     bowl_depth_logit, bowl_detail = _compute_bowling_depth(remapped_squads, t1_rating, t2_rating, venue_key=venue_key)
 
     # ━━━━━━ Category 7: Conditions — Real Weather Data (5%) ━━━━━━
     conditions_logit, conditions_detail = _compute_conditions_from_weather(
-        venue_key, match_time, weather, remapped_squads
+        venue_key, match_time, weather, remapped_squads, team1=team1, team2=team2
     )
 
     # ━━━━━━ Category 8: Team Momentum — Last 2 Matches (3%) ━━━━━━
@@ -582,6 +631,107 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
     else:
         confidence = "low"
 
+    # ── Human-readable attribution (logits are always team1 − team2 perspective)
+    raw_logits = {
+        "squad_strength": squad_logit,
+        "current_form": form_logit,
+        "venue_pitch_home": venue_logit,
+        "h2h": h2h_logit,
+        "toss_impact": toss_logit,
+        "bowling_depth": bowl_depth_logit,
+        "conditions": conditions_logit,
+        "momentum": momentum_logit,
+    }
+    weighted_contribs = {k: WEIGHTS[k] * raw_logits[k] for k in WEIGHTS}
+    is_t1_fav = team1_win_prob >= 50.0
+    aligned = {k: (weighted_contribs[k] if is_t1_fav else -weighted_contribs[k]) for k in WEIGHTS}
+    driver_key = max(WEIGHTS, key=lambda k: aligned[k])
+    driver_aligned = aligned[driver_key]
+    t1n, t2n = team1 or "Team 1", team2 or "Team 2"
+    fav_name = t1n if is_t1_fav else t2n
+    other_name = t2n if is_t1_fav else t1n
+    if driver_aligned > 0.008:
+        favourite_one_liner = (
+            f"{fav_name} are tipped mainly on {FACTOR_SUMMARY_PHRASES[driver_key]} "
+            f"versus {other_name}."
+        )
+    elif spread < 3:
+        favourite_one_liner = (
+            f"Essentially a coin-flip — {fav_name} shade the model only on fine margins."
+        )
+    else:
+        favourite_one_liner = (
+            f"{fav_name} edge it through several small factors combined; no single category dominates."
+        )
+
+    def _named(key: str) -> str:
+        return _team_label(key, team1 or "Team 1", team2 or "Team 2")
+
+    vph_f = _favours_from_logit(venue_logit)
+    vph_line = (
+        f"{_named(vph_f)} — home/pitch fit at this venue."
+        if vph_f != "neutral"
+        else "Venue, pitch mix, and home advantage net out close to even."
+    )
+    h2h_f = _favours_from_logit(h2h_logit)
+    if total_h2h > 0:
+        h2h_line = (
+            f"{_named(h2h_f)} — {t1_h2h}-{t2_h2h} in the sampled H2H ({total_h2h} matches)."
+            if h2h_f != "neutral"
+            else f"H2H is balanced ({t1_h2h}-{t2_h2h} over {total_h2h} matches)."
+        )
+    else:
+        h2h_line = "No head-to-head sample — this factor is left neutral."
+
+    toss_f = _favours_from_logit(toss_logit)
+    toss_line = toss_detail.get("one_liner") or (
+        f"{_named(toss_f)} — toss/dew dynamics at this ground."
+        if toss_f != "neutral"
+        else "Toss sensitivity is low or chase strength is even between squads."
+    )
+
+    bd1 = bowl_detail.get("team1_depth_share_pct")
+    bd2 = bowl_detail.get("team2_depth_share_pct")
+    bowl_f = _favours_from_logit(bowl_depth_logit)
+    if bd1 is not None and bd2 is not None:
+        bowl_line = (
+            f"{_named(bowl_f)} — venue-weighted bowling depth score ~{bd1}%–{bd2}% split."
+            if bowl_f != "neutral"
+            else f"Bowling depth is comparable (~{bd1}%–{bd2}% share for this venue)."
+        )
+    else:
+        bowl_line = (
+            f"{_named(bowl_f)} — deeper attack for this surface."
+            if bowl_f != "neutral"
+            else "Bowling depth nets out even for this venue."
+        )
+
+    cond_key = conditions_detail.get("favours_team", "neutral")
+    cond_line = conditions_detail.get("one_liner") or conditions_detail.get(
+        "conditions_edge_text", "Conditions relatively neutral for both teams"
+    )
+
+    mom_f = _favours_from_logit(momentum_logit)
+    if win_diff > 0:
+        momentum_line = f"{t1n} carry momentum ({t1_wins_last2} wins in last 2 vs {t2n}'s {t2_wins_last2})."
+    elif win_diff < 0:
+        momentum_line = f"{t2n} carry momentum ({t2_wins_last2} wins in last 2 vs {t1n}'s {t1_wins_last2})."
+    else:
+        momentum_line = f"Even momentum — {t1n} and {t2n} similar over the last two results."
+
+    squad_f = _favours_from_logit(squad_logit)
+    squad_line = (
+        f"{_named(squad_f)} — stronger overall XI quality and balance."
+        if squad_f != "neutral"
+        else "Squads are evenly matched on paper for strength and balance."
+    )
+    form_f = _favours_from_logit(form_logit)
+    form_line = (
+        f"{_named(form_f)} — better recent season form (SportMonks)."
+        if form_f != "neutral"
+        else "Recent league form is neck-and-neck."
+    )
+
     return {
         "team1_win_prob": team1_win_prob,
         "team2_win_prob": team2_win_prob,
@@ -589,6 +739,26 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
         "raw_probability": round(raw_probability, 4),
         "combined_logit": round(combined_logit, 4),
         "model": "8-category-v2",
+        "favourite_team": "team1" if is_t1_fav else "team2",
+        "favourite_one_liner": favourite_one_liner,
+        "factor_one_liners": {
+            "squad_strength": {"favours": squad_f, "one_liner": squad_line},
+            "current_form": {"favours": form_f, "one_liner": form_line},
+            "venue_pitch_home": {"favours": vph_f, "one_liner": vph_line},
+            "h2h": {"favours": h2h_f, "one_liner": h2h_line},
+            "toss_impact": {"favours": toss_f, "one_liner": toss_line},
+            "bowling_depth": {"favours": bowl_f, "one_liner": bowl_line},
+            "conditions": {
+                "favours": cond_key if cond_key in ("team1", "team2") else "neutral",
+                "one_liner": cond_line,
+            },
+            "momentum": {"favours": mom_f, "one_liner": momentum_line},
+        },
+        "attribution": {
+            "primary_driver_factor": driver_key,
+            "primary_driver_aligned_weight": round(driver_aligned, 4),
+            "logits_team1_minus_team2": {k: round(v, 4) for k, v in raw_logits.items()},
+        },
         "factors": {
             "squad_strength": {
                 "weight": WEIGHTS["squad_strength"],
@@ -673,10 +843,7 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
                 "team1_wins_last2": t1_wins_last2,
                 "team2_wins_last2": t2_wins_last2,
                 "raw_logit": round(momentum_logit, 4),
-                "momentum_text": (
-                    f"{'Team1' if win_diff > 0 else 'Team2'} has momentum ({abs(win_diff)} more win{'s' if abs(win_diff) > 1 else ''} in last 2)"
-                    if win_diff != 0 else "Even momentum — both teams split last 2 matches"
-                ),
+                "momentum_text": momentum_line,
             },
         },
     }
@@ -732,26 +899,39 @@ def _compute_squad_ratings(squad_data: dict) -> Tuple:
     )
 
 
-def _compute_toss_impact(venue_key: Optional[str], match_time: str, weather: dict) -> Tuple[float, dict]:
-    """Category 5: Toss impact — dew/chasing bias translated into team-specific advantage.
-    
-    Key insight: Heavy dew = bowling second is harder = chasing team advantage.
-    Pre-toss, we don't know who bats first, but we quantify HOW MUCH toss matters.
-    
-    CRITICAL: Match time classification matters hugely:
-    - Afternoon matches (3:30 PM IST): End by ~7 PM. Minimal dew. Toss less impactful.
-    - Evening matches (7:30 PM IST): End by ~11 PM. Heavy dew in 2nd innings. Toss very impactful.
+def _compute_toss_impact(
+    venue_key: Optional[str],
+    match_time: str,
+    weather: dict,
+    squads: Optional[Dict] = None,
+    team1: str = "",
+    team2: str = "",
+) -> Tuple[float, dict]:
+    """Category 5: Toss — venue/time sensitivity × (team1 chase strength − team2).
+
+    Chase strength uses top-order batting ratings; pre-toss we only tilt by that gap so
+    there is no fixed bias toward team1 when dew matters.
     """
+    squads = squads or {}
+    team1_name = team1 or "Team 1"
+    team2_name = team2 or "Team 2"
+    c1 = _chase_strength_index(squads.get("team1", []))
+    c2 = _chase_strength_index(squads.get("team2", []))
+    chase_diff = c1 - c2
+
     time_class = _classify_match_time(match_time)
     is_evening = time_class == "evening"
     is_afternoon = time_class == "afternoon"
-    
+
     detail = {
         "venue_key": venue_key,
         "is_night": is_evening,
         "match_time_class": time_class,
         "preferred_decision": "unknown",
         "toss_win_pct": 0.52,
+        "chase_strength_index_team1": round(c1, 3),
+        "chase_strength_index_team2": round(c2, 3),
+        "chase_diff_team1_minus_team2": round(chase_diff, 3),
     }
 
     if not venue_key or venue_key not in TOSS_LOOKUP:
@@ -765,7 +945,24 @@ def _compute_toss_impact(venue_key: Optional[str], match_time: str, weather: dic
         else:
             detail["dew_impact_text"] = "Unknown venue — day match, no dew."
         detail["dew_multiplier"] = 1.0 if is_evening else 0.6 if is_afternoon else 0.5
-        return 0.09, detail
+        unknown_sens = (0.14 if is_evening else 0.06 if is_afternoon else 0.05) * detail["dew_multiplier"]
+        toss_logit = max(-1.5, min(1.5, unknown_sens * chase_diff))
+        detail["toss_environment_logit"] = round(unknown_sens, 4)
+        detail["toss_logit_raw"] = round(toss_logit, 4)
+        ft = _favours_from_logit(toss_logit)
+        if ft == "team1":
+            detail["one_liner"] = (
+                f"{team1_name} shade toss/dew value — stronger chase/top-order depth for this slot."
+            )
+        elif ft == "team2":
+            detail["one_liner"] = (
+                f"{team2_name} shade toss/dew value — stronger chase/top-order depth for this slot."
+            )
+        else:
+            detail["one_liner"] = (
+                "Toss is less decisive here, or both sides match up evenly for chasing in these conditions."
+            )
+        return toss_logit, detail
 
     venue_data = TOSS_LOOKUP[venue_key]
 
@@ -843,9 +1040,25 @@ def _compute_toss_impact(venue_key: Optional[str], match_time: str, weather: dic
         toss_deviation = toss_deviation * 0.6  # Toss matters less in afternoon
         detail["toss_deviation_adjusted"] = round(toss_deviation, 4)
     
-    toss_logit = (3.0 * toss_deviation + 2.5 * chasing_bias) * dew_multiplier
-    toss_logit = max(-1.5, min(1.5, toss_logit))
+    base_env = (3.0 * toss_deviation + 2.5 * chasing_bias) * dew_multiplier
+    base_env = max(-1.5, min(1.5, base_env))
+    detail["toss_environment_logit"] = round(base_env, 4)
+    toss_logit = max(-1.5, min(1.5, base_env * chase_diff))
     detail["toss_logit_raw"] = round(toss_logit, 4)
+
+    ft = _favours_from_logit(toss_logit)
+    if ft == "team1":
+        detail["one_liner"] = (
+            f"{team1_name} — chase/top-order depth fits this venue's toss and dew profile better."
+        )
+    elif ft == "team2":
+        detail["one_liner"] = (
+            f"{team2_name} — chase/top-order depth fits this venue's toss and dew profile better."
+        )
+    else:
+        detail["one_liner"] = (
+            "Even chase depth or a low dew/toss sensitivity keeps this category close."
+        )
 
     return toss_logit, detail
 
@@ -922,14 +1135,27 @@ def _compute_bowling_depth(squad_data: dict, t1_rating: dict, t2_rating: dict,
     t2_variety_bonus = detail.get("team2_variety_bonus", 0)
     # Use venue-weighted quality for the logit
     bowl_depth_logit = 3.0 * ((t1_vq - t2_vq) / max(t1_vq + t2_vq, 1)) + (t1_variety_bonus - t2_variety_bonus)
+    vq_sum = t1_vq + t2_vq
+    if vq_sum > 0:
+        detail["team1_depth_share_pct"] = round(100 * t1_vq / vq_sum)
+        detail["team2_depth_share_pct"] = round(100 * t2_vq / vq_sum)
+    else:
+        detail["team1_depth_share_pct"] = 50
+        detail["team2_depth_share_pct"] = 50
     detail["venue_key"] = venue_key
     detail["venue_pace_assist"] = v_pace_assist
     detail["venue_spin_assist"] = v_spin_assist
     return bowl_depth_logit, detail
 
 
-def _compute_conditions_from_weather(venue_key: Optional[str], match_time: str,
-                                      weather: dict, squads: dict) -> Tuple[float, dict]:
+def _compute_conditions_from_weather(
+    venue_key: Optional[str],
+    match_time: str,
+    weather: dict,
+    squads: dict,
+    team1: str = "",
+    team2: str = "",
+) -> Tuple[float, dict]:
     """Category 7: Conditions — team-specific advantage from real weather.
     
     Key logic:
@@ -950,6 +1176,7 @@ def _compute_conditions_from_weather(venue_key: Optional[str], match_time: str,
 
     if not weather or not weather.get("available"):
         detail["conditions_summary"] = "Weather data unavailable — neutral conditions assumed"
+        detail["one_liner"] = "Weather feed unavailable — this factor stays neutral."
         return 0.0, detail
 
     current = weather.get("current", {})
@@ -964,6 +1191,8 @@ def _compute_conditions_from_weather(venue_key: Optional[str], match_time: str,
 
     conditions_logit = 0.0
     edge_reasons = []
+    t1n = team1 or "Team 1"
+    t2n = team2 or "Team 2"
 
     humidity = current.get("humidity", 50) or 50
     temperature = current.get("temperature", 30) or 30
@@ -995,36 +1224,38 @@ def _compute_conditions_from_weather(venue_key: Optional[str], match_time: str,
 
     # ── DEW EFFECT (biggest weather factor in T20) — EVENING MATCHES ONLY ──
     if dew_factor == "heavy" and is_evening:
-        # Heavy dew: bowling in 2nd innings MUCH harder → batting strength matters more
-        bat_diff = 0
         t1_players = squads.get("team1", [])
         t2_players = squads.get("team2", [])
-        t1_bat_quality = sum(STAR_PLAYERS.get(p.get("name", ""), 65) for p in t1_players if p.get("role") in ("Batsman", "WK-Batsman", "All-rounder"))
-        t2_bat_quality = sum(STAR_PLAYERS.get(p.get("name", ""), 65) for p in t2_players if p.get("role") in ("Batsman", "WK-Batsman", "All-rounder"))
-        t1_bat_avg = t1_bat_quality / max(sum(1 for p in t1_players if p.get("role") in ("Batsman", "WK-Batsman", "All-rounder")), 1)
-        t2_bat_avg = t2_bat_quality / max(sum(1 for p in t2_players if p.get("role") in ("Batsman", "WK-Batsman", "All-rounder")), 1)
+        t1_batters = [p for p in t1_players if p.get("role") in BAT_ROLES_DEW]
+        t2_batters = [p for p in t2_players if p.get("role") in BAT_ROLES_DEW]
+        t1_bat_avg = sum(STAR_PLAYERS.get(p.get("name", ""), 65) for p in t1_batters) / max(len(t1_batters), 1)
+        t2_bat_avg = sum(STAR_PLAYERS.get(p.get("name", ""), 65) for p in t2_batters) / max(len(t2_batters), 1)
         bat_diff = (t1_bat_avg - t2_bat_avg) / 100
-        dew_logit = 0.6 * bat_diff  # Strong effect
+        dew_logit = 0.6 * bat_diff
         conditions_logit += dew_logit
         if bat_diff > 0:
-            edge_reasons.append("Heavy dew (evening) favours team1 (stronger batting, chasing advantage)")
+            edge_reasons.append(
+                f"Heavy dew (evening) favours {t1n} (deeper batting for chasing)"
+            )
         elif bat_diff < 0:
-            edge_reasons.append("Heavy dew (evening) favours team2 (stronger batting, chasing advantage)")
+            edge_reasons.append(
+                f"Heavy dew (evening) favours {t2n} (deeper batting for chasing)"
+            )
         detail["dew_batting_edge"] = "team1" if bat_diff > 0 else "team2" if bat_diff < 0 else "equal"
     elif dew_factor == "moderate" and is_evening:
         t1_players = squads.get("team1", [])
         t2_players = squads.get("team2", [])
-        t1_bat_quality = sum(STAR_PLAYERS.get(p.get("name", ""), 65) for p in t1_players if p.get("role") in ("Batsman", "WK-Batsman", "All-rounder"))
-        t2_bat_quality = sum(STAR_PLAYERS.get(p.get("name", ""), 65) for p in t2_players if p.get("role") in ("Batsman", "WK-Batsman", "All-rounder"))
-        t1_bat_avg = t1_bat_quality / max(sum(1 for p in t1_players if p.get("role") in ("Batsman", "WK-Batsman", "All-rounder")), 1)
-        t2_bat_avg = t2_bat_quality / max(sum(1 for p in t2_players if p.get("role") in ("Batsman", "WK-Batsman", "All-rounder")), 1)
+        t1_batters = [p for p in t1_players if p.get("role") in BAT_ROLES_DEW]
+        t2_batters = [p for p in t2_players if p.get("role") in BAT_ROLES_DEW]
+        t1_bat_avg = sum(STAR_PLAYERS.get(p.get("name", ""), 65) for p in t1_batters) / max(len(t1_batters), 1)
+        t2_bat_avg = sum(STAR_PLAYERS.get(p.get("name", ""), 65) for p in t2_batters) / max(len(t2_batters), 1)
         bat_diff = (t1_bat_avg - t2_bat_avg) / 100
         dew_logit = 0.35 * bat_diff
         conditions_logit += dew_logit
         if bat_diff > 0:
-            edge_reasons.append("Moderate dew (evening) slightly favours team1 (better batting)")
+            edge_reasons.append(f"Moderate dew (evening) slightly favours {t1n} (batting depth)")
         elif bat_diff < 0:
-            edge_reasons.append("Moderate dew (evening) slightly favours team2 (better batting)")
+            edge_reasons.append(f"Moderate dew (evening) slightly favours {t2n} (batting depth)")
         detail["dew_batting_edge"] = "team1" if bat_diff > 0 else "team2" if bat_diff < 0 else "equal"
     elif is_afternoon:
         edge_reasons.append("Afternoon match (3:30 PM IST) — minimal dew impact, conditions similar for both innings")
@@ -1036,9 +1267,13 @@ def _compute_conditions_from_weather(venue_key: Optional[str], match_time: str,
         swing_logit = 0.4 * pace_diff
         conditions_logit += swing_logit
         if t1_pace > t2_pace:
-            edge_reasons.append(f"Swing conditions (humidity {humidity}%) favour team1 ({t1_pace} pacers vs {t2_pace})")
+            edge_reasons.append(
+                f"Swing conditions (humidity {humidity}%) favour {t1n} ({t1_pace} pacers vs {t2_pace})"
+            )
         elif t2_pace > t1_pace:
-            edge_reasons.append(f"Swing conditions (humidity {humidity}%) favour team2 ({t2_pace} pacers vs {t1_pace})")
+            edge_reasons.append(
+                f"Swing conditions (humidity {humidity}%) favour {t2n} ({t2_pace} pacers vs {t1_pace})"
+            )
         detail["swing_edge"] = "team1" if t1_pace > t2_pace else "team2" if t2_pace > t1_pace else "equal"
 
     # ── HOT & DRY: spin-friendly ──
@@ -1047,9 +1282,13 @@ def _compute_conditions_from_weather(venue_key: Optional[str], match_time: str,
         dry_logit = 0.35 * spin_diff
         conditions_logit += dry_logit
         if t1_spin > t2_spin:
-            edge_reasons.append(f"Hot dry conditions ({temperature}C) favour team1 ({t1_spin} spinners vs {t2_spin})")
+            edge_reasons.append(
+                f"Hot dry conditions ({temperature}C) favour {t1n} ({t1_spin} spinners vs {t2_spin})"
+            )
         elif t2_spin > t1_spin:
-            edge_reasons.append(f"Hot dry conditions ({temperature}C) favour team2 ({t2_spin} spinners vs {t1_spin})")
+            edge_reasons.append(
+                f"Hot dry conditions ({temperature}C) favour {t2n} ({t2_spin} spinners vs {t1_spin})"
+            )
         detail["dry_spin_edge"] = "team1" if t1_spin > t2_spin else "team2" if t2_spin > t1_spin else "equal"
 
     # ── WIND: high-scoring games benefit stronger batting ──
@@ -1066,6 +1305,13 @@ def _compute_conditions_from_weather(venue_key: Optional[str], match_time: str,
         detail["favours_team"] = "neutral"
 
     detail["conditions_edge_text"] = " | ".join(edge_reasons) if edge_reasons else "Conditions relatively neutral for both teams"
+
+    if conditions_logit > 0.01:
+        detail["one_liner"] = f"{t1n} — net weather/dew/swing tilt from the factors above."
+    elif conditions_logit < -0.01:
+        detail["one_liner"] = f"{t2n} — net weather/dew/swing tilt from the factors above."
+    else:
+        detail["one_liner"] = "Conditions are close — dew, swing and surface effects largely balance out."
 
     return conditions_logit, detail
 
