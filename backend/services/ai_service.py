@@ -4,25 +4,21 @@ import json
 import uuid
 import re
 from typing import Dict, List, Optional
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+from services.claude_client import UserMessage, get_claude_chat, DEFAULT_CLAUDE_MODEL
 from services.web_scraper import web_search, search_cricket_live, search_match_context, search_player_data, fetch_match_news
 
 logger = logging.getLogger(__name__)
 
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
-EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
-
 # ─── Claude Opus helpers ──────────────────────────────────────
 
 def _get_claude_chat(session_id: str, system_msg: str):
     """Create a Claude Opus chat instance."""
-    key = ANTHROPIC_KEY
-    if not key:
+    if not ANTHROPIC_KEY:
         raise ValueError("ANTHROPIC_API_KEY not configured in .env")
-    chat = LlmChat(api_key=key, session_id=session_id, system_message=system_msg)
-    chat.with_model("anthropic", "claude-opus-4-5-20251101")
-    return chat
+    chat = get_claude_chat(session_id, system_msg)
+    return chat.with_model("anthropic", DEFAULT_CLAUDE_MODEL)
 
 
 def _extract_json(text):
@@ -1452,6 +1448,13 @@ Return JSON with this EXACT structure:
     {{"trigger": "Exact event description", "revise_favour": "{t1_short}" or "{t2_short}", "revise_pct": number}},
     {{"trigger": "Exact event description", "revise_favour": "{t1_short}" or "{t2_short}", "revise_pct": number}}
   ],
+
+  "historical_factors": {{
+    "h2h_win_pct": number (0-1, {t1_short} head-to-head edge vs {t2_short} in this fixture),
+    "venue_win_pct": number (0-1, how venue/pitch conditions favour {t1_short} over {t2_short}),
+    "recent_form_pct": number (0-1, {t1_short} IPL 2026 form edge vs {t2_short}),
+    "toss_advantage_pct": number (0-1, toss + dew edge for {t1_short})
+  }},
 
   "contextual_adjustment_pct": number (-30 to +30, positive = favours {t1_short}),
   "adjustment_confidence": "Low" or "Medium" or "High",
