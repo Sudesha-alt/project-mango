@@ -21,57 +21,70 @@ Build a full-stack cricket prediction app for IPL 2026 with an 8-category math m
 8. Team Momentum (3%)
 
 ### Match Time Classification (Apr 2026)
-- **`_classify_match_time`**: Replaces boolean `_is_night_match` with 3-tier system:
-  - `day` (before 2 PM IST) — no dew, toss neutral
-  - `afternoon` (2-5 PM IST, e.g. 3:30 PM slot) — minimal dew, toss less decisive, dew_multiplier=0.55
-  - `evening` (after 5 PM IST, e.g. 7:30 PM slot) — significant dew, toss very impactful, dew_multiplier=1.0
-- **SportMonks cross-reference**: Match start time fetched from SportMonks `starting_at` field and cross-referenced with DB `dateTimeGMT` on every prediction
-- **Impact on toss_logit**: Afternoon matches show ~73% lower toss impact than evening matches at same venue
+- `_classify_match_time`: 3-tier day/afternoon/evening
+  - `day` (before 2 PM IST) — no dew
+  - `afternoon` (2-5 PM IST, 3:30 PM slot) — minimal dew, dew_multiplier=0.55
+  - `evening` (after 5 PM IST, 7:30 PM slot) — significant dew, dew_multiplier=1.0
+- SportMonks cross-reference: `starting_at` from API verified on every prediction
+
+### Claude Opus 7-Layer Pre-Match Analysis (Apr 2026)
+Completely rewritten to produce structured, data-driven, layered match previews:
+- **Layer 1**: Squad Strength & Current Form (with SportMonks form data)
+- **Layer 2**: Key Matchups (batter vs bowler, decisive duel)
+- **Layer 3**: Venue & Pitch Analysis (time-of-day aware)
+- **Layer 4**: Bowling Depth & Attack Quality (by phase)
+- **Layer 5**: Death Bowling Identity (overs 16-20)
+- **Layer 6**: Head-to-Head (recency-weighted)
+- **Layer 7**: Impact Player Options
+- **Algorithm Predictions table**: Shows POTM, Top Batters/Bowlers from algo
+- **Analyst POTM**: Claude's own pick with 3 stat-backed reasons
+- **Algorithm vs Analyst Divergence**: Explicitly notes when predictions differ by >10%
+- **Deciding Factor & First 6 Overs Signal**: Tactical guidance
+- **Data inputs**: Expected XI, algo output, player performance, weather, form/H2H, news
 
 ### Playing XI Integration
-- Pipeline: Live fixtures -> Last completed match from season fixtures -> Squad estimate fallback
-- Refresh button always returns API-verified Playing XI (not squad-based)
-- Status endpoint falls back to DB cache when task is complete
+- Pipeline: Live fixtures -> Last completed match -> Squad estimate fallback
+- Refresh button always returns API-verified Playing XI
+- Status endpoint falls back to DB cache
 
-### Schedule Management (Apr 2026)
-- **Winner-based categorization**: Match is completed ONLY if it has a winner (not date-based)
-- **Date guard on sync**: sync-results only updates matches whose date has already passed
-- **Sync Results button**: Frontend button to manually trigger result sync from SportMonks
+### Schedule Management
+- Winner-based categorization (match completed ONLY if winner present)
+- Sync Results button with date guard
 
-### DLS / Overs Reduced (Apr 2026)
-- User can input DLS context in live match page
-- Passed through to Claude via `dls_info` parameter
-- Claude prompt includes DLS section marked as CRITICAL
+### DLS / Overs Reduced
+- User input in live match page, passed to Claude via `dls_info`
 
 ### Re-Predict All
-- Deletes old pre-match prediction + Claude analysis from DB for each match
-- Re-runs algo with fresh Playing XI + player performance + Claude for ALL upcoming matches
-- Status polling with phase info (algo/claude per match)
+- Deletes old predictions + Claude analysis
+- Recalculates with fresh Playing XI + player performance + Claude for ALL upcoming matches
+- Now passes algo data, player perf, weather, form to Claude 7-layer prompt
 
 ### Key Endpoints
 - `POST /api/matches/{id}/pre-match-predict` — 8-category prediction
-- `POST /api/matches/{id}/fetch-live` — Live scores + Claude + combined prediction (accepts dls_info)
-- `POST /api/matches/{id}/refresh-claude-prediction` — Re-run Claude (accepts dls_info)
+- `POST /api/matches/{id}/claude-analysis` — 7-layer Claude analysis (enriched with algo data)
+- `GET /api/matches/{id}/claude-analysis` — cached Claude analysis
+- `DELETE /api/matches/{id}/claude-analysis` — clear cached analysis
+- `POST /api/matches/{id}/fetch-live` — Live scores + Claude + combined prediction
+- `POST /api/matches/{id}/refresh-claude-prediction` — Re-run Claude live
 - `POST /api/matches/{id}/playing-xi` — Refresh Playing XI (API-verified)
 - `POST /api/schedule/sync-results` — Sync results with date guard
 - `POST /api/predictions/repredict-all` — Background full re-prediction
 
-## Completed Tasks (Apr 2026)
+## Completed Tasks
 - [x] All 8 pre-match categories with non-zero values
 - [x] Playing XI from SportMonks (API-verified, not squad-based)
 - [x] Player performance stats from last 5 matches per team
 - [x] Form = W/L (60%) + player performance (40%)
 - [x] Re-Predict All: deletes old, runs algo + Claude for ALL matches
 - [x] All Claude endpoints use filtered Playing XI
-- [x] Schedule fix: winner-based categorization (15 completed, 55 upcoming)
-- [x] Date guard on sync-results to prevent future match contamination
-- [x] Sync Results button in frontend
-- [x] DLS/Overs Reduced input in live match page, passed to Claude
-- [x] Playing XI refresh returns API-verified (fixed _bg_fetch_playing_xi)
-- [x] Playing XI status endpoint falls back to DB cache
-- [x] **Match time classification**: 3-tier day/afternoon/evening for toss & conditions
-- [x] **SportMonks start time cross-reference**: Fetches `starting_at` from API to verify match time
-- [x] **Afternoon match dew reduction**: Afternoon matches have 0.55x dew multiplier vs 1.0x for evening
+- [x] Schedule fix: winner-based categorization
+- [x] DLS/Overs Reduced input in live match page
+- [x] Playing XI refresh returns API-verified
+- [x] Match time classification: 3-tier day/afternoon/evening
+- [x] SportMonks start time cross-reference
+- [x] Afternoon match dew reduction
+- [x] **Claude 7-layer pre-match analysis** with algo data, player perf, weather, form, news
+- [x] **Frontend: New ClaudeAnalysis component** with collapsible layers, dual probability bars, algo vs analyst divergence, POTM, deciding factor, first 6 signal
 
 ## Backlog
 - [ ] P2: Shareable prediction card

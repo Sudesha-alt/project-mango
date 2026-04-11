@@ -655,10 +655,31 @@ Source data:
 
 # ─── Claude Deep Narrative Analysis (NEW) ─────────────────────
 
-async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_info: dict, squads: dict = None, news: list = None) -> dict:
+def _format_top_performers(performers: list) -> str:
+    """Format top performers list, handling both string and dict items."""
+    if not performers:
+        return "N/A"
+    result = []
+    for p in performers[:5]:
+        if isinstance(p, str):
+            result.append(p)
+        elif isinstance(p, dict):
+            name = p.get("name", p.get("player", "?"))
+            score = p.get("score", p.get("form_score", ""))
+            result.append(f"{name}" + (f" ({score})" if score else ""))
+        else:
+            result.append(str(p))
+    return ", ".join(result) or "N/A"
+
+
+async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_info: dict,
+                                     squads: dict = None, news: list = None,
+                                     algo_prediction: dict = None, player_performance: dict = None,
+                                     weather: dict = None, form_data: dict = None) -> dict:
     """
-    Claude Opus: Generate a rich, narrative match analysis.
-    NO web scraping. Only uses official IPL 2026 squad data + news from newsdata.io.
+    Claude Opus: Elite 7-layer pre-match analysis.
+    Combines actual SportMonks API data (Expected XI, player stats, H2H, algorithm output)
+    with Claude's contextual cricket intelligence.
     """
     t1_short = match_info.get("team1Short", team1[:3].upper())
     t2_short = match_info.get("team2Short", team2[:3].upper())
@@ -667,7 +688,7 @@ async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_i
     match_num = match_info.get("match_number", "")
     city = match_info.get("city", "")
 
-    # Build squad block for Claude (ONLY expected Playing XI, not full squad)
+    # ── Build Expected Playing XI section ──
     squad_block = ""
     if squads:
         for team_name, players in squads.items():
@@ -681,12 +702,78 @@ async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_i
                     player_lines.append(f"  - {name} ({role}){overseas}{captain}")
                 squad_block += f"\n{team_name} EXPECTED PLAYING XI ({len(players)} players):\n" + "\n".join(player_lines) + "\n"
 
-    squad_section = f"\n=== EXPECTED PLAYING XI (Based on last match — analyze ONLY these players) ===\n{squad_block}" if squad_block else ""
+    # ── Build player performance stats section ──
+    perf_block = ""
+    if player_performance:
+        for team_key, label in [("team1", team1), ("team2", team2)]:
+            team_perf = player_performance.get(team_key, {})
+            if team_perf:
+                perf_lines = []
+                for pid, ps in team_perf.items():
+                    name = ps.get("name", "?")
+                    matches = ps.get("matches", 0)
+                    bat = ps.get("batting", {})
+                    bowl = ps.get("bowling", {})
+                    line = f"  {name}: {matches} matches"
+                    if bat.get("innings", 0) > 0:
+                        line += f" | Bat: {bat.get('runs',0)} runs, Avg {bat.get('avg',0)}, SR {bat.get('sr',0)}"
+                    if bowl.get("innings", 0) > 0:
+                        line += f" | Bowl: {bowl.get('wickets',0)} wkts, Econ {bowl.get('economy',0)}"
+                    perf_lines.append(line)
+                if perf_lines:
+                    perf_block += f"\n{label} — PLAYER FORM (Last 5 matches from SportMonks) [SPORTMONKS DATA]:\n" + "\n".join(perf_lines) + "\n"
 
-    # Build news section (ONLY from newsdata.io, filtered for these teams)
+    # ── Build algorithm prediction section ──
+    algo_block = ""
+    if algo_prediction:
+        pred = algo_prediction.get("prediction", algo_prediction)
+        factors = pred.get("factors", {})
+        algo_block = f"""
+=== ALGORITHM OUTPUT [SPORTMONKS DATA] ===
+Match Winner Probability: {t1_short} {pred.get('team1_win_prob', 50)}% / {t2_short} {pred.get('team2_win_prob', 50)}%
+Model Confidence: {pred.get('confidence', 'unknown')}
+Combined Logit: {pred.get('combined_logit', 0)}
+
+Category Breakdown:
+- Squad Strength (25%): {t1_short} bat {factors.get('squad_strength',{}).get('team1_batting','?')}/bowl {factors.get('squad_strength',{}).get('team1_bowling','?')} | {t2_short} bat {factors.get('squad_strength',{}).get('team2_batting','?')}/bowl {factors.get('squad_strength',{}).get('team2_bowling','?')} | Logit: {factors.get('squad_strength',{}).get('logit_contribution',0)}
+- Current Form (21%): {t1_short} score {factors.get('current_form',{}).get('team1_form_score','?')} ({factors.get('current_form',{}).get('team1_wins',0)}W) | {t2_short} score {factors.get('current_form',{}).get('team2_form_score','?')} ({factors.get('current_form',{}).get('team2_wins',0)}W) | Logit: {factors.get('current_form',{}).get('logit_contribution',0)}
+- Venue+Pitch+Home (18%): Pitch: {factors.get('venue_pitch_home',{}).get('pitch_type','?')}, Pace: {factors.get('venue_pitch_home',{}).get('pace_assist','?')}, Spin: {factors.get('venue_pitch_home',{}).get('spin_assist','?')}, Home: {factors.get('venue_pitch_home',{}).get('home_team','neutral')} | Logit: {factors.get('venue_pitch_home',{}).get('logit_contribution',0)}
+- H2H (11%): {t1_short} {factors.get('h2h',{}).get('team1_wins',0)} wins / {t2_short} {factors.get('h2h',{}).get('team2_wins',0)} wins (total {factors.get('h2h',{}).get('total',0)}) | Logit: {factors.get('h2h',{}).get('logit_contribution',0)}
+- Toss Impact (9%): Time: {factors.get('toss_impact',{}).get('match_time_class','?')}, Dew: {factors.get('toss_impact',{}).get('dew_factor','none')}, Pref: {factors.get('toss_impact',{}).get('preferred_decision','?')} | Logit: {factors.get('toss_impact',{}).get('logit_contribution',0)}
+- Bowling Depth (8%): {t1_short} VQ:{factors.get('bowling_depth',{}).get('team1_venue_quality','?')} ({factors.get('bowling_depth',{}).get('team1_variety','?')}) | {t2_short} VQ:{factors.get('bowling_depth',{}).get('team2_venue_quality','?')} ({factors.get('bowling_depth',{}).get('team2_variety','?')}) | Logit: {factors.get('bowling_depth',{}).get('logit_contribution',0)}
+- Conditions (5%): {factors.get('conditions',{}).get('conditions_edge_text','Neutral')} | Logit: {factors.get('conditions',{}).get('logit_contribution',0)}
+- Momentum (3%): {t1_short} last 2: {factors.get('momentum',{}).get('team1_last2',[])} | {t2_short} last 2: {factors.get('momentum',{}).get('team2_last2',[])} | Logit: {factors.get('momentum',{}).get('logit_contribution',0)}
+
+Top Performers (from form data):
+{t1_short}: {_format_top_performers(factors.get('current_form',{}).get('team1_top_performers',[]))}
+{t2_short}: {_format_top_performers(factors.get('current_form',{}).get('team2_top_performers',[]))}
+"""
+
+    # ── Build H2H section ──
+    h2h_block = ""
+    if form_data and form_data.get("h2h"):
+        h2h = form_data["h2h"]
+        h2h_block = f"""
+=== HEAD-TO-HEAD RECORD [SPORTMONKS DATA] ===
+{t1_short} wins: {h2h.get('team1_wins', 0)} | {t2_short} wins: {h2h.get('team2_wins', 0)} | Total: {h2h.get('team1_wins',0) + h2h.get('team2_wins',0)}
+Source: {h2h.get('source', 'season_2026')}
+"""
+
+    # ── Build weather section ──
+    weather_block = ""
+    if weather and weather.get("available"):
+        cur = weather.get("current", {})
+        impact = weather.get("cricket_impact", {})
+        weather_block = f"""
+=== WEATHER & PITCH CONDITIONS ===
+Temperature: {cur.get('temperature', 'N/A')}C | Humidity: {cur.get('humidity', 'N/A')}% | Wind: {cur.get('wind_speed_kmh', 'N/A')} km/h
+Condition: {cur.get('condition', 'N/A')}
+Dew Factor: {impact.get('dew_factor', 'unknown')} | Cricket Impact: {impact.get('summary', 'N/A')}
+"""
+
+    # ── Build news section ──
     news_section = ""
     if news:
-        # Filter news for relevance to these two teams
         t1_words = set(team1.lower().split())
         t2_words = set(team2.lower().split())
         relevant = []
@@ -694,7 +781,6 @@ async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_i
             title_lower = (article.get("title", "") or "").lower()
             body_lower = (article.get("body", "") or "").lower()
             text = title_lower + " " + body_lower
-            # Check if article mentions either team
             t1_match = any(w in text for w in t1_words if len(w) > 3)
             t2_match = any(w in text for w in t2_words if len(w) > 3)
             ipl_match = "ipl" in text or "cricket" in text
@@ -707,28 +793,39 @@ async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_i
             if title:
                 news_lines.append(f"  - {title}" + (f": {body}" if body else ""))
         if news_lines:
-            news_section = "\n=== LATEST NEWS ABOUT THESE TEAMS ===\n" + "\n".join(news_lines) + "\n"
+            news_section = "\n=== LATEST NEWS ===\n" + "\n".join(news_lines) + "\n"
 
     chat = _get_claude_chat(
         f"deep-{uuid.uuid4().hex[:8]}",
-        """You are the sharpest cricket betting analyst alive. You write match previews that read like a friend who's watched every ball of every IPL season explaining the match over drinks. You're brutally honest, data-driven, and never hedge unless the data genuinely says it's close.
+        """You are an elite IPL cricket analyst and prediction engine. You produce structured, data-driven, layered match previews that combine live API data with deep contextual cricket intelligence. Your analysis is opinionated, precise, and built for serious cricket followers who want more than surface-level previews.
 
-CRITICAL DATA CONSTRAINT: You must ONLY use cricket data from the years 2023 to 2026. Do NOT reference any player stats, records, or events from before 2023. The IPL mega-auction happened before IPL 2025, so all team compositions changed — historical team stats before 2023 are irrelevant. Only reference players from the Expected Playing XI provided — these are the actual 11 players expected to play, NOT the full squad.
+ANALYTICAL PHILOSOPHY — NON-NEGOTIABLE RULES:
+1. Every layer gets an ADVANTAGE verdict. No draws, no "both teams are evenly matched." Pick a side and justify it.
+2. Absent players change everything. If a key player is not in the API-returned XI, rebuild team assessments without them.
+3. Stats anchor every claim. Averages, strike rates, economy rates — name the numbers. No vague "good form" without figures.
+4. Recency beats history. Last 4 games outweigh 5-year H2H record. Say so explicitly.
+5. Venue and timing are tactical, not decorative. Every venue point must connect to specific bowler types or batting strategies.
+6. Win probability must reflect genuine asymmetry. Never default to false 50/50.
+7. Algorithm vs analyst tension is a feature. When your prediction diverges from the algorithm, explain why.
+8. Label all SportMonks data clearly with [SPORTMONKS DATA] tags.
 
-Your style:
-- Direct, conversational, opinionated
-- Every claim backed by a specific stat or recent event from 2023-2026
-- Short punchy sections with bold titles
-- Win probability is your final word — no wishy-washy "could go either way"
-- Confidence level is honest: low-medium for genuinely close games, high only when data is overwhelming"""
+STYLE: Sharp, confident, direct. Short sentences. Zero hedging. Write for someone who watches every IPL game. Always name names — never "their opening bowler." Disagreeing with the algorithm is encouraged when contextual case is strong.
+
+CRITICAL DATA CONSTRAINT: Only use IPL 2023-2026 data. Only reference players from the Expected Playing XI — the actual 11, NOT the full squad."""
     )
 
-    prompt = f"""Analyze this IPL 2026 match using ONLY the squad data and news I'm providing. Do NOT make up stats.
+    prompt = f"""Analyze this IPL 2026 match using the data below. Produce a full 7-layer contextual analysis.
 
 Match: {team1} ({t1_short}) vs {team2} ({t2_short})
 Match #{match_num} | Venue: {venue} | City: {city}
 Date: {date_str} | Time (IST): {time_ist}
-{squad_section}
+
+=== EXPECTED PLAYING XIs [SPORTMONKS DATA] ===
+{squad_block}
+{perf_block}
+{algo_block}
+{h2h_block}
+{weather_block}
 {news_section}
 === END DATA ===
 
@@ -737,53 +834,114 @@ Return a JSON object with this EXACT structure:
   "match_header": {{
     "match_number": {match_num or 0},
     "venue": "{venue}",
+    "city": "{city}",
     "date": "{date_str}",
-    "time_slot": "AFTERNOON" or "EVENING" (guess from date/time),
-    "home_team": "{t1_short}" or "{t2_short}" (which team plays at home at this venue)
+    "time_ist": "{time_ist}",
+    "time_slot": "AFTERNOON" or "EVENING",
+    "home_team": "{t1_short}" or "{t2_short}" or "NEUTRAL"
   }},
-  "team1_win_pct": number (0-100),
-  "team2_win_pct": number (0-100),
-  "headline": "One-line summary of THE single biggest factor (e.g. 'Kotla afternoon game')",
-  "factors": [
+  "team1_xi_display": [list of {t1_short} player names in batting order],
+  "team2_xi_display": [list of {t2_short} player names in batting order],
+  "xi_availability_notes": ["Any notable absences or uncertain availability"],
+  "layers": [
     {{
-      "title": "Short bold title (e.g. 'H2H at Kotla')",
-      "analysis": "2-4 sentences of sharp analysis with specific stats and recent results",
-      "tag": "Short tag like 'Narrow DC edge' or 'MI key weapon'",
-      "favors": "{t1_short}" or "{t2_short}" or "NEUTRAL"
+      "layer_num": 1,
+      "title": "SQUAD STRENGTH AND CURRENT FORM",
+      "analysis": "Assess both teams' overall squad balance with the actual XI. Use form scores to identify who is in form and who is not. Assess bowling depth, batting depth, all-rounder presence, structural weaknesses from absences. 4-6 sentences.",
+      "advantage": "{t1_short}" or "{t2_short}",
+      "advantage_reason": "One-line reason"
+    }},
+    {{
+      "layer_num": 2,
+      "title": "KEY MATCHUPS",
+      "analysis": "Identify 2-3 decisive batter vs bowler matchups. For each, state runs, balls, dismissals, SR where available. Identify THE single most decisive matchup. 4-6 sentences.",
+      "advantage": "{t1_short}" or "{t2_short}",
+      "advantage_reason": "One-line reason"
+    }},
+    {{
+      "layer_num": 3,
+      "title": "VENUE AND PITCH ANALYSIS",
+      "analysis": "Use venue stats: avg first innings score, batting first win %, pace vs spin economy. Connect pitch to specific bowlers in each XI. Factor in match timing (afternoon=no dew, evening=dew). 4-6 sentences.",
+      "advantage": "{t1_short}" or "{t2_short}",
+      "advantage_reason": "One-line reason"
+    }},
+    {{
+      "layer_num": 4,
+      "title": "BOWLING DEPTH AND ATTACK QUALITY",
+      "analysis": "Break down bowling attacks by phase: powerplay, middle, death. Name specific bowlers per phase. Assess quality, economy, form. Identify which attack more likely to restrict. 4-6 sentences.",
+      "advantage": "{t1_short}" or "{t2_short}",
+      "advantage_reason": "One-line reason"
+    }},
+    {{
+      "layer_num": 5,
+      "title": "DEATH BOWLING (OVERS 16-20)",
+      "analysis": "Most decisive T20 phase. Assess death bowling options by name. State death economy rates. Identify weakest link in each death attack. 3-5 sentences.",
+      "advantage": "{t1_short}" or "{t2_short}",
+      "advantage_reason": "One-line reason"
+    }},
+    {{
+      "layer_num": 6,
+      "title": "HEAD-TO-HEAD (RECENCY-WEIGHTED)",
+      "analysis": "Overall H2H record, last 5, venue-specific. Apply recency weighting — last 3 count more. Discount results where key players were absent. 3-5 sentences.",
+      "advantage": "{t1_short}" or "{t2_short}",
+      "advantage_reason": "One-line reason"
+    }},
+    {{
+      "layer_num": 7,
+      "title": "IMPACT PLAYER OPTIONS",
+      "analysis": "Assess likely impact sub choices given pitch and match demands. Evaluate fit for this specific game. 2-4 sentences.",
+      "advantage": "{t1_short}" or "{t2_short}",
+      "advantage_reason": "One-line reason"
     }}
   ],
+  "algorithm_predictions": {{
+    "algo_team1_win_pct": number (from algorithm data above),
+    "algo_team2_win_pct": number,
+    "algo_potm": "Player name from top performers data",
+    "algo_top_batters": ["name1", "name2"],
+    "algo_top_bowlers": ["name1", "name2"]
+  }},
+  "team1_win_pct": number (YOUR analyst prediction, 0-100),
+  "team2_win_pct": number (YOUR analyst prediction, 0-100),
+  "headline": "One bold line — the single biggest factor deciding this match",
   "key_injuries": [
     {{
       "player": "Player Name",
       "team": "{t1_short}" or "{t2_short}",
       "status": "Out" or "Doubtful" or "Fit",
-      "impact": "How this affects the team in 1 sentence"
+      "impact": "1 sentence impact"
     }}
   ],
   "batting_first_scenario": {{
     "if_team1_bats": {{"team1_win_pct": number}},
     "if_team2_bats": {{"team2_win_pct": number}}
   }},
-  "deciding_logic": "3-5 sentences explaining your REASONING for the final probability. This is the key paragraph — why one team edges it.",
-  "prediction_summary": "1-2 sentence bold prediction (e.g. 'MI win narrowly. 52%. MI's superior bowling depth...')",
+  "analyst_potm": {{
+    "player": "Name",
+    "reasons": ["Stat-backed reason 1", "Reason 2", "Reason 3"]
+  }},
+  "deciding_factor": "One paragraph. What is THE single variable that determines this match? State it plainly and explain what happens if it goes each way.",
+  "first_6_overs_signal": "Name exactly what to watch in the powerplay — a specific player/matchup that tells you how the match unfolds.",
+  "deciding_logic": "3-5 sentences — your complete reasoning chain for the final probability.",
+  "prediction_summary": "1-2 sentence bold prediction with percentage",
+  "algo_divergence_note": "If your prediction differs from the algorithm by >10%, explain why in 2-3 sentences. Otherwise null.",
   "confidence": "Low" or "Low-medium" or "Medium" or "Medium-high" or "High",
-  "confidence_reason": "Why this confidence level (e.g. 'genuinely close contest')"
+  "confidence_reason": "Why this confidence level"
 }}
 
 RULES:
-- Include 6-10 factors covering: venue/conditions, H2H, form, injuries, key matchups, bowling depth, batting depth, spin/pace advantage, toss impact
-- Every factor MUST reference specific stats or recent events from 2023-2026 ONLY. Do NOT cite pre-2023 data.
-- Only reference players who are in the Expected Playing XI provided above. Do NOT reference bench or squad players.
-- Win probabilities must add to 100
-- Be opinionated. If one team is better, say so. Don't be safe.
-- Tag each factor with which team it favors"""
+- All 7 layers MUST have an ADVANTAGE verdict. No ties.
+- Only reference players in the Expected Playing XI.
+- Win probabilities must add to 100.
+- Be opinionated and bold. If one team is structurally superior, reflect it (e.g. 65/35).
+- Every claim needs a stat or specific recent event behind it."""
 
     try:
         response = await chat.send_message(UserMessage(text=prompt))
         return _extract_json(response)
     except Exception as e:
         logger.error(f"Claude deep analysis error: {e}")
-        return {"error": str(e), "team1_win_pct": 50, "team2_win_pct": 50, "factors": [], "headline": "Analysis unavailable"}
+        return {"error": str(e), "team1_win_pct": 50, "team2_win_pct": 50, "layers": [], "headline": "Analysis unavailable"}
 
 
 # ─── Claude Live Match Analysis (NEW) ─────────────────────────

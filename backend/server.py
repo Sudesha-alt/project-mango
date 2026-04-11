@@ -1898,9 +1898,41 @@ async def _background_repredict_all():
                 logger.warning(f"[RePredict] XI filter failed for {mid}: {e}")
 
             match_news = await fetch_match_news(team1, team2)
+
+            # Fetch enrichment data for the new 7-layer prompt
+            algo_pred = None
+            try:
+                algo_pred = await db.pre_match_predictions.find_one({"matchId": mid}, {"_id": 0})
+            except Exception:
+                pass
+            player_perf = {}
+            try:
+                t1p = await db.player_performance.find_one({"team": team1}, {"_id": 0})
+                t2p = await db.player_performance.find_one({"team": team2}, {"_id": 0})
+                if t1p:
+                    player_perf["team1"] = t1p.get("players", t1p)
+                if t2p:
+                    player_perf["team2"] = t2p.get("players", t2p)
+            except Exception:
+                pass
+            weather_data = None
+            try:
+                city_name = match.get("city", "") or venue.split(",")[-1].strip() if venue else ""
+                if city_name:
+                    weather_data = await get_weather(city_name, match.get("dateTimeGMT"))
+            except Exception:
+                pass
+            form_data = None
+            try:
+                form_data = await fetch_team_form(db, team1, team2, player_performance=player_perf)
+            except Exception:
+                pass
+
             try:
                 analysis = await claude_deep_match_analysis(
-                    team1, team2, venue, match, squads=playing_xi_squads, news=match_news
+                    team1, team2, venue, match, squads=playing_xi_squads, news=match_news,
+                    algo_prediction=algo_pred, player_performance=player_perf,
+                    weather=weather_data, form_data=form_data,
                 )
                 if analysis and "error" not in analysis:
                     await db.claude_analysis.update_one(
@@ -2312,7 +2344,7 @@ async def get_claude_analysis(match_id: str):
 
 @api_router.post("/matches/{match_id}/claude-analysis")
 async def api_claude_analysis(match_id: str, background_tasks: BackgroundTasks = None):
-    """Claude Opus deep narrative match analysis with real-time web data."""
+    """Claude Opus 7-layer pre-match analysis with full SportMonks data + algorithm output."""
     match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
     if not match_info:
         return {"error": "Match not found"}
@@ -2326,11 +2358,9 @@ async def api_claude_analysis(match_id: str, background_tasks: BackgroundTasks =
     team2 = match_info.get("team2", "")
     venue = match_info.get("venue", "")
 
-    # Run Claude deep analysis (this takes time due to web scraping + Claude)
+    # ── 1. Get squads and filter to Playing XI ──
     match_squads = await _get_squads_for_match(team1, team2)
-
-    # ── Filter to Playing XI — Claude MUST analyze only the expected 11 ──
-    playing_xi_squads = match_squads  # Default: full squad
+    playing_xi_squads = match_squads
     try:
         t1_xi = await fetch_last_played_xi(team1)
         t2_xi = await fetch_last_played_xi(team2)
@@ -2342,13 +2372,61 @@ async def api_claude_analysis(match_id: str, background_tasks: BackgroundTasks =
             filtered = _filter_squads_to_playing_xi(match_squads, xi_sm_data, team1, team2)
             if filtered:
                 playing_xi_squads = filtered
-                logger.info(f"Claude pre-match analysis using Playing XI: {sum(len(v) for v in filtered.values())} players")
+                logger.info(f"Claude analysis using Playing XI: {sum(len(v) for v in filtered.values())} players")
     except Exception as e:
-        logger.warning(f"Failed to filter Playing XI for Claude analysis: {e}")
+        logger.warning(f"Failed to filter Playing XI for Claude: {e}")
 
-    # Fetch news for Claude context
+    # ── 2. Fetch algorithm prediction (pre-match) for data pass-through ──
+    algo_prediction = None
+    try:
+        algo_cached = await db.pre_match_predictions.find_one({"matchId": match_id}, {"_id": 0})
+        if algo_cached and algo_cached.get("prediction"):
+            algo_prediction = algo_cached
+            logger.info(f"Claude analysis enriched with algorithm prediction for {match_id}")
+    except Exception as e:
+        logger.warning(f"Failed to fetch algo prediction for Claude: {e}")
+
+    # ── 3. Fetch player performance stats from SportMonks ──
+    player_performance = {}
+    try:
+        t1_perf = await db.player_performance.find_one({"team": team1}, {"_id": 0})
+        t2_perf = await db.player_performance.find_one({"team": team2}, {"_id": 0})
+        if t1_perf:
+            player_performance["team1"] = t1_perf.get("players", t1_perf)
+        if t2_perf:
+            player_performance["team2"] = t2_perf.get("players", t2_perf)
+    except Exception as e:
+        logger.warning(f"Failed to fetch player performance for Claude: {e}")
+
+    # ── 4. Fetch weather for venue ──
+    weather = None
+    try:
+        city_name = match_info.get("city", "") or venue.split(",")[-1].strip() if venue else ""
+        if city_name:
+            weather = await get_weather(city_name, match_info.get("dateTimeGMT"))
+    except Exception as e:
+        logger.warning(f"Failed to fetch weather for Claude: {e}")
+
+    # ── 5. Fetch form data (H2H, momentum) ──
+    form_data = None
+    try:
+        form_data = await fetch_team_form(db, team1, team2, player_performance=player_performance)
+    except Exception as e:
+        logger.warning(f"Failed to fetch form data for Claude: {e}")
+
+    # ── 6. Fetch news ──
     match_news = await fetch_match_news(team1, team2)
-    analysis = await claude_deep_match_analysis(team1, team2, venue, match_info, squads=playing_xi_squads, news=match_news)
+
+    # ── 7. Run Claude 7-layer analysis ──
+    analysis = await claude_deep_match_analysis(
+        team1, team2, venue, match_info,
+        squads=playing_xi_squads,
+        news=match_news,
+        algo_prediction=algo_prediction,
+        player_performance=player_performance,
+        weather=weather,
+        form_data=form_data,
+    )
 
     # Cache in DB
     result = {
@@ -2361,6 +2439,13 @@ async def api_claude_analysis(match_id: str, background_tasks: BackgroundTasks =
         "analysis": analysis,
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "model": "claude-opus-4.5",
+        "data_sources": {
+            "has_algo": bool(algo_prediction),
+            "has_player_perf": bool(player_performance.get("team1") or player_performance.get("team2")),
+            "has_weather": bool(weather and weather.get("available")),
+            "has_form": bool(form_data),
+            "has_news": bool(match_news),
+        }
     }
     await db.claude_analysis.update_one(
         {"matchId": match_id},
