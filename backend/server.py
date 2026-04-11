@@ -246,24 +246,33 @@ async def sync_live_scores_to_schedule():
 
 @api_router.get("/schedule/load")
 async def load_ipl_schedule(force: bool = False):
-    """Load IPL 2026 schedule using GPT and store in MongoDB."""
+    """Load IPL 2026 schedule from official seed data. Merges with existing DB matches
+    to preserve results, scores, and predictions for completed/live matches."""
     existing = await db.ipl_schedule.count_documents({})
-    if existing > 0 and not force:
+    if existing >= 70 and not force:
         return {"status": "already_loaded", "count": existing}
-    logger.info("Fetching IPL 2026 schedule via GPT...")
-    matches = await fetch_ipl_schedule()
-    if matches:
-        # Resolve TBD venues
-        tbd_count = sum(1 for m in matches if not m.get("venue") or m.get("venue") == "TBD")
-        if tbd_count > 0:
-            logger.info(f"Resolving {tbd_count} TBD venues...")
-            matches = await resolve_tbd_venues(matches)
-        await db.ipl_schedule.delete_many({})
-        for m in matches:
-            m["loadedAt"] = datetime.now(timezone.utc).isoformat()
-        await db.ipl_schedule.insert_many(matches)
-        return {"status": "loaded", "count": len(matches)}
-    return {"status": "error", "count": 0}
+
+    # Use official PDF schedule (70 matches) as the source of truth
+    docs = get_schedule_documents()
+    if not docs:
+        return {"status": "error", "message": "No schedule data available"}
+
+    # Build map of existing DB matches to preserve their results/status
+    existing_map = {}
+    async for m in db.ipl_schedule.find({}, {"_id": 0}):
+        existing_map[m.get("matchId")] = m
+
+    inserted = 0
+    for doc in docs:
+        mid = doc["matchId"]
+        if mid not in existing_map:
+            doc["loadedAt"] = datetime.now(timezone.utc).isoformat()
+            await db.ipl_schedule.insert_one(doc)
+            inserted += 1
+
+    total = await db.ipl_schedule.count_documents({})
+    logger.info(f"Schedule load: preserved {len(existing_map)}, inserted {inserted}, total {total}")
+    return {"status": "loaded", "count": total, "inserted": inserted, "preserved": len(existing_map)}
 
 
 @api_router.post("/schedule/resolve-venues")

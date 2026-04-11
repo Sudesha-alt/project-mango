@@ -22,46 +22,30 @@ Build a full-stack cricket prediction app for IPL 2026 with an 8-category math m
 
 ### Claude Opus Pre-Match: 7-Layer Analysis
 Layers: Squad Strength, Key Matchups, Venue/Pitch, Bowling Depth, Death Bowling, H2H, Impact Player.
-Plus: Algorithm Predictions table, Analyst POTM, Divergence notes, Toss Scenarios, Deciding Factor, First 6 Signal.
 
-### Claude Opus Live Match: 11-Section Structured Prediction (Apr 2026)
-- **S0**: Live Data Dump
-- **S1**: Match Context
-- **S2**: Squad Strength & Availability (22%)
-- **S3**: Current Season Form (18%)
-- **S4**: Venue & Pitch Profile (16%)
-- **S5**: Head-to-Head (10%)
-- **S6**: Key Player Matchups (8%)
-- **S7**: Bowling Depth & Death (7%)
-- **S8**: Data Integrity Checks
-- **S9**: Toss Scenarios
-- **S10**: Final Prediction
-- **S11**: Mid-Game Revision Triggers
+### Claude Opus Live Match: 11-Section Structured Prediction
+S0-S11: Live Data Dump through Mid-Game Revision Triggers.
 
 ### Performance Optimizations (Apr 2026)
-- Global axios timeout (30s default)
-- Individual timeouts on all API calls
-- Background tasks yield to event loop via asyncio.sleep(0.5)
-- Cancel endpoints for Re-Predict All and Claude Rerun
+- asyncio.to_thread wrapping for LiteLLM, cancel endpoints, axios timeouts
 
-### Playing XI Extraction Fix (Apr 2026)
-- **Bug**: Claude was evaluating full squad (16+ players) instead of Playing XI (11)
-- **Root cause**: `parse_fixture()` lineup pivot parsing failed silently → fell back to full squad
-- **Fix**: Multi-layer validation:
-  - Layer 1: Robust pivot parsing with type normalization
-  - Layer 2: Scorecard-based team resolution for unassigned players
-  - Layer 3: Pruning oversized XI using batting/bowling evidence
-  - Layer 4: Hard cap of 12 players (11 + 1 impact sub) in both parse_fixture() and _filter_squads_to_playing_xi()
-- **Tests**: 10 unit tests covering all edge cases (all passing)
+### Playing XI Extraction Fix (Apr 11, 2026)
+- **Bug**: Claude evaluated full squad (16+ players) instead of Playing XI (11)
+- **Fix**: Multi-layer validation — robust pivot parsing, scorecard-based team resolution, hard cap of 12 per team
+- **Tests**: 10 unit tests all passing
+
+### Full Schedule Loading Fix (Apr 11, 2026)
+- **Bug**: DB only had 10 matches (GPT-generated), IPL 2026 has 70 matches
+- **Fix**: Loaded all 70 matches from official PDF seed data, merged with existing results
+- **Schedule/load endpoint**: Now uses merge strategy — preserves existing results, inserts missing matches
 
 ### Key Endpoints
 - `POST /api/matches/{id}/pre-match-predict` — 8-category prediction
 - `POST /api/matches/{id}/claude-analysis` — 7-layer pre-match Claude
-- `POST /api/matches/{id}/fetch-live` — Live scores + 11-section Claude + combined prediction
+- `POST /api/matches/{id}/fetch-live` — Live scores + 11-section Claude
 - `POST /api/matches/{id}/refresh-claude-prediction` — Re-run live Claude
-- `POST /api/predictions/claude-rerun-all` — Background Claude re-analysis
-- `POST /api/predictions/claude-rerun-cancel` — Cancel Claude rerun
-- `POST /api/predictions/repredict-cancel` — Cancel Re-Predict All
+- `GET /api/schedule/load` — Loads full 70-match schedule (merge strategy)
+- `POST /api/schedule/seed-official` — Force-seed from official PDF data
 
 ## Backlog
 - [ ] P1: Celery migration for background jobs
