@@ -795,7 +795,7 @@ export default function LiveMatch() {
 
                           {/* 11-Section + Legacy 8-Layer Analysis (collapsible) */}
                           {(claudePred.layer_1_batters || claudePred.layer_2_bowling || claudePred.section_1_match_context) && (
-                            <details className="group" data-testid="claude-layers">
+                            <details className="group" open data-testid="claude-layers">
                               <summary className="text-[10px] text-purple-300 uppercase cursor-pointer hover:text-purple-200 font-bold tracking-wider py-1">
                                 {claudePred.section_1_match_context ? "11-Section Deep Analysis" : "8-Layer Deep Analysis"}
                               </summary>
@@ -875,7 +875,7 @@ export default function LiveMatch() {
 
                           {/* Data Integrity Checks */}
                           {claudePred.section_8_data_integrity && (
-                            <details className="group">
+                            <details className="group" open>
                               <summary className="text-[10px] text-[#FFCC00] uppercase cursor-pointer hover:text-[#FFCC00]/80 font-bold tracking-wider py-1">
                                 Data Integrity Checks {claudePred.section_8_data_integrity.passed ? "PASSED" : "ISSUES FOUND"}
                               </summary>
