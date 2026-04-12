@@ -16,7 +16,7 @@ export default function PlayingXIPerformance({ matchId, team1, team2 }) {
       try {
         const res = await axios.get(`${API}/predictions/upcoming`);
         const pred = (res.data.predictions || []).find(p => p.matchId === matchId);
-        if (pred?.playing_xi?.team1_xi?.length > 0) {
+        if (pred?.playing_xi && ((pred.playing_xi.team1_xi?.length > 0) || (pred.playing_xi.team2_xi?.length > 0))) {
           setData(pred.playing_xi);
         }
       } catch (e) { /* ignore */ }
@@ -61,7 +61,7 @@ export default function PlayingXIPerformance({ matchId, team1, team2 }) {
             return;
           }
           
-          if (d.team1_xi?.length > 0) {
+          if ((d.team1_xi?.length || 0) > 0 || (d.team2_xi?.length || 0) > 0) {
             setData(d);
           } else {
             setError("No Playing XI data returned. Try again.");
@@ -200,7 +200,7 @@ export default function PlayingXIPerformance({ matchId, team1, team2 }) {
         <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-[#A1A1AA] flex items-center gap-1.5" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
           <UsersThree weight="fill" className="w-4 h-4 text-[#7C3AED]" />
           Expected Playing XI + Performance
-          <InfoTooltip text="Predicted or confirmed Playing XI from web search (news, injuries, expert picks). Buzz Score (-100 to +100): positive = great form/trending, negative = injury doubts/poor form/controversy. Performance = base stats x buzz modifier x luck (+-15% random). Click a player's buzz badge to see WHY." />
+          <InfoTooltip text="Expected XI from each team’s last completed IPL match (SportMonks lineup), with squad merge when DB squads match. Buzz / expected runs load when enriched from prediction cache. Click a buzz badge for detail." />
         </h4>
         {!data && (
           <button onClick={handleFetch} disabled={loading} data-testid="fetch-playing-xi-btn"

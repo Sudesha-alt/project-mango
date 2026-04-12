@@ -646,7 +646,7 @@ async def fetch_season_fixtures(season_id: int) -> list:
 
 
 async def fetch_team_last_completed_fixture(team_name: str) -> Optional[dict]:
-    """Find the most recent completed fixture for a team in IPL 2026.
+    """Find the most recent completed IPL fixture for a team (2026, then 2025, 2024).
 
     Returns the raw fixture dict with id, localteam_id, visitorteam_id, note, starting_at.
     """
@@ -655,18 +655,31 @@ async def fetch_team_last_completed_fixture(team_name: str) -> Optional[dict]:
         logger.warning(f"Could not resolve team ID for: {team_name}")
         return None
 
-    season_id = IPL_SEASON_IDS.get(2026, 1795)
-    fixtures = await fetch_season_fixtures(season_id)
-    finished = [f for f in fixtures if (f.get("status") or "").lower() == "finished"]
-    # Sort by starting_at descending
-    finished.sort(key=lambda x: x.get("starting_at", ""), reverse=True)
-
-    for f in finished:
-        if f.get("localteam_id") == team_id or f.get("visitorteam_id") == team_id:
-            logger.info(f"Last completed match for {team_name} (id={team_id}): fixture {f.get('id')}")
-            return f
-    logger.warning(f"No completed fixture found for {team_name} (id={team_id})")
-    return None
+    tid = int(team_id)
+    candidates = []
+    for year in [2026, 2025, 2024]:
+        season_id = IPL_SEASON_IDS.get(year)
+        if not season_id:
+            continue
+        fixtures = await fetch_season_fixtures(season_id)
+        finished = [f for f in fixtures if (f.get("status") or "").lower() == "finished"]
+        for f in finished:
+            lt = f.get("localteam_id")
+            vt = f.get("visitorteam_id")
+            try:
+                lt_i = int(lt) if lt is not None else 0
+                vt_i = int(vt) if vt is not None else 0
+            except (TypeError, ValueError):
+                continue
+            if lt_i == tid or vt_i == tid:
+                candidates.append(f)
+    if not candidates:
+        logger.warning(f"No completed fixture found for {team_name} (id={team_id})")
+        return None
+    candidates.sort(key=lambda x: x.get("starting_at", "") or "", reverse=True)
+    best = candidates[0]
+    logger.info(f"Last completed match for {team_name} (id={team_id}): fixture {best.get('id')}")
+    return best
 
 
 async def fetch_playing_xi_from_last_match(team_name: str) -> list:
@@ -732,9 +745,10 @@ async def _enrich_players(players: list) -> list:
     for i in range(0, len(players), batch_size):
         batch = players[i:i + batch_size]
         results = await asyncio.gather(*[_fetch_player(p) for p in batch], return_exceptions=True)
-        for r in results:
+        for j, r in enumerate(results):
             if isinstance(r, Exception):
                 logger.warning(f"Player enrichment error: {r}")
+                enriched.append(batch[j])
             elif isinstance(r, dict):
                 enriched.append(r)
 
@@ -1076,15 +1090,23 @@ async def sync_player_performance_to_db(db) -> dict:
     }
 
 
+def _norm_id(v) -> int:
+    try:
+        return int(v) if v is not None else 0
+    except (TypeError, ValueError):
+        return 0
+
+
 def _parse_lineup(lineup_data: list, team_id: int) -> list:
     """Extract Playing XI (non-subs) for a specific team from SportMonks lineup data.
     Caps at 12 players (11 + 1 impact sub) to prevent full-squad leakage."""
     xi = []
+    tid = _norm_id(team_id)
     for p in lineup_data:
         lineup_info = p.get("lineup") or {}
         if not isinstance(lineup_info, dict):
             lineup_info = {}
-        if lineup_info.get("team_id") != team_id:
+        if _norm_id(lineup_info.get("team_id")) != tid:
             continue
         is_sub = lineup_info.get("substitution", False)
         if isinstance(is_sub, int):
@@ -1170,7 +1192,7 @@ async def fetch_last_played_xi(team_name: str) -> list:
 
     Pipeline (per user doc):
     1. Try live fixtures first (current match lineup is most relevant)
-    2. Fallback: Find last completed match from IPL 2026 season fixtures
+    2. Fallback: Last completed IPL match across 2026 / 2025 / 2024 (most recent)
     3. Fetch fixture with lineup include
     4. Extract non-substitute players = Playing XI
 
@@ -1207,34 +1229,29 @@ async def fetch_last_played_xi(team_name: str) -> list:
             lineup_data = []
 
         xi = _parse_lineup(lineup_data, team_id)
-        if len(xi) >= 11:
+        if len(xi) >= 8:
             logger.info(f"Found Playing XI for {team_name} from live match: {len(xi)} players")
-            return xi
+            return await _enrich_players(xi)
 
-    # Step 2: Find last completed match from IPL season fixtures
+    # Step 2: Last completed IPL match (2026 → 2025 → 2024, most recent overall)
     team_id = _get_team_sm_id(team_name)
     if not team_id:
         logger.warning(f"Could not resolve team ID for: {team_name}")
         return []
 
-    season_id = IPL_SEASON_IDS.get(2026, 1795)
-    season_fixtures = await fetch_season_fixtures(season_id)
-    finished = [f for f in season_fixtures if (f.get("status") or "").lower() == "finished"]
-    finished.sort(key=lambda x: x.get("starting_at", ""), reverse=True)
+    fixture = await fetch_team_last_completed_fixture(team_name)
+    if not fixture:
+        return []
 
-    # Find team's most recent completed match
-    target_fixture_id = None
-    for f in finished:
-        if f.get("localteam_id") == team_id or f.get("visitorteam_id") == team_id:
-            target_fixture_id = f.get("id")
-            break
-
+    target_fixture_id = fixture.get("id")
     if not target_fixture_id:
-        logger.warning(f"No completed fixture found for {team_name}")
         return []
 
     # Step 3: Fetch fixture with lineup
     data = await _get(f"fixtures/{target_fixture_id}", {"include": "lineup"})
+    if _sm_response_failed(data):
+        logger.warning(f"Fixture {target_fixture_id} lineup fetch failed for {team_name}")
+        return []
     fixture_detail = data.get("data", {})
     lineup = fixture_detail.get("lineup", {})
     if isinstance(lineup, dict):
@@ -1244,14 +1261,13 @@ async def fetch_last_played_xi(team_name: str) -> list:
     else:
         lineup_data = []
 
-    # Step 4: Extract non-sub Playing XI
+    # Step 4: Extract non-sub Playing XI (+ style enrichment, same as fetch_playing_xi_from_last_match)
     xi = _parse_lineup(lineup_data, team_id)
     if xi:
         logger.info(f"Found Playing XI for {team_name} from fixture {target_fixture_id}: {len(xi)} players")
-    else:
-        logger.warning(f"No lineup data for {team_name} in fixture {target_fixture_id}")
-
-    return xi
+        return await _enrich_players(xi)
+    logger.warning(f"No lineup data for {team_name} in fixture {target_fixture_id}")
+    return []
 
 
 async def fetch_fixture_start_time(team1: str, team2: str) -> Optional[str]:

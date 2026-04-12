@@ -91,7 +91,11 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
   const handlePredict = async () => {
     setLoading(true);
     try {
-      const res = await axios.post(`${API}/matches/${matchId}/pre-match-predict`);
+      const res = await axios.post(
+        `${API}/matches/${matchId}/pre-match-predict`,
+        {},
+        { timeout: 180000 }
+      );
       if (res.data && !res.data.error) {
         setData(res.data);
         if (onDataUpdate) onDataUpdate(res.data);
@@ -103,7 +107,11 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
   const handleRefresh = async () => {
     setLoading(true);
     try {
-      const res = await axios.post(`${API}/matches/${matchId}/pre-match-predict?force=true`);
+      const res = await axios.post(
+        `${API}/matches/${matchId}/pre-match-predict?force=true`,
+        {},
+        { timeout: 180000 }
+      );
       if (res.data && !res.data.error) {
         setData(res.data);
         if (onDataUpdate) onDataUpdate(res.data);

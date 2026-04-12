@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, WebSocket, WebSocketDisconnect, BackgroundTasks, Body
+from fastapi import FastAPI, APIRouter, WebSocket, WebSocketDisconnect, BackgroundTasks, Body, HTTPException
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -19,6 +19,14 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 IST = pytz.timezone("Asia/Kolkata")
+
+# When false (default), no cron jobs — avoids automatic SportMonks/CricAPI polling (user uses buttons).
+ENABLE_BACKGROUND_SCHEDULERS = os.environ.get("ENABLE_BACKGROUND_SCHEDULERS", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+_scheduler_started = False
 
 from services.cricket_service import get_short_name
 from services.probability_engine import (
@@ -81,6 +89,54 @@ async def _get_squads_for_match(team1: str, team2: str) -> dict:
         if doc:
             squads[team_name] = doc.get("players", [])
     return squads
+
+
+# Playing XI is mandatory for pre-match and live model+Claude paths
+MIN_PLAYING_XI = 11
+
+
+def _xi_named_count(xi: list) -> int:
+    n = 0
+    for p in xi or []:
+        if not isinstance(p, dict):
+            continue
+        if (p.get("name") or p.get("fullname") or "").strip():
+            n += 1
+    return n
+
+
+def _prematch_xi_complete(xi_data: dict) -> bool:
+    if not xi_data:
+        return False
+    return (
+        _xi_named_count(xi_data.get("team1_xi")) >= MIN_PLAYING_XI
+        and _xi_named_count(xi_data.get("team2_xi")) >= MIN_PLAYING_XI
+    )
+
+
+def _sm_playing_xi_complete(sm: dict) -> bool:
+    if not sm:
+        return False
+    return (
+        _xi_named_count(sm.get("team1_playing_xi")) >= MIN_PLAYING_XI
+        and _xi_named_count(sm.get("team2_playing_xi")) >= MIN_PLAYING_XI
+    )
+
+
+def _squad_rows_from_lineup_xi(xi_list: list) -> list:
+    rows = []
+    for p in (xi_list or [])[:16]:
+        if not isinstance(p, dict):
+            continue
+        nm = (p.get("name") or p.get("fullname") or "").strip()
+        if not nm:
+            continue
+        rows.append({
+            "name": nm,
+            "role": p.get("role") or p.get("position") or "Batsman",
+            "isCaptain": bool(p.get("isCaptain") or p.get("is_captain")),
+        })
+    return rows
 
 
 def _recent_form_impact_score(season_stats: Optional[dict]) -> Optional[float]:
@@ -290,7 +346,11 @@ async def root():
         "squadsLoaded": squad_count > 0,
         "matchesInDB": schedule_count,
         "squadsInDB": squad_count,
-        "scheduler": {"active": scheduler.running, "next_runs": ["4:00 PM IST", "7:00 PM IST"]},
+        "scheduler": {
+            "active": _scheduler_started,
+            "backgroundJobs": ENABLE_BACKGROUND_SCHEDULERS,
+            "next_runs": ["4:00 PM IST", "7:00 PM IST"] if _scheduler_started else [],
+        },
         "serverTime": now_ist,
     }
 
@@ -366,8 +426,12 @@ async def load_ipl_schedule(force: bool = False):
     """Load IPL 2026 schedule from SportMonks API and store in MongoDB.
     Merges with existing DB matches to preserve predictions and cached analysis."""
     existing = await db.ipl_schedule.count_documents({})
-    if existing >= 70 and not force:
-        return {"status": "already_loaded", "count": existing, "message": "Use ?force=true to refresh from SportMonks"}
+    if existing > 0 and not force:
+        return {
+            "status": "already_loaded",
+            "count": existing,
+            "message": "Schedule is cached in the database. Pass ?force=true to re-fetch fixtures from SportMonks.",
+        }
 
     logger.info("Fetching IPL 2026 schedule from SportMonks API...")
     matches = await fetch_ipl_season_schedule()
@@ -1142,6 +1206,17 @@ async def refresh_claude_prediction(match_id: str, body: RefreshClaudeRequest = 
         return {"error": "Match not found"}
 
     sm_data = cached["sportmonks"]
+    if not _sm_playing_xi_complete(sm_data):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "playing_xi_required",
+                "message": (
+                    "Playing XI for both teams is missing in the live snapshot. "
+                    "Re-run “Fetch Live Scores” when SportMonks exposes full lineups."
+                ),
+            },
+        )
     t1_short = cached.get("team1Short", "T1")
     t2_short = cached.get("team2Short", "T2")
     old_probs = cached.get("probabilities", {})
@@ -1829,6 +1904,22 @@ async def api_predict(match_id: str):
     if not match_info:
         return {"error": "Match not found"}
     live_state = live_match_state.get(match_id)
+    if not live_state:
+        live_state = await db.live_snapshots.find_one({"matchId": match_id}, {"_id": 0})
+    sm = {}
+    if live_state:
+        sm = live_state.get("sportmonks") or live_state.get("sportmonksData") or {}
+    if not _sm_playing_xi_complete(sm if isinstance(sm, dict) else {}):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "playing_xi_required",
+                "message": (
+                    "Live Playing XI (11 per side from SportMonks) is required. "
+                    "Use “Fetch Live Scores” first so lineups are stored, then run prediction."
+                ),
+            },
+        )
     if live_state:
         match_info["score"] = live_state.get("liveData", {}).get("score", {})
     pred = await get_match_prediction(match_info)
@@ -1851,8 +1942,8 @@ async def get_pre_match_prediction(match_id: str):
 async def api_pre_match_predict(match_id: str, force: bool = False):
     """
     Predict upcoming match winner using 8-category algorithm.
-    NO web scraping. Uses DB squads, SportMonks form data, Open-Meteo weather.
-    Also generates Expected Playing XI from squad roster.
+    Requires a full Expected Playing XI (11 per side) from SportMonks or the
+    “Fetch Playing XI” cache — squad-only guesses are not accepted.
 
     Auto-refreshes stale predictions (>6 hours old) to keep data fresh.
     """
@@ -1931,52 +2022,72 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
     except Exception as e:
         logger.warning(f"Failed to fetch Playing XI from API: {e}")
 
-    # ── Filter squad to Playing XI if API data available ──
-    # This ensures predictions use actual 11 players, not 25-man squad
-    prediction_squads = match_squads  # Default: full squad
+    # Prefer completed "Fetch Playing XI" cache when present (11+11)
+    xi_doc = await db.playing_xi.find_one({"matchId": match_id}, {"_id": 0})
+    if xi_doc and _prematch_xi_complete(xi_doc):
+        api_xi_data = {
+            "team1_xi": xi_doc.get("team1_xi", []),
+            "team2_xi": xi_doc.get("team2_xi", []),
+            "source": xi_doc.get("source", "last_match"),
+        }
+
+    # ── Build xi_data + prediction_squads from real lineups only (no squad-guess fallback) ──
+    prediction_squads = {}
     xi_data = {}
     squad_names = list(match_squads.keys()) if match_squads else []
 
-    if api_xi_data.get("team1_xi") and api_xi_data.get("team2_xi") and len(squad_names) >= 2:
-        # Cross-reference API XI names with DB squad for role/stats
-        t1_api_names = {p["name"].lower() for p in api_xi_data["team1_xi"]}
-        t2_api_names = {p["name"].lower() for p in api_xi_data["team2_xi"]}
+    if api_xi_data.get("team1_xi") and api_xi_data.get("team2_xi"):
+        t1_api_names = {p.get("name", "").lower() for p in api_xi_data["team1_xi"] if p.get("name")}
+        t2_api_names = {p.get("name", "").lower() for p in api_xi_data["team2_xi"] if p.get("name")}
 
-        t1_filtered = [p for p in match_squads.get(squad_names[0], [])
-                       if p.get("name", "").lower() in t1_api_names]
-        t2_filtered = [p for p in match_squads.get(squad_names[1], [])
-                       if p.get("name", "").lower() in t2_api_names]
+        t1_filtered = (
+            [p for p in match_squads.get(squad_names[0], []) if p.get("name", "").lower() in t1_api_names]
+            if len(squad_names) >= 1
+            else []
+        )
+        t2_filtered = (
+            [p for p in match_squads.get(squad_names[1], []) if p.get("name", "").lower() in t2_api_names]
+            if len(squad_names) >= 2
+            else []
+        )
 
-        # Only use filtered if we got at least 8 matches (name matching tolerance)
-        if len(t1_filtered) >= 8 and len(t2_filtered) >= 8:
-            prediction_squads = {
-                squad_names[0]: t1_filtered,
-                squad_names[1]: t2_filtered,
+        if len(t1_filtered) >= 8 and len(t2_filtered) >= 8 and len(squad_names) >= 2:
+            prediction_squads = {squad_names[0]: t1_filtered, squad_names[1]: t2_filtered}
+            xi_data = {
+                "team1_xi": [{"name": p.get("name"), "role": p.get("role", ""),
+                              "isCaptain": p.get("isCaptain", False)} for p in t1_filtered],
+                "team2_xi": [{"name": p.get("name"), "role": p.get("role", ""),
+                              "isCaptain": p.get("isCaptain", False)} for p in t2_filtered],
+                "source": api_xi_data.get("source", "api"),
+                "confidence": "api-verified",
             }
-            logger.info(f"Using API Playing XI: {len(t1_filtered)} + {len(t2_filtered)} players")
+            logger.info(f"Using DB-matched API Playing XI: {len(t1_filtered)} + {len(t2_filtered)} players")
         else:
-            logger.warning(f"API XI match too low ({len(t1_filtered)}, {len(t2_filtered)}), using full squad")
+            r1 = _squad_rows_from_lineup_xi(api_xi_data["team1_xi"])
+            r2 = _squad_rows_from_lineup_xi(api_xi_data["team2_xi"])
+            prediction_squads = {team1: r1, team2: r2}
+            xi_data = {
+                "team1_xi": api_xi_data["team1_xi"],
+                "team2_xi": api_xi_data["team2_xi"],
+                "source": api_xi_data.get("source", "api"),
+                "confidence": "api-verified",
+            }
+            logger.info(
+                f"Using SportMonks lineup rows for squads (DB overlap low): "
+                f"{len(r1)} + {len(r2)} players"
+            )
 
-        xi_data = {
-            "team1_xi": [{"name": p.get("name"), "role": p.get("role", ""),
-                          "isCaptain": p.get("isCaptain", False)} for p in t1_filtered] if t1_filtered else
-                        api_xi_data["team1_xi"],
-            "team2_xi": [{"name": p.get("name"), "role": p.get("role", ""),
-                          "isCaptain": p.get("isCaptain", False)} for p in t2_filtered] if t2_filtered else
-                        api_xi_data["team2_xi"],
-            "source": api_xi_data.get("source", "api"),
-            "confidence": "api-verified",
-        }
-    elif len(squad_names) >= 2:
-        # Fallback: generate expected XI from squad roster
-        t1_xi = generate_expected_xi(match_squads.get(squad_names[0], []))
-        t2_xi = generate_expected_xi(match_squads.get(squad_names[1], []))
-        xi_data = {
-            "team1_xi": t1_xi,
-            "team2_xi": t2_xi,
-            "source": "squad_estimate",
-            "confidence": "squad-based",
-        }
+    if not _prematch_xi_complete(xi_data):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "playing_xi_required",
+                "message": (
+                    "Expected Playing XI (11 players per side) is required before pre-match prediction. "
+                    "Run “Fetch Playing XI” for this match (or ensure SportMonks returns last-match lineups), then try again."
+                ),
+            },
+        )
 
     # Fetch weather for venue (Open-Meteo, free)
     prematch_city = match_info.get("city", "")
@@ -2004,8 +2115,16 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
     # Fetch momentum (last 2 results)
     momentum_data = await fetch_momentum(db, team1, team2)
 
-    # Run 8-category algorithm (no scraping)
-    # Use filtered Playing XI squads if available, otherwise full squad
+    # Enrich Playing XI with last-N stats + impact before the 8-factor model consumes context
+    if xi_data:
+        try:
+            xi_data = await _enrich_playing_xi_with_impact(
+                xi_data, team1, team2, player_performance
+            )
+        except Exception as e:
+            logger.warning(f"Playing XI impact enrichment skipped: {e}")
+
+    # Run 8-category algorithm — squads are strictly the Playing XI rows above
     prediction = compute_prediction(
         squad_data=prediction_squads,
         match_info=match_info,
@@ -2014,15 +2133,6 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
         momentum_data=momentum_data,
         player_performance=player_performance,
     )
-
-    # Expected XI: last-match (or live) lineups already in xi_data — add SportMonks last-5 stats + impact_points
-    if xi_data:
-        try:
-            xi_data = await _enrich_playing_xi_with_impact(
-                xi_data, team1, team2, player_performance
-            )
-        except Exception as e:
-            logger.warning(f"Playing XI impact enrichment skipped: {e}")
 
     # Compute odds direction vs previous prediction
     odds_direction = {"team1": "new", "team2": "new"}
@@ -2626,24 +2736,29 @@ async def _bg_fetch_playing_xi(match_id: str, team1: str, team2: str, venue: str
         xi_data = {}
         source = "api-verified"
 
-        if t1_xi_raw and len(t1_xi_raw) >= 8 and t2_xi_raw and len(t2_xi_raw) >= 8:
-            # Use API-verified lineup — cross-reference with DB squads for enrichment
+        # Need both sides from last completed match; allow 5+ if SportMonks returns partial lineups
+        min_xi = 5
+        if t1_xi_raw and len(t1_xi_raw) >= min_xi and t2_xi_raw and len(t2_xi_raw) >= min_xi:
+            # Prefer DB squads for role/buzz fields when names match; never drop SportMonks XI if squads missing or matching fails
             match_squads = await _get_squads_for_match(team1, team2)
-            squad_names = list(match_squads.keys()) if match_squads else []
-
             xi_sm_data = {"team1_playing_xi": t1_xi_raw, "team2_playing_xi": t2_xi_raw}
-            filtered = _filter_squads_to_playing_xi(match_squads, xi_sm_data, team1, team2)
-
-            t1_key = squad_names[0] if len(squad_names) > 0 else team1
-            t2_key = squad_names[1] if len(squad_names) > 1 else team2
-
+            filtered = (
+                _filter_squads_to_playing_xi(match_squads, xi_sm_data, team1, team2)
+                if match_squads and len(match_squads) >= 2
+                else {}
+            )
+            t1_db = list(filtered.get(team1, []) or [])
+            t2_db = list(filtered.get(team2, []) or [])
             xi_data = {
-                "team1_xi": filtered.get(t1_key, []),
-                "team2_xi": filtered.get(t2_key, []),
+                "team1_xi": t1_db if len(t1_db) >= 8 else t1_xi_raw,
+                "team2_xi": t2_db if len(t2_db) >= 8 else t2_xi_raw,
                 "confidence": "api-verified",
                 "source": "last_match",
             }
-            logger.info(f"Playing XI refresh: API-verified {len(xi_data['team1_xi'])}+{len(xi_data['team2_xi'])} players")
+            logger.info(
+                f"Playing XI refresh: last-match API {len(t1_xi_raw)}+{len(t2_xi_raw)} → display "
+                f"{len(xi_data['team1_xi'])}+{len(xi_data['team2_xi'])} (DB merge={'yes' if filtered else 'no'})"
+            )
         else:
             # Fallback: generate from full squad roster
             playing_xi_tasks[match_id]["progress"] = "API data insufficient, generating from squad roster..."
@@ -2651,8 +2766,8 @@ async def _bg_fetch_playing_xi(match_id: str, team1: str, team2: str, venue: str
             squad_names = list(match_squads.keys()) if match_squads else []
 
             if len(squad_names) >= 2:
-                t1_xi = generate_expected_xi(match_squads.get(squad_names[0], []))
-                t2_xi = generate_expected_xi(match_squads.get(squad_names[1], []))
+                t1_xi = generate_expected_xi(match_squads.get(team1, []))
+                t2_xi = generate_expected_xi(match_squads.get(team2, []))
                 xi_data = {
                     "team1_xi": t1_xi,
                     "team2_xi": t2_xi,
@@ -3008,6 +3123,21 @@ async def api_claude_live(match_id: str):
     if not live_state:
         return {"error": "No live data available. Fetch live scores first."}
 
+    sm_data = (
+        live_state.get("sportmonks")
+        or live_state.get("sportmonksData")
+        or live_state.get("sm_data")
+        or {}
+    )
+    if not _sm_playing_xi_complete(sm_data if isinstance(sm_data, dict) else {}):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "playing_xi_required",
+                "message": "Full Playing XI for both teams is required. Fetch live scores when SportMonks lineups are available.",
+            },
+        )
+
     algo_probs = live_state.get("probabilities", {})
     live_data = live_state.get("liveData", {})
 
@@ -3015,7 +3145,6 @@ async def api_claude_live(match_id: str):
         match_info.get("team1", ""), match_info.get("team2", "")
     )
     # ── Filter to Playing XI for Claude live analysis ──
-    sm_data = live_state.get("sportmonksData", live_state.get("sm_data", {}))
     live_squads = _filter_squads_to_playing_xi(
         match_squads, sm_data, match_info.get("team1", ""), match_info.get("team2", "")
     )
@@ -3563,22 +3692,26 @@ async def auto_sync_results_and_invalidate():
 
 @app.on_event("startup")
 async def startup():
+    global _scheduler_started
     logger.info("Predictability starting up...")
-    # Schedule match promotion at 4:00 PM and 7:00 PM IST daily
-    scheduler.add_job(promote_matches_to_live, CronTrigger(hour=16, minute=0), id="promote_4pm", replace_existing=True)
-    scheduler.add_job(promote_matches_to_live, CronTrigger(hour=19, minute=0), id="promote_7pm", replace_existing=True)
-    # Auto-scrape live matches every 5 minutes during match hours (2PM-11PM IST)
-    scheduler.add_job(auto_scrape_live_matches, "interval", minutes=5, id="auto_scrape", replace_existing=True)
-    # Auto-sync results and invalidate stale predictions every 30 minutes
-    scheduler.add_job(auto_sync_results_and_invalidate, "interval", minutes=30, id="auto_sync_results", replace_existing=True)
-    scheduler.start()
-    logger.info("[Scheduler] Started — promote at 4PM/7PM, auto-scrape every 5 min")
-    # Sync any existing live scores to schedule on startup
-    await sync_live_scores_to_schedule()
+    if ENABLE_BACKGROUND_SCHEDULERS:
+        scheduler.add_job(promote_matches_to_live, CronTrigger(hour=16, minute=0), id="promote_4pm", replace_existing=True)
+        scheduler.add_job(promote_matches_to_live, CronTrigger(hour=19, minute=0), id="promote_7pm", replace_existing=True)
+        scheduler.add_job(auto_scrape_live_matches, "interval", minutes=5, id="auto_scrape", replace_existing=True)
+        scheduler.add_job(auto_sync_results_and_invalidate, "interval", minutes=30, id="auto_sync_results", replace_existing=True)
+        scheduler.start()
+        _scheduler_started = True
+        logger.info("[Scheduler] Started — promote 4PM/7PM IST, auto-scrape 5m, result sync 30m")
+    else:
+        logger.info(
+            "Background schedulers OFF (default). Set ENABLE_BACKGROUND_SCHEDULERS=true for cron jobs. "
+            "Live scores / fixture sync use explicit API routes only."
+        )
 
 @app.on_event("shutdown")
 async def shutdown():
-    scheduler.shutdown(wait=False)
+    if _scheduler_started:
+        scheduler.shutdown(wait=False)
     client.close()
 
 app.include_router(api_router)
