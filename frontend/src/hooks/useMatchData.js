@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
 import axios from "axios";
-import { API_BASE } from "@/lib/apiBase";
+import { API_BASE, isApiConfigured } from "@/lib/apiBase";
 
 const API = API_BASE;
 
@@ -38,14 +38,45 @@ export function useMatchData() {
   const [scheduleError, setScheduleError] = useState(null);
 
   const fetchStatus = useCallback(async () => {
+    if (!isApiConfigured() || !API) {
+      setApiStatus({
+        configured: false,
+        error: "missing_backend_url",
+        hint: "Set REACT_APP_BACKEND_URL (see frontend/.env.example). Production: frontend/.env.production.",
+      });
+      return null;
+    }
     try {
-      const res = await axios.get(`${API}/`);
-      setApiStatus(res.data);
-      return res.data;
-    } catch (e) { console.error(e); }
+      const [rootRes, healthRes, dbRes] = await Promise.allSettled([
+        axios.get(`${API}/`, { timeout: 20000 }),
+        axios.get(`${API}/health`, { timeout: 10000 }),
+        axios.get(`${API}/health/db`, { timeout: 20000 }),
+      ]);
+      const root = rootRes.status === "fulfilled" ? rootRes.value.data : null;
+      const health = healthRes.status === "fulfilled" ? healthRes.value.data : null;
+      const dbHealth = dbRes.status === "fulfilled" ? dbRes.value.data : null;
+      const merged = {
+        ...root,
+        configured: true,
+        _health: health,
+        _dbHealth: dbHealth,
+      };
+      setApiStatus(merged);
+      return merged;
+    } catch (e) {
+      console.error(e);
+      setApiStatus({ configured: true, fetchError: String(e?.message || e) });
+    }
   }, []);
 
   const loadSchedule = useCallback(async (force = false) => {
+    if (!isApiConfigured() || !API) {
+      setScheduleError(
+        "Frontend has no API URL. Set REACT_APP_BACKEND_URL in .env.local or rebuild with frontend/.env.production."
+      );
+      setLoading(false);
+      return EMPTY_SCHEDULE;
+    }
     setLoading(true);
     setScheduleError(null);
     let loadOk = false;
