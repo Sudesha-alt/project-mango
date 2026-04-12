@@ -12,7 +12,7 @@ const API = API_BASE;
 
 export default function MatchSelector() {
   const navigate = useNavigate();
-  const { schedule, loading, apiStatus, fetchStatus, loadSchedule } = useMatchData();
+  const { schedule, loading, apiStatus, fetchStatus, loadSchedule, scheduleError } = useMatchData();
   const [tab, setTab] = useState("upcoming");
   const [scheduleLoading, setScheduleLoading] = useState(false);
   const [predictions, setPredictions] = useState({});
@@ -30,35 +30,18 @@ export default function MatchSelector() {
     loadSchedule();
   }, [fetchStatus, loadSchedule]);
 
-  // Auto-discover live matches on mount (silent background check)
-  useEffect(() => {
-    const discoverLive = async () => {
-      try {
-        const res = await axios.post(`${API}/matches/refresh-live-status`, {}, { timeout: 15000 });
-        const data = res.data;
-        if (data.promoted_count > 0 || data.completed_count > 0) {
-          // Reload schedule to reflect changes
-          await loadSchedule();
-          // Auto-switch to Live tab if matches were found
-          if (data.promoted_count > 0 || data.still_live_count > 0) {
-            setTab("live");
-          }
-        }
-      } catch (e) { /* silent */ }
-    };
-    discoverLive();
-  }, [loadSchedule]);
-
-  // Load cached predictions on mount
+  // Load cached predictions on mount (merge — never overwrite a late empty response over Predict All results)
   useEffect(() => {
     const loadPredictions = async () => {
       try {
-        const res = await axios.get(`${API}/predictions/upcoming`, { timeout: 10000 });
-        const map = {};
-        for (const p of res.data.predictions || []) {
-          map[p.matchId] = p;
-        }
-        setPredictions(map);
+        const res = await axios.get(`${API}/predictions/upcoming`, { timeout: 30000 });
+        setPredictions((prev) => {
+          const next = { ...prev };
+          for (const p of res.data.predictions || []) {
+            if (p?.matchId) next[p.matchId] = p;
+          }
+          return next;
+        });
       } catch (e) { /* ignore */ }
     };
     loadPredictions();
@@ -66,8 +49,11 @@ export default function MatchSelector() {
 
   const handleLoadSchedule = async (force = false) => {
     setScheduleLoading(true);
-    await loadSchedule(force);
-    setScheduleLoading(false);
+    try {
+      await loadSchedule(force);
+    } finally {
+      setScheduleLoading(false);
+    }
   };
 
   const handleRefreshLiveStatus = async () => {
@@ -105,21 +91,45 @@ export default function MatchSelector() {
   };
 
   const handlePredictAll = async () => {
-    const upcoming = schedule.upcoming || [];
-    const unpredicted = upcoming.filter(m => !predictions[m.matchId]);
+    const upcoming = schedule?.upcoming || [];
+    const unpredicted = upcoming.filter((m) => m?.matchId && !predictions[m.matchId]);
     if (unpredicted.length === 0) return;
 
     setPredictingAll(true);
     setPredictProgress({ done: 0, total: unpredicted.length });
 
+    // Each run can take 60–120s (SportMonks + MongoDB + enrichment); default axios 30s was hiding results.
+    const PREDICT_TIMEOUT_MS = 180000;
+
     for (let i = 0; i < unpredicted.length; i++) {
+      const mid = unpredicted[i].matchId;
       try {
-        const res = await axios.post(`${API}/matches/${unpredicted[i].matchId}/pre-match-predict`);
+        const res = await axios.post(
+          `${API}/matches/${mid}/pre-match-predict`,
+          {},
+          { timeout: PREDICT_TIMEOUT_MS }
+        );
         if (res.data && !res.data.error) {
-          setPredictions(prev => ({ ...prev, [unpredicted[i].matchId]: res.data }));
+          setPredictions((prev) => ({ ...prev, [mid]: res.data }));
         }
-      } catch (e) { /* skip failed */ }
+      } catch (e) {
+        console.error(`Pre-match predict failed for ${mid}:`, e);
+      }
       setPredictProgress({ done: i + 1, total: unpredicted.length });
+    }
+
+    // Sync from DB so anything that saved but timed out on the client still appears.
+    try {
+      const predRes = await axios.get(`${API}/predictions/upcoming`, { timeout: 60000 });
+      setPredictions((prev) => {
+        const next = { ...prev };
+        for (const p of predRes.data.predictions || []) {
+          if (p?.matchId) next[p.matchId] = p;
+        }
+        return next;
+      });
+    } catch (e) {
+      console.error("Refetch predictions after Predict All:", e);
     }
 
     setPredictingAll(false);
@@ -195,7 +205,7 @@ export default function MatchSelector() {
   };
 
   const getMatchesForTab = () => {
-    if (!schedule.matches?.length) return [];
+    if (!schedule?.matches?.length) return [];
     if (tab === "live") return schedule.live || [];
     if (tab === "upcoming") return schedule.upcoming || [];
     if (tab === "completed") return schedule.completed || [];
@@ -217,9 +227,16 @@ export default function MatchSelector() {
             Predictability
           </h1>
           <p className="text-sm text-[#A1A1AA] mt-2" style={{ fontFamily: "'IBM Plex Sans'" }}>
-            IPL 2026 &middot; {schedule.total || 0} matches &middot; Powered by Claude Opus
+            IPL 2026 &middot; {schedule?.total ?? 0} matches &middot; Powered by Claude Opus
           </p>
-          {!schedule.loaded && (
+          {scheduleError && (
+            <div className="mt-3 mx-auto max-w-lg rounded-md border border-[#FF3B30]/40 bg-[#FF3B30]/10 px-3 py-2 text-left" data-testid="schedule-error-banner">
+              <p className="text-[11px] text-[#FCA5A5] font-medium">Schedule could not fully load</p>
+              <p className="text-[10px] text-[#A1A1AA] mt-1 break-words">{scheduleError}</p>
+              <p className="text-[9px] text-[#737373] mt-1">Ensure the backend is running and MongoDB is reachable (GET /api/health/db). If the first request timed out, try again — SportMonks can be slow.</p>
+            </div>
+          )}
+          {!schedule?.loaded && (
             <button onClick={() => handleLoadSchedule(true)} disabled={scheduleLoading} data-testid="load-schedule-btn"
               className="mt-4 inline-flex items-center gap-2 bg-[#007AFF] text-white px-6 py-2 rounded-md text-xs font-bold uppercase tracking-wider hover:bg-blue-600 disabled:opacity-50">
               {scheduleLoading ? <><Spinner className="w-4 h-4 animate-spin" /> Loading...</> : <><ArrowsClockwise weight="bold" className="w-4 h-4" /> Load IPL 2026 Schedule</>}
@@ -476,7 +493,7 @@ export default function MatchSelector() {
               <div className="col-span-full text-center py-16" data-testid="empty-state">
                 <Lightning weight="duotone" className="w-12 h-12 text-[#333] mx-auto mb-4" />
                 <p className="text-sm text-[#71717A] mb-2">
-                  {!schedule.loaded ? "Click 'Load IPL 2026 Schedule' to fetch all matches." : `No ${tab} matches found.`}
+                  {!schedule?.loaded ? "Click 'Load IPL 2026 Schedule' to fetch all matches." : `No ${tab} matches found.`}
                 </p>
               </div>
             )}
@@ -522,7 +539,7 @@ function ConfidenceBar({ team1, team2, team1Prob, team2Prob, confidence, oddsDir
         <div className="h-full transition-all duration-700 rounded-r-full" style={{ width: `${t2}%`, backgroundColor: t2Color }} />
       </div>
       <p className="text-[9px] text-[#737373] text-center font-mono">
-        Model confidence: {confidence}% | H2H + Venue + Form + Squad
+        Model confidence: {confidence != null && confidence !== "" ? String(confidence) : "—"} | H2H + Venue + Form + Squad
       </p>
     </div>
   );

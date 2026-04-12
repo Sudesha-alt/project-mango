@@ -7,11 +7,35 @@ const API = API_BASE;
 // Global timeout — prevent infinite hangs when background tasks block the server
 axios.defaults.timeout = 30000;
 
+const EMPTY_SCHEDULE = {
+  matches: [],
+  live: [],
+  upcoming: [],
+  completed: [],
+  loaded: false,
+  total: 0,
+};
+
+function normalizeSchedule(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { ...EMPTY_SCHEDULE };
+  }
+  return {
+    matches: Array.isArray(raw.matches) ? raw.matches : [],
+    live: Array.isArray(raw.live) ? raw.live : [],
+    upcoming: Array.isArray(raw.upcoming) ? raw.upcoming : [],
+    completed: Array.isArray(raw.completed) ? raw.completed : [],
+    loaded: Boolean(raw.loaded),
+    total: typeof raw.total === "number" ? raw.total : (Array.isArray(raw.matches) ? raw.matches.length : 0),
+  };
+}
+
 export function useMatchData() {
-  const [schedule, setSchedule] = useState({ matches: [], live: [], upcoming: [], completed: [], loaded: false });
+  const [schedule, setSchedule] = useState(EMPTY_SCHEDULE);
   const [squads, setSquads] = useState([]);
   const [loading, setLoading] = useState(false);
   const [apiStatus, setApiStatus] = useState(null);
+  const [scheduleError, setScheduleError] = useState(null);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -23,14 +47,34 @@ export function useMatchData() {
 
   const loadSchedule = useCallback(async (force = false) => {
     setLoading(true);
+    setScheduleError(null);
+    let loadOk = false;
     try {
-      // Trigger GPT load if needed — short timeout, OK to fail
-      await axios.get(`${API}/schedule/load${force ? "?force=true" : ""}`, { timeout: 10000 });
-      const res = await axios.get(`${API}/schedule`, { timeout: 15000 });
-      setSchedule(res.data);
-      return res.data;
+      if (force) {
+        // Re-fetch fixtures from SportMonks into MongoDB (user explicitly synced).
+        await axios.get(`${API}/schedule/load?force=true`, { timeout: 120000 });
+        loadOk = true;
+      }
     } catch (e) {
-      console.error("Schedule load error:", e);
+      console.error("Schedule load (API) error:", e);
+      const msg =
+        e?.response?.data?.detail ||
+        e?.response?.data?.message ||
+        e?.message ||
+        "Could not refresh schedule from API (backend may be down or MongoDB unreachable).";
+      setScheduleError(String(msg));
+    }
+    try {
+      const res = await axios.get(`${API}/schedule`, { timeout: 30000 });
+      setSchedule(normalizeSchedule(res.data));
+      return normalizeSchedule(res.data);
+    } catch (e) {
+      console.error("Schedule GET error:", e);
+      if (force && !loadOk) {
+        setScheduleError((prev) => prev || "Cannot read schedule from server. Check backend and /api/health/db.");
+      }
+      setSchedule(EMPTY_SCHEDULE);
+      return EMPTY_SCHEDULE;
     } finally {
       setLoading(false);
     }
@@ -89,7 +133,8 @@ export function useMatchData() {
       const url = force
         ? `${API}/matches/${matchId}/pre-match-predict?force=true`
         : `${API}/matches/${matchId}/pre-match-predict`;
-      const res = await axios.post(url);
+      // Pre-match work can exceed global 30s (SportMonks + DB + enrichment).
+      const res = await axios.post(url, {}, { timeout: 180000 });
       return res.data;
     } catch (e) {
       console.error("Pre-match prediction error:", e);
@@ -205,7 +250,7 @@ export function useMatchData() {
   }, []);
 
   return {
-    schedule, squads, loading, apiStatus,
+    schedule, squads, loading, apiStatus, scheduleError,
     fetchStatus, loadSchedule, loadSquads, getTeamSquad,
     fetchLiveData, getMatchState, fetchPlayerPredictions, fetchMatchPrediction,
     fetchPreMatchPrediction,
