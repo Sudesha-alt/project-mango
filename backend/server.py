@@ -42,7 +42,29 @@ from services.ai_service import (
     claude_deep_match_analysis, claude_live_analysis,
     claude_sportmonks_prediction
 )
-from services.sportmonks_service import fetch_live_match, check_fixture_status, fetch_livescores_ipl, parse_fixture, fetch_fixture_details, fetch_recent_fixtures, fetch_last_played_xi, fetch_playing_xi_from_live, fetch_team_recent_performance, fetch_playing_xi_from_last_match, sync_player_performance_to_db, fetch_season_fixtures, IPL_SEASON_IDS, _get_team_sm_id, fetch_fixture_start_time, fetch_ipl_season_schedule, fetch_venue_stats, fetch_h2h_record, fetch_team_standings, fetch_player_season_stats_for_xi
+from services.sportmonks_service import (
+    fetch_live_match,
+    check_fixture_status,
+    fetch_livescores_ipl,
+    parse_fixture,
+    fetch_fixture_details,
+    fetch_recent_fixtures,
+    fetch_last_played_xi,
+    fetch_playing_xi_from_live,
+    fetch_team_recent_performance,
+    fetch_playing_xi_from_last_match,
+    sync_player_performance_to_db,
+    fetch_season_fixtures,
+    IPL_SEASON_IDS,
+    _get_team_sm_id,
+    fetch_fixture_start_time,
+    fetch_ipl_season_schedule,
+    fetch_venue_stats,
+    fetch_h2h_record,
+    fetch_team_standings,
+    fetch_player_season_stats_for_xi,
+    format_livescore_entry_text,
+)
 from services.beta_prediction_engine import run_beta_prediction
 from services.consultant_engine import run_consultation, build_features
 from services.cricdata_service import fetch_live_ipl_details, fetch_venue_stats_from_cricapi
@@ -720,6 +742,51 @@ async def get_match_news(match_id: str):
         "count": len(articles),
     }
 
+def _parse_schedule_match_datetime(m: dict) -> Optional[datetime]:
+    """Parse scheduled start time for classification (UTC)."""
+    raw = m.get("dateTimeGMT") or m.get("date") or m.get("starting_at")
+    if not raw:
+        return None
+    try:
+        if isinstance(raw, datetime):
+            dt = raw
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        s = str(raw).strip()
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        if "T" not in s and len(s) >= 10:
+            s = s[:10] + "T00:00:00+00:00"
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _schedule_status_completed(sl: str) -> bool:
+    s = (sl or "").lower()
+    if s in ("completed", "finished", "abandoned", "cancelled", "tie", "no result"):
+        return True
+    if "abandon" in s or "no result" in s:
+        return True
+    return False
+
+
+def _schedule_status_live(sl: str) -> bool:
+    s = (sl or "").lower()
+    return s in (
+        "live",
+        "in progress",
+        "1st innings",
+        "2nd innings",
+        "innings break",
+        "int.",
+    )
+
+
 @api_router.get("/schedule")
 async def get_schedule():
     """Get the full IPL 2026 schedule from MongoDB."""
@@ -727,8 +794,6 @@ async def get_schedule():
     if not matches:
         return {"matches": [], "loaded": False}
 
-    # Auto-classify based on both status field AND date
-    # CRITICAL: Date always overrides DB status for future matches
     now = datetime.now(timezone.utc)
     live = []
     upcoming = []
@@ -736,20 +801,33 @@ async def get_schedule():
     for m in matches:
         status_lower = m.get("status", "").lower()
         has_winner = bool(m.get("winner"))
+        dt = _parse_schedule_match_datetime(m)
 
-        # A match is completed ONLY if it has a winner (regardless of status field)
-        if has_winner:
+        if has_winner or _schedule_status_completed(status_lower):
             completed.append(m)
-        elif status_lower in ["live", "in progress"]:
+        elif _schedule_status_live(status_lower):
             live.append(m)
+        elif dt is not None:
+            if dt > now:
+                upcoming.append(m)
+            else:
+                completed.append(m)
         else:
-            # Everything else is upcoming (including matches with status=completed but no winner)
             upcoming.append(m)
 
-    # Sort upcoming by date
-    upcoming.sort(key=lambda x: x.get("dateTimeGMT", ""))
-    # Sort completed by date descending (most recent first)
-    completed.sort(key=lambda x: x.get("dateTimeGMT", ""), reverse=True)
+    def _seq_key(x: dict):
+        d = _parse_schedule_match_datetime(x)
+        dkey = d.timestamp() if d else float("inf")
+        mn = x.get("match_number")
+        try:
+            mnum = int(mn) if mn is not None else 10**9
+        except (TypeError, ValueError):
+            mnum = 10**9
+        return (dkey, mnum, x.get("matchId", ""))
+
+    upcoming.sort(key=_seq_key)
+    live.sort(key=_seq_key)
+    completed.sort(key=lambda x: (_parse_schedule_match_datetime(x) or datetime.min.replace(tzinfo=timezone.utc)).timestamp(), reverse=True)
 
     return {
         "matches": matches,
@@ -1384,7 +1462,7 @@ async def refresh_claude_prediction(match_id: str, body: RefreshClaudeRequest = 
 @api_router.post("/matches/{match_id}/check-status")
 async def check_match_status(match_id: str):
     """Check if a match is still live, finished, or not found on SportMonks.
-    If finished, mark it as 'completed' in the schedule."""
+    If finished, mark it as 'completed' in the schedule. If live, refresh score from SportMonks."""
     match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
     if not match_info:
         return {"error": "Match not found in schedule"}
@@ -1393,19 +1471,30 @@ async def check_match_status(match_id: str):
     team2 = match_info.get("team2", "")
 
     result = await check_fixture_status(team1, team2)
+    sm_score = result.get("score") or ""
+    now_iso = datetime.now(timezone.utc).isoformat()
 
     # If match is finished, update schedule to "completed"
     if result.get("is_finished"):
         update = {
             "status": "completed",
-            "completedAt": datetime.now(timezone.utc).isoformat(),
+            "completedAt": now_iso,
         }
         if result.get("winner"):
             update["winner"] = result["winner"]
         if result.get("note"):
             update["result"] = result["note"]
+        if sm_score:
+            update["score"] = sm_score
         await db.ipl_schedule.update_one({"matchId": match_id}, {"$set": update})
         logger.info(f"Match {match_id} marked completed: {result.get('note')}")
+    elif result.get("is_live"):
+        await db.ipl_schedule.update_one({"matchId": match_id}, {"$set": {
+            "status": "live",
+            "score": sm_score or match_info.get("score", ""),
+            "sportmonks_fixture_id": result.get("fixture_id"),
+            "updatedFromSportMonksAt": now_iso,
+        }})
 
     return {
         "matchId": match_id,
@@ -1414,7 +1503,10 @@ async def check_match_status(match_id: str):
         "is_finished": result.get("is_finished", False),
         "winner": result.get("winner"),
         "note": result.get("note", ""),
-        "schedule_status": "completed" if result.get("is_finished") else match_info.get("status"),
+        "score": sm_score,
+        "schedule_status": "completed" if result.get("is_finished") else (
+            "live" if result.get("is_live") else match_info.get("status")
+        ),
     }
 
 
@@ -1557,22 +1649,24 @@ async def refresh_live_status():
         sm_matched_mids.add(mid)
 
         if sm.get("is_live"):
+            score_text = format_livescore_entry_text(sm) or sm.get("note", "")
             # Promote to live if not already
             if matched.get("status") != "live":
-                score_text = ""
-                if sm.get("inn1_runs") is not None:
-                    score_text = f"{sm['team1']} {sm.get('inn1_runs',0)}/{sm.get('inn1_wickets',0)} ({sm.get('inn1_overs',0)} ov)"
-                if sm.get("inn2_runs") is not None:
-                    score_text += f" | {sm['team2']} {sm.get('inn2_runs',0)}/{sm.get('inn2_wickets',0)} ({sm.get('inn2_overs',0)} ov)"
                 await db.ipl_schedule.update_one({"matchId": mid}, {"$set": {
                     "status": "live",
-                    "score": score_text or sm.get("note", ""),
+                    "score": score_text,
                     "sportmonks_fixture_id": sm.get("fixture_id"),
+                    "updatedFromSportMonksAt": datetime.now(timezone.utc).isoformat(),
                 }})
                 newly_promoted.append({"matchId": mid, "team1": matched["team1"], "team2": matched["team2"], "status": sm.get("status"), "score": score_text})
                 logger.info(f"Match {mid} promoted to live via SportMonks: {matched['team1']} vs {matched['team2']}")
             else:
-                still_live.append({"matchId": mid, "team1": matched["team1"], "team2": matched["team2"], "status": sm.get("status"), "note": sm.get("note")})
+                await db.ipl_schedule.update_one({"matchId": mid}, {"$set": {
+                    "score": score_text,
+                    "sportmonks_fixture_id": sm.get("fixture_id"),
+                    "updatedFromSportMonksAt": datetime.now(timezone.utc).isoformat(),
+                }})
+                still_live.append({"matchId": mid, "team1": matched["team1"], "team2": matched["team2"], "status": sm.get("status"), "score": score_text, "note": sm.get("note")})
 
         elif sm.get("is_finished"):
             await db.ipl_schedule.update_one({"matchId": mid}, {"$set": {
