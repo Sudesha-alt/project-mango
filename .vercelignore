@@ -4,4 +4,3 @@ backend/tests
 **/*.py[cod]
 **/.pytest_cache
 **/.mypy_cache
-backend/requirements-dev.txt

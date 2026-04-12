@@ -1,0 +1,3 @@
+# Install Python deps when the working directory is the repo root (Vercel, some CI).
+# Backend-only: cd backend && pip install -r requirements.txt
+-r backend/requirements.txt

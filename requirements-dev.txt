@@ -1,0 +1,2 @@
+# Full dev stack — use from repo root: pip install -r requirements-dev.txt
+-r backend/requirements-dev.txt
