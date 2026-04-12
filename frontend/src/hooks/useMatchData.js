@@ -252,11 +252,17 @@ export function useMatchData() {
 
   const refreshClaudePrediction = useCallback(async (matchId, body = {}) => {
     try {
-      const res = await axios.post(`${API}/matches/${matchId}/refresh-claude-prediction`, body);
+      const res = await axios.post(`${API}/matches/${matchId}/refresh-claude-prediction`, body, { timeout: 180000 });
       return res.data;
     } catch (e) {
       console.error("Claude refresh error:", e);
-      return null;
+      const data = e.response?.data;
+      let msg = data?.message || e.message || "Claude analysis failed";
+      const detail = data?.detail;
+      if (detail) {
+        msg = typeof detail === "string" ? detail : (detail?.message || JSON.stringify(detail));
+      }
+      return { error: msg };
     }
   }, []);
 

@@ -14,7 +14,7 @@ import ConsultantDashboard from "@/components/ConsultantDashboard";
 import CricApiLivePanel from "@/components/CricApiLivePanel";
 import WeatherCard from "@/components/WeatherCard";
 import NewsCard from "@/components/NewsCard";
-import { WifiHigh, WifiSlash, Lightning, Spinner, UserCircle, ArrowsClockwise, CheckCircle, Warning, Info } from "@phosphor-icons/react";
+import { WifiHigh, WifiSlash, Lightning, Spinner, UserCircle, ArrowsClockwise, CheckCircle, Warning, Info, Sparkle } from "@phosphor-icons/react";
 
 export default function LiveMatch() {
   const { matchId } = useParams();
@@ -39,6 +39,7 @@ export default function LiveMatch() {
   const [gutFeeling, setGutFeeling] = useState("");
   const [currentBettingOdds, setCurrentBettingOdds] = useState("");
   const [dlsInfo, setDlsInfo] = useState("");
+  const [claudeAnalysisError, setClaudeAnalysisError] = useState(null);
 
   useEffect(() => {
     const load = async () => {
@@ -85,6 +86,7 @@ export default function LiveMatch() {
         }));
       } else {
         setMatchState({ ...data, noLiveData: false });
+        setClaudeAnalysisError(null);
         if (data.probabilities) setProbHistory(prev => [...prev, data.probabilities].slice(-50));
       }
     }
@@ -102,21 +104,50 @@ export default function LiveMatch() {
     setBettingOdds(odds);
   };
 
-  const handleRefreshClaude = async () => {
-    setRefreshingClaude(true);
-    const res = await refreshClaudePrediction(matchId, {
-      dls_info: dlsInfo || null,
-    });
-    if (res && !res.error) {
-      setMatchState(prev => ({
-        ...prev,
-        claudePrediction: res.claudePrediction,
-        weightedPrediction: res.weightedPrediction,
-        combinedPrediction: res.combinedPrediction,
-        probabilities: res.probabilities,
-      }));
+  const applyClaudeRefreshResult = (res) => {
+    if (!res || res.error) return false;
+    setMatchState((prev) => ({
+      ...prev,
+      claudePrediction: res.claudePrediction,
+      weightedPrediction: res.weightedPrediction,
+      combinedPrediction: res.combinedPrediction,
+      probabilities: res.probabilities,
+    }));
+    if (res.probabilities) {
+      setProbHistory((prev) => [...prev, res.probabilities].slice(-50));
     }
+    return true;
+  };
+
+  /** POST /refresh-claude-prediction: Claude Opus + decay model + phase-weighted combined */
+  const handleClaudeAnalysis = async () => {
+    if (!matchState?.sportmonks) {
+      setClaudeAnalysisError("Fetch scores first — a SportMonks snapshot with Playing XI is required.");
+      return;
+    }
+    setClaudeAnalysisError(null);
+    setRefreshingClaude(true);
+    const res = await refreshClaudePrediction(matchId, { dls_info: dlsInfo || null });
     setRefreshingClaude(false);
+    if (applyClaudeRefreshResult(res)) {
+      setClaudeAnalysisError(null);
+    } else {
+      setClaudeAnalysisError(
+        res?.error || "Claude analysis did not complete. Check API key and try again."
+      );
+    }
+  };
+
+  const handleRefreshClaude = async () => {
+    setClaudeAnalysisError(null);
+    setRefreshingClaude(true);
+    const res = await refreshClaudePrediction(matchId, { dls_info: dlsInfo || null });
+    setRefreshingClaude(false);
+    if (applyClaudeRefreshResult(res)) {
+      setClaudeAnalysisError(null);
+    } else {
+      setClaudeAnalysisError(res?.error || "Refresh failed.");
+    }
   };
 
   const handleCheckStatus = async () => {
@@ -234,7 +265,7 @@ export default function LiveMatch() {
                 </span>
               )}
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2 justify-end">
               <button onClick={handleCheckStatus} disabled={checkingStatus} data-testid="check-status-btn"
                 className="flex items-center gap-1.5 bg-[#1E1E1E] border border-white/10 text-[#A1A1AA] px-3 py-2 rounded-md text-xs font-bold uppercase tracking-wider hover:text-white hover:border-white/20 transition-colors disabled:opacity-50">
                 {checkingStatus ? <Spinner className="w-3.5 h-3.5 animate-spin" /> : <ArrowsClockwise weight="bold" className="w-3.5 h-3.5" />}
@@ -244,8 +275,25 @@ export default function LiveMatch() {
                 className="flex items-center gap-2 bg-[#007AFF] text-white px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider hover:bg-[#0066DD] transition-colors disabled:opacity-50">
                 {fetchingLive ? <><Spinner className="w-4 h-4 animate-spin" /> Fetching…</> : <><Lightning weight="fill" className="w-4 h-4" /> Fetch scores</>}
               </button>
+              <button
+                type="button"
+                onClick={handleClaudeAnalysis}
+                disabled={refreshingClaude || checkingStatus || fetchingLive || !matchState?.sportmonks}
+                data-testid="claude-analysis-btn"
+                title={matchState?.sportmonks ? "Run Claude Opus analysis, then update decay + phase-weighted combined" : "Fetch scores first to load SportMonks data"}
+                className="flex items-center gap-1.5 bg-[#141414] border border-purple-500/40 text-purple-300 px-3 py-2 rounded-md text-xs font-bold uppercase tracking-wider hover:bg-purple-500/10 hover:border-purple-400/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {refreshingClaude ? <Spinner className="w-3.5 h-3.5 animate-spin" /> : <Sparkle weight="fill" className="w-3.5 h-3.5 text-purple-400" />}
+                {refreshingClaude ? "Running…" : "Claude analysis"}
+              </button>
             </div>
           </div>
+
+          {claudeAnalysisError && (
+            <div className="mb-3 text-xs text-[#FCA5A5] bg-[#FF3B30]/10 border border-[#FF3B30]/25 rounded-md px-3 py-2" data-testid="claude-analysis-error" role="alert">
+              {claudeAnalysisError}
+            </div>
+          )}
 
           {smScoreLine && (
             <div data-testid="sportmonks-score-line" className="mb-3 text-xs font-mono text-[#EAB308] border border-white/10 rounded-md px-3 py-2 bg-[#141414]">
