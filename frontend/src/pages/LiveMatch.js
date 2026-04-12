@@ -34,6 +34,7 @@ export default function LiveMatch() {
   const [refreshingClaude, setRefreshingClaude] = useState(false);
   const [showFormula, setShowFormula] = useState(false);
   const [checkingStatus, setCheckingStatus] = useState(false);
+  const [smScoreLine, setSmScoreLine] = useState(null);
   const [matchCompleted, setMatchCompleted] = useState(null);
   const [gutFeeling, setGutFeeling] = useState("");
   const [currentBettingOdds, setCurrentBettingOdds] = useState("");
@@ -121,6 +122,9 @@ export default function LiveMatch() {
   const handleCheckStatus = async () => {
     setCheckingStatus(true);
     const status = await checkMatchStatus(matchId);
+    if (status?.score) {
+      setSmScoreLine(status.score);
+    }
     if (status) {
       if (status.is_finished) {
         setMatchCompleted({
@@ -208,6 +212,13 @@ export default function LiveMatch() {
               </button>
             </div>
           </div>
+
+          {smScoreLine && (
+            <div data-testid="sportmonks-score-line" className="mb-3 text-xs font-mono text-[#EAB308] border border-white/10 rounded-md px-3 py-2 bg-[#141414]">
+              <span className="text-[#737373] uppercase tracking-wider mr-2">SportMonks</span>
+              {smScoreLine}
+            </div>
+          )}
 
           {/* Match Completed Banner */}
           {matchCompleted && (

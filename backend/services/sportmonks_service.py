@@ -63,6 +63,46 @@ async def fetch_fixture_details(fixture_id: int) -> dict:
     return data.get("data") or {}
 
 
+# SportMonks fixture status strings that mean the match is in play ("ns" = not started — not live).
+SM_LIVE_STATUSES = frozenset({"1st innings", "2nd innings", "innings break", "int.", "live"})
+
+
+def score_entry_from_fixture_raw(raw: dict) -> dict:
+    """Build a livescore-shaped dict (team1/team2 + innN_*) from a fixture payload."""
+    local = (raw or {}).get("localteam", {}) or {}
+    visitor = (raw or {}).get("visitorteam", {}) or {}
+    lt = local.get("name", "")
+    vt = visitor.get("name", "")
+    runs_data = (raw or {}).get("runs", [])
+    if isinstance(runs_data, dict):
+        runs_data = runs_data.get("data", [])
+    entry = {"team1": lt, "team2": vt, "note": (raw or {}).get("note", "")}
+    for r in runs_data:
+        inn = r.get("inning", 1)
+        entry[f"inn{inn}_runs"] = r.get("score", 0)
+        entry[f"inn{inn}_wickets"] = r.get("wickets", 0)
+        entry[f"inn{inn}_overs"] = r.get("overs", 0)
+    return entry
+
+
+def format_livescore_entry_text(entry: dict) -> str:
+    """Format score line like fetch_livescores_ipl / refresh-live-status (two innings)."""
+    if not entry:
+        return ""
+    parts = []
+    if entry.get("inn1_runs") is not None:
+        parts.append(
+            f"{entry['team1']} {entry.get('inn1_runs', 0)}/{entry.get('inn1_wickets', 0)} "
+            f"({entry.get('inn1_overs', 0)} ov)"
+        )
+    if entry.get("inn2_runs") is not None:
+        parts.append(
+            f"{entry['team2']} {entry.get('inn2_runs', 0)}/{entry.get('inn2_wickets', 0)} "
+            f"({entry.get('inn2_overs', 0)} ov)"
+        )
+    return " | ".join(parts) if parts else (entry.get("note") or "")
+
+
 def parse_fixture(raw: dict) -> dict:
     """Parse raw SportMonks fixture into a clean match state."""
     if not raw or raw.get("error"):
@@ -444,6 +484,7 @@ async def fetch_livescores_ipl() -> list:
         status = m.get("status", "")
         note = m.get("note", "")
         fixture_id = m.get("id")
+        st = (status or "").lower()
         entry = {
             "fixture_id": fixture_id,
             "team1": lt,
@@ -451,8 +492,8 @@ async def fetch_livescores_ipl() -> list:
             "status": status,
             "note": note,
             "league_id": m.get("league_id"),
-            "is_live": status.lower() in ["1st innings", "2nd innings", "innings break", "int.", "live", "ns"],
-            "is_finished": status.lower() in ["finished", "aban.", "cancelled", "no result"],
+            "is_live": st in SM_LIVE_STATUSES,
+            "is_finished": st in ["finished", "aban.", "cancelled", "no result"],
         }
         runs_data = m.get("runs", [])
         if isinstance(runs_data, dict):
@@ -479,7 +520,8 @@ async def check_fixture_status(team1: str, team2: str) -> dict:
     status = raw.get("status", "Unknown")
     note = raw.get("note", "")
     winner_team_id = raw.get("winner_team_id")
-    
+    st = (status or "").lower()
+
     # Determine winner name
     local = raw.get("localteam", {})
     visitor = raw.get("visitorteam", {})
@@ -489,7 +531,10 @@ async def check_fixture_status(team1: str, team2: str) -> dict:
             winner = local.get("name")
         elif winner_team_id == visitor.get("id"):
             winner = visitor.get("name")
-    
+
+    score_entry = score_entry_from_fixture_raw(raw)
+    score_text = format_livescore_entry_text(score_entry)
+
     return {
         "status": status,
         "fixture_id": fid,
@@ -497,8 +542,9 @@ async def check_fixture_status(team1: str, team2: str) -> dict:
         "winner": winner,
         "team1": local.get("name", ""),
         "team2": visitor.get("name", ""),
-        "is_finished": status.lower() in ["finished", "aban.", "cancelled", "no result"],
-        "is_live": status.lower() in ["1st innings", "2nd innings", "innings break", "int.", "live", "ns"],
+        "score": score_text,
+        "is_finished": st in ["finished", "aban.", "cancelled", "no result"],
+        "is_live": st in SM_LIVE_STATUSES,
     }
 
 

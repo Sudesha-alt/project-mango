@@ -10,6 +10,8 @@ export default function CricApiLivePanel() {
   const [usage, setUsage] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [smRefreshing, setSmRefreshing] = useState(false);
+  const [smResult, setSmResult] = useState(null);
 
   const fetchUsage = useCallback(async () => {
     try {
@@ -46,6 +48,18 @@ export default function CricApiLivePanel() {
     setLoading(false);
   };
 
+  const handleSportMonksRefresh = async () => {
+    setSmRefreshing(true);
+    setSmResult(null);
+    try {
+      const res = await axios.post(`${API}/matches/refresh-live-status`, {}, { timeout: 60000 });
+      setSmResult(res.data);
+    } catch (e) {
+      setSmResult({ error: e?.message || "SportMonks refresh failed" });
+    }
+    setSmRefreshing(false);
+  };
+
   const hitsUsed = usage?.hits || 0;
   const hitsLimit = usage?.limit || 100;
   const hitsRemaining = usage?.remaining ?? (hitsLimit - hitsUsed);
@@ -79,6 +93,31 @@ export default function CricApiLivePanel() {
             <span>Last: {new Date(usage.last_fetched).toLocaleTimeString()}</span>
           )}
         </div>
+      </div>
+
+      <div className="bg-[#141414] border border-[#262626] rounded-lg p-4 space-y-2">
+        <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold">SportMonks (authoritative IPL livescores)</p>
+        <button
+          type="button"
+          onClick={handleSportMonksRefresh}
+          disabled={smRefreshing}
+          data-testid="fetch-sportmonks-refresh-btn"
+          className="w-full flex items-center justify-center gap-2 bg-[#1E1E1E] border border-[#34C759]/40 text-[#34C759] py-2.5 rounded-lg text-xs font-bold uppercase tracking-wider hover:bg-[#252525] transition-colors disabled:opacity-50"
+        >
+          {smRefreshing ? (
+            <><Spinner className="w-4 h-4 animate-spin" /> Refreshing schedule scores…</>
+          ) : (
+            <><ArrowsClockwise weight="bold" className="w-4 h-4" /> Fetch live scores (SportMonks)</>
+          )}
+        </button>
+        {smResult && !smResult.error && (
+          <p className="text-[10px] text-[#A3A3A3] font-mono" data-testid="sportmonks-refresh-summary">
+            Live on SM: {smResult.sportmonks_live ?? 0} · Still live: {smResult.still_live_count ?? 0} · Promoted: {smResult.promoted_count ?? 0}
+          </p>
+        )}
+        {smResult?.error && (
+          <p className="text-[10px] text-[#FF3B30]">{smResult.error}</p>
+        )}
       </div>
 
       {/* Fetch Button */}
