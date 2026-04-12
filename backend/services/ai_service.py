@@ -1113,6 +1113,46 @@ async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_in
     yet_to_bowl = sm_data.get("yet_to_bowl", [])
     ytbowl_text = ", ".join(p.get("name", "?") for p in yet_to_bowl) or "None / all bowled"
 
+    def _fmt_bat_rows(rows: list) -> str:
+        if not rows:
+            return "  (no data)"
+        return "\n".join(
+            f"  {b.get('name', '?')} — {b.get('runs', 0)}({b.get('balls', 0)}) "
+            f"SR:{b.get('strike_rate', 0)} 4s:{b.get('fours', 0)} 6s:{b.get('sixes', 0)}"
+            + (" *AT_CREASE*" if b.get("active") else "")
+            for b in rows
+        )
+
+    def _fmt_bowl_rows(rows: list) -> str:
+        if not rows:
+            return "  (no data)"
+        lines = []
+        for bw in rows:
+            lines.append(
+                f"  {bw.get('name', '?')}: {bw.get('overs', 0)} ov, "
+                f"{bw.get('runs', 0)} runs, {bw.get('wickets', 0)} wkts, Econ:{bw.get('economy', 0)}"
+            )
+        return "\n".join(lines)
+
+    bat_inn1_full = _fmt_bat_rows(sm_data.get("batsmen_inn1", []) or [])
+    bat_inn2_full = _fmt_bat_rows(sm_data.get("batsmen_inn2", []) or [])
+    bowl_inn1_full = _fmt_bowl_rows(sm_data.get("bowlers_inn1", []) or [])
+    bowl_inn2_full = _fmt_bowl_rows(sm_data.get("bowlers_inn2", []) or [])
+
+    _sc_keys = (
+        "current_innings", "current_score", "innings", "crr", "rrr", "batting_team", "bowling_team",
+        "target", "note", "status", "recent_balls", "team1_playing_xi", "team2_playing_xi",
+        "active_batsmen", "active_bowler", "batsmen_inn1", "batsmen_inn2", "bowlers_inn1", "bowlers_inn2",
+        "yet_to_bat", "yet_to_bowl",
+    )
+    try:
+        scorecard_payload = {k: sm_data[k] for k in _sc_keys if k in sm_data}
+        scorecard_json = json.dumps(scorecard_payload, indent=2, default=str)
+        if len(scorecard_json) > 14000:
+            scorecard_json = scorecard_json[:14000] + "\n... [truncated]"
+    except Exception:
+        scorecard_json = "{}"
+
     # Previous innings summary (if 2nd innings)
     prev_inn_text = ""
     if current_inn == 2:
@@ -1304,6 +1344,9 @@ FORMAT RULES:
 
     prompt = f"""ANALYSE THIS LIVE IPL 2026 MATCH. Produce ALL 11 sections.
 
+AUTHORITATIVE DATA: The STRUCTURED LIVE SCORECARD JSON and full inning-wise tables below are the single source of truth for
+current runs/wickets/overs, CRR/RRR, who is batting/bowling and their figures, and both teams' Playing XIs. Do not contradict them.
+
 === LIVE MATCH STATE ===
 - {team1} ({t1_short}) vs {team2} ({t2_short}) at {venue}
 - {match_date_text}
@@ -1314,16 +1357,31 @@ FORMAT RULES:
 - {sm_data.get('note', '')}
 {prev_inn_text}
 
+=== STRUCTURED LIVE SCORECARD (JSON) ===
+{scorecard_json}
+
+=== COMPLETE INNINGS 1 BATTING ===
+{bat_inn1_full}
+
+=== COMPLETE INNINGS 2 BATTING ===
+{bat_inn2_full}
+
+=== COMPLETE INNINGS 1 BOWLING ===
+{bowl_inn1_full}
+
+=== COMPLETE INNINGS 2 BOWLING ===
+{bowl_inn2_full}
+
 === BATSMEN AT CREASE ===
 {active_bat_text}
 
-=== FULL BATTING CARD ===
+=== FULL BATTING CARD (CURRENT INNINGS) ===
 {full_bat_text}
 
 === YET TO BAT ===
 {ytb_text}
 
-=== BOWLING CARD ===
+=== BOWLING CARD (CURRENT INNINGS) ===
 {bowlers_summary_text}
 
 === CURRENT BOWLER ===
