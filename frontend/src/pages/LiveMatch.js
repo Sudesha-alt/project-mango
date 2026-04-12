@@ -133,8 +133,15 @@ export default function LiveMatch() {
           status: status.sportmonks_status,
         });
       } else if (status.is_live) {
-        // Match is live — fetch fresh data
-        await handleFetchLive();
+        const fresh = await getMatchState(matchId);
+        if (fresh && !fresh.noLiveData && !fresh.info) {
+          setMatchState(fresh);
+          if (fresh.probabilities) {
+            setProbHistory((prev) => [...prev, fresh.probabilities].slice(-50));
+          }
+        } else {
+          await handleFetchLive();
+        }
       } else {
         // Check if there's another live match to navigate to
         const liveData = await getCurrentLiveMatch();
@@ -204,11 +211,11 @@ export default function LiveMatch() {
               <button onClick={handleCheckStatus} disabled={checkingStatus} data-testid="check-status-btn"
                 className="flex items-center gap-1.5 bg-[#1E1E1E] border border-white/10 text-[#A1A1AA] px-3 py-2 rounded-md text-xs font-bold uppercase tracking-wider hover:text-white hover:border-white/20 transition-colors disabled:opacity-50">
                 {checkingStatus ? <Spinner className="w-3.5 h-3.5 animate-spin" /> : <ArrowsClockwise weight="bold" className="w-3.5 h-3.5" />}
-                {checkingStatus ? "Checking..." : "Check Status"}
+                {checkingStatus ? "Updating…" : "Check status"}
               </button>
               <button onClick={handleFetchLive} disabled={fetchingLive} data-testid="fetch-live-btn"
                 className="flex items-center gap-2 bg-[#007AFF] text-white px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider hover:bg-[#0066DD] transition-colors disabled:opacity-50">
-                {fetchingLive ? <><Spinner className="w-4 h-4 animate-spin" /> Fetching...</> : <><Lightning weight="fill" className="w-4 h-4" /> Fetch Live Scores</>}
+                {fetchingLive ? <><Spinner className="w-4 h-4 animate-spin" /> Fetching…</> : <><Lightning weight="fill" className="w-4 h-4" /> Fetch scores</>}
               </button>
             </div>
           </div>
@@ -410,7 +417,7 @@ export default function LiveMatch() {
                   <div className="bg-[#141414] border border-[#FFCC00]/30 rounded-md p-4 space-y-3" data-testid="combined-prediction">
                     <div className="flex items-center justify-between">
                       <h3 className="text-xs uppercase tracking-[0.2em] font-bold text-[#FFCC00]" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
-                        Combined Prediction
+                        Phase-weighted prediction
                       </h3>
                       <span className="text-[9px] px-2 py-0.5 rounded bg-[#FFCC00]/10 border border-[#FFCC00]/20 text-[#FFCC00] font-bold uppercase">
                         {combinedPred.phase_label}
@@ -439,7 +446,7 @@ export default function LiveMatch() {
                       </div>
                       <div className="flex flex-wrap gap-3 text-[9px]">
                         <span className="flex items-center gap-1">
-                          <span className="w-2 h-2 rounded-sm bg-[#007AFF]" /> Algo {Math.round(combinedPred.algo_weight * 100)}%
+                          <span className="w-2 h-2 rounded-sm bg-[#007AFF]" /> Decay {Math.round(combinedPred.algo_weight * 100)}%
                         </span>
                         <span className="flex items-center gap-1">
                           <span className="w-2 h-2 rounded-sm bg-purple-500" /> Claude {Math.round(combinedPred.claude_weight * 100)}%
@@ -459,7 +466,7 @@ export default function LiveMatch() {
                     {/* Source probabilities */}
                     <div className="grid grid-cols-2 gap-2 text-[10px]">
                       <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2 text-center">
-                        <p className="text-[8px] text-[#525252] uppercase">Algo says {t1Short}</p>
+                        <p className="text-[8px] text-[#525252] uppercase">Decay model {t1Short}</p>
                         <p className="font-mono font-bold text-[#007AFF]">{combinedPred.algo_t1_pct}%</p>
                       </div>
                       <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2 text-center">
@@ -566,7 +573,7 @@ export default function LiveMatch() {
                         <div className="bg-[#141414] border border-[#007AFF]/30 rounded-md p-4 space-y-3" data-testid="weighted-prediction">
                           <div className="flex items-center justify-between">
                             <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-[#007AFF]" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
-                              Algorithm (Alpha x H+L)
+                              Decay combined prediction
                             </h4>
                             <button onClick={() => setShowFormula(!showFormula)} data-testid="formula-info-btn"
                               className="w-5 h-5 rounded-full border border-[#007AFF]/40 text-[#007AFF] text-[10px] font-bold flex items-center justify-center hover:bg-[#007AFF]/10 transition-colors">

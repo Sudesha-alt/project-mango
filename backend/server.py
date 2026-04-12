@@ -906,7 +906,8 @@ class ChatRequest(BaseModel):
 
 @api_router.post("/matches/{match_id}/fetch-live")
 async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
-    """Button-triggered: Fetch live data via SportMonks API + Claude win prediction."""
+    """Fetch live scores from SportMonks (or CricAPI fallback), ensemble probabilities, and decay (α×H+L) model.
+    Does not call Claude Opus — use Check Status or Refresh Predictions after scores are loaded."""
     if body is None:
         body = FetchLiveRequest()
 
@@ -1107,87 +1108,18 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
         logger.error(f"Enrichment data fetch failed: {e}")
         enrichment_data = {}
 
-    # ── Claude Win Prediction (pass Playing XI squads + weather + news + enrichment + user context) ──
+    # ── Decay combined model (α × H + L) without Claude — Opus runs via Check Status / Refresh Predictions ──
     claude_prediction = None
-    if sm_data:
-        claude_prediction = await claude_sportmonks_prediction(
-            sm_data, probs, match_info, squads=live_squads, weather=match_weather, news=match_news,
-            gut_feeling=body.gut_feeling, betting_odds_pct=body.current_betting_odds, dls_info=body.dls_info,
-            enrichment=enrichment_data
-        )
+    probs["source"] = "ensemble"
 
-    # ── Apply Claude's prediction to the algo baseline ──
-    # The 11-section format provides BOTH:
-    #   1. contextual_adjustment_pct — a delta applied to algo baseline
-    #   2. section_10_final_prediction.team1_win_pct — Claude's committed direct probability
-    # We use the direct probability for the combined blend (it's Claude's full analysis),
-    # and keep the adjustment for transparency/logging.
-    if claude_prediction and not claude_prediction.get("error"):
-        # Extract Claude's direct committed probability from Section 10
-        s10 = claude_prediction.get("section_10_final_prediction", {})
-        claude_direct_t1 = None
-        claude_direct_t2 = None
-        if s10 and s10.get("team1_win_pct") is not None:
-            try:
-                claude_direct_t1 = float(s10["team1_win_pct"])
-            except (TypeError, ValueError):
-                claude_direct_t1 = None
-
-        # Also extract contextual_adjustment_pct for the delta system
-        adjustment = claude_prediction.get("contextual_adjustment_pct", 0)
-        try:
-            adjustment = float(adjustment)
-        except (TypeError, ValueError):
-            adjustment = 0.0
-        adjustment = max(-30, min(30, adjustment))
-
-        algo_t1_pct = probs.get("ensemble", 0.5) * 100
-
-        # If Claude provided a direct committed probability (Section 10), use that
-        # as the "claude_t1_pct" for the combined prediction blend.
-        # Otherwise, fall back to the algo + adjustment method.
-        if claude_direct_t1 is not None:
-            adjusted_t1_pct = max(1, min(99, claude_direct_t1))
-            adjusted_t2_pct = 100 - adjusted_t1_pct
-            claude_prediction["team1_win_pct"] = round(adjusted_t1_pct, 1)
-            claude_prediction["team2_win_pct"] = round(adjusted_t2_pct, 1)
-            claude_prediction["source"] = "section_10_direct"
-        else:
-            # Legacy: apply adjustment to algo baseline
-            adjusted_t1_pct = algo_t1_pct + adjustment
-            adjusted_t1_pct = max(1, min(99, adjusted_t1_pct))
-            adjusted_t2_pct = 100 - adjusted_t1_pct
-            claude_prediction["team1_win_pct"] = round(adjusted_t1_pct, 1)
-            claude_prediction["team2_win_pct"] = round(adjusted_t2_pct, 1)
-            claude_prediction["source"] = "algo_plus_adjustment"
-
-        claude_prediction["algo_baseline_t1_pct"] = round(algo_t1_pct, 1)
-        claude_prediction["adjustment_applied"] = round(adjustment, 1)
-
-        # Update ensemble with Claude-informed probability
-        probs["ensemble"] = round(adjusted_t1_pct / 100, 4)
-        probs["source"] = "algo+claude"
-        team1_odds = calculate_odds_from_probability(probs["ensemble"])
-        team2_odds = calculate_odds_from_probability(1 - probs["ensemble"])
-
-    # ── Weighted Probability Prediction (6-Factor Live Model) ──
-    # Fetch pre-match base probability and playing XI as anchors
     pre_match_cached = await db.pre_match_predictions.find_one({"matchId": match_id}, {"_id": 0})
     pre_match_prob = pre_match_cached.get("prediction", {}).get("team1_win_prob") if pre_match_cached else None
     cached_xi = pre_match_cached.get("playing_xi") if pre_match_cached else None
     weighted_pred = compute_live_prediction(
-        sm_data, claude_prediction, match_info,
+        sm_data, None, match_info,
         pre_match_prob=pre_match_prob, xi_data=cached_xi, enrichment=enrichment_data,
     ) if sm_data else None
-
-    # ── Phase-Based Combined Prediction (Algo vs Claude dynamic blend) ──
-    combined_pred = compute_combined_prediction(
-        algo_pred=weighted_pred,
-        claude_pred=claude_prediction,
-        sm_data=sm_data,
-        gut_feeling=body.gut_feeling,
-        betting_odds_pct=body.current_betting_odds,
-    ) if (weighted_pred or claude_prediction) else None
+    combined_pred = None
 
     result = {
         "matchId": match_id,
@@ -1448,6 +1380,16 @@ async def refresh_claude_prediction(match_id: str, body: RefreshClaudeRequest = 
         cached["combinedPrediction"] = combined_pred
         live_match_state[match_id] = cached
 
+    await db.live_snapshots.update_one(
+        {"matchId": match_id},
+        {"$set": {
+            "weightedPrediction": weighted_pred,
+            "combinedPrediction": combined_pred,
+            "updatedAt": datetime.now(timezone.utc).isoformat(),
+        }},
+        upsert=False,
+    )
+
     return {
         "matchId": match_id,
         "claudePrediction": claude_prediction,
@@ -1461,8 +1403,7 @@ async def refresh_claude_prediction(match_id: str, body: RefreshClaudeRequest = 
 
 @api_router.post("/matches/{match_id}/check-status")
 async def check_match_status(match_id: str):
-    """Check if a match is still live, finished, or not found on SportMonks.
-    If finished, mark it as 'completed' in the schedule. If live, refresh score from SportMonks."""
+    """Check fixture on SportMonks. If finished, update schedule. If live, refresh scores then re-run Claude Opus + decay + phase blend."""
     match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
     if not match_info:
         return {"error": "Match not found in schedule"}
@@ -1473,6 +1414,7 @@ async def check_match_status(match_id: str):
     result = await check_fixture_status(team1, team2)
     sm_score = result.get("score") or ""
     now_iso = datetime.now(timezone.utc).isoformat()
+    predictions_refreshed = None
 
     # If match is finished, update schedule to "completed"
     if result.get("is_finished"):
@@ -1495,6 +1437,26 @@ async def check_match_status(match_id: str):
             "sportmonks_fixture_id": result.get("fixture_id"),
             "updatedFromSportMonksAt": now_iso,
         }})
+        # Re-sync live snapshot from SportMonks, then Claude Opus + weighted + combined (same as Refresh Predictions)
+        cached_pre = live_match_state.get(match_id) or await db.live_snapshots.find_one({"matchId": match_id}, {"_id": 0})
+        body = FetchLiveRequest()
+        if cached_pre:
+            ui = cached_pre.get("userInputs") or {}
+            body.gut_feeling = ui.get("gut_feeling")
+            body.current_betting_odds = ui.get("current_betting_odds")
+            bi = cached_pre.get("bettingInput") or {}
+            body.betting_team1_pct = bi.get("team1Pct")
+            body.betting_team2_pct = bi.get("team2Pct")
+            body.betting_confidence = bi.get("confidence")
+        fetch_payload = await fetch_live_data(match_id, body)
+        if isinstance(fetch_payload, dict) and not fetch_payload.get("error") and not fetch_payload.get("noLiveMatch"):
+            try:
+                predictions_refreshed = await refresh_claude_prediction(match_id, RefreshClaudeRequest())
+            except HTTPException as he:
+                predictions_refreshed = {"error": he.detail}
+        else:
+            err = fetch_payload.get("error") if isinstance(fetch_payload, dict) else None
+            predictions_refreshed = {"error": err or "live_fetch_failed"}
 
     return {
         "matchId": match_id,
@@ -1507,6 +1469,7 @@ async def check_match_status(match_id: str):
         "schedule_status": "completed" if result.get("is_finished") else (
             "live" if result.get("is_live") else match_info.get("status")
         ),
+        "predictions_refreshed": predictions_refreshed,
     }
 
 
