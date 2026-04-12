@@ -19,7 +19,7 @@ import { WifiHigh, WifiSlash, Lightning, Spinner, UserCircle, ArrowsClockwise, C
 export default function LiveMatch() {
   const { matchId } = useParams();
   const navigate = useNavigate();
-  const { fetchLiveData, getMatchState, getTeamSquad, fetchPlayerPredictions, fetchBetaPrediction, fetchConsultation, sendChat, fetchClaudeLive, refreshClaudePrediction, checkMatchStatus, getCurrentLiveMatch } = useMatchData();
+  const { fetchLiveData, getMatchState, getTeamSquad, fetchPlayerPredictions, fetchBetaPrediction, fetchConsultation, sendChat, refreshClaudePrediction, checkMatchStatus, getCurrentLiveMatch } = useMatchData();
   const { data: wsData, connected } = useWebSocket(matchId);
 
   const [matchState, setMatchState] = useState(null);
@@ -45,7 +45,7 @@ export default function LiveMatch() {
       setLoading(true);
       const state = await getMatchState(matchId);
       if (state && !state.noLiveData) {
-        setMatchState(state);
+        setMatchState({ ...state, noLiveData: false });
         if (state.probabilities) setProbHistory(prev => [...prev, state.probabilities]);
       } else if (state?.info) {
         setMatchState({ ...state.info, matchId, noLiveData: true });
@@ -84,7 +84,7 @@ export default function LiveMatch() {
           noLiveMatch: true,
         }));
       } else {
-        setMatchState(data);
+        setMatchState({ ...data, noLiveData: false });
         if (data.probabilities) setProbHistory(prev => [...prev, data.probabilities].slice(-50));
       }
     }
@@ -134,11 +134,28 @@ export default function LiveMatch() {
         });
       } else if (status.is_live) {
         const fresh = await getMatchState(matchId);
-        if (fresh && !fresh.noLiveData && !fresh.info) {
-          setMatchState(fresh);
-          if (fresh.probabilities) {
-            setProbHistory((prev) => [...prev, fresh.probabilities].slice(-50));
-          }
+        const pr = status.predictions_refreshed;
+        const hasSnapshot =
+          fresh &&
+          !fresh.noLiveData &&
+          !fresh.info &&
+          (fresh.liveData || fresh.sportmonks || fresh.fetchedAt);
+        if (hasSnapshot) {
+          setMatchState((prev) => ({
+            ...prev,
+            ...fresh,
+            noLiveData: false,
+            ...(pr && !pr.error
+              ? {
+                  claudePrediction: pr.claudePrediction,
+                  weightedPrediction: pr.weightedPrediction,
+                  combinedPrediction: pr.combinedPrediction,
+                  probabilities: pr.probabilities || fresh.probabilities,
+                }
+              : {}),
+          }));
+          const p = pr && !pr.error ? pr.probabilities : fresh.probabilities;
+          if (p) setProbHistory((prev) => [...prev, p].slice(-50));
         } else {
           await handleFetchLive();
         }
@@ -159,19 +176,29 @@ export default function LiveMatch() {
   const liveData = matchState?.liveData || {};
   const score = liveData.score || {};
   const probs = matchState?.probabilities || {};
-  const claudePred = matchState?.claudePrediction;
+  const claudePred = matchState?.claudePrediction ?? matchState?.claude_prediction;
   const odds = matchState?.odds || {};
   const balls = matchState?.ballHistory || [];
   const team1 = matchState?.team1 || liveData.team1 || "Team A";
   const team2 = matchState?.team2 || liveData.team2 || "Team B";
   const t1Short = matchState?.team1Short || team1.slice(0, 3).toUpperCase();
   const t2Short = matchState?.team2Short || team2.slice(0, 3).toUpperCase();
-  const hasLiveData = !matchState?.noLiveData && matchState?.liveData && !matchState?.noLiveMatch;
+  const hasLiveSnapshot =
+    Boolean(matchState?.liveData) ||
+    Boolean(matchState?.sportmonks) ||
+    Boolean(matchState?.fetchedAt) ||
+    Boolean(matchState?.weightedPrediction ?? matchState?.weighted_prediction) ||
+    Boolean(matchState?.claudePrediction ?? matchState?.claude_prediction) ||
+    Boolean(matchState?.combinedPrediction ?? matchState?.combined_prediction);
+  const hasLiveData =
+    !matchState?.noLiveData &&
+    !matchState?.noLiveMatch &&
+    hasLiveSnapshot;
   const noLiveMatch = matchState?.noLiveMatch;
   const bettingEdge = matchState?.bettingEdge || null;
   const livePred = matchState?.live_prediction;
-  const weightedPred = matchState?.weightedPrediction;
-  const combinedPred = matchState?.combinedPrediction;
+  const weightedPred = matchState?.weightedPrediction ?? matchState?.weighted_prediction;
+  const combinedPred = matchState?.combinedPrediction ?? matchState?.combined_prediction;
 
   const rightTabs = [
     { key: "consult", label: "Consult" },
@@ -521,7 +548,7 @@ export default function LiveMatch() {
                           className="w-full bg-[#0A0A0A] border border-white/10 rounded px-3 py-2 text-xs text-white placeholder-[#525252] focus:border-[#007AFF]/50 focus:outline-none font-mono"
                         />
                       </div>
-                      <p className="text-[9px] text-[#525252]">These inputs are passed to Claude and factored into the Combined Prediction. Click "Fetch Live Scores" or "Refresh Both" after updating.</p>
+                      <p className="text-[9px] text-[#525252]">These inputs are passed to Claude and the phase-weighted blend. After editing, use Check status or Refresh Both.</p>
                     </div>
                   </div>
                 )}
