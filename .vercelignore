@@ -1,0 +1,7 @@
+# Shrink upload — tests and caches are not needed at runtime
+backend/tests
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+backend/requirements-dev.txt
