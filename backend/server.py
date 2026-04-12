@@ -10,8 +10,6 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone, timedelta
 from pydantic import BaseModel
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
 
 import pytz
 
@@ -27,6 +25,8 @@ ENABLE_BACKGROUND_SCHEDULERS = os.environ.get("ENABLE_BACKGROUND_SCHEDULERS", "f
     "yes",
 )
 _scheduler_started = False
+# Created only when ENABLE_BACKGROUND_SCHEDULERS (APScheduler is optional — not installed in slim prod).
+scheduler = None
 
 from services.cricket_service import get_short_name
 from services.probability_engine import (
@@ -3516,8 +3516,6 @@ async def broadcast_update(match_id, data):
 
 # ─── MATCH SCHEDULER (4PM & 7PM IST) ─────────────────────────
 
-scheduler = AsyncIOScheduler(timezone=IST)
-
 async def promote_matches_to_live():
     """Move today's upcoming matches to 'live' status at scheduled times (4PM & 7PM IST)."""
     now_ist = datetime.now(IST)
@@ -3692,9 +3690,13 @@ async def auto_sync_results_and_invalidate():
 
 @app.on_event("startup")
 async def startup():
-    global _scheduler_started
+    global _scheduler_started, scheduler
     logger.info("Predictability starting up...")
     if ENABLE_BACKGROUND_SCHEDULERS:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.cron import CronTrigger
+
+        scheduler = AsyncIOScheduler(timezone=IST)
         scheduler.add_job(promote_matches_to_live, CronTrigger(hour=16, minute=0), id="promote_4pm", replace_existing=True)
         scheduler.add_job(promote_matches_to_live, CronTrigger(hour=19, minute=0), id="promote_7pm", replace_existing=True)
         scheduler.add_job(auto_scrape_live_matches, "interval", minutes=5, id="auto_scrape", replace_existing=True)
@@ -3710,7 +3712,7 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
-    if _scheduler_started:
+    if _scheduler_started and scheduler is not None:
         scheduler.shutdown(wait=False)
     client.close()
 

@@ -1,13 +1,18 @@
 import logging
 import httpx
 from bs4 import BeautifulSoup
-from duckduckgo_search import DDGS
 
 logger = logging.getLogger(__name__)
 
 
 async def web_search(query: str, max_results: int = 8) -> str:
     """Search the web using DuckDuckGo and return combined text results."""
+    try:
+        from duckduckgo_search import DDGS
+    except ImportError:
+        logger.warning("duckduckgo_search not installed — skipping web search (slim serverless bundle).")
+        return "Web search is not available in this deployment."
+
     try:
         with DDGS() as ddgs:
             results = list(ddgs.text(query, max_results=max_results))

@@ -12,8 +12,6 @@ import math
 import random
 from typing import List, Dict, Optional
 
-import numpy as np
-
 
 # ═══════════════════════════════════════════════════════════════
 # LAYER 1: FEATURE ENGINE
@@ -277,6 +275,24 @@ def _live_prob_chase(f: Dict) -> float:
 # LAYER 4: SCORE SIMULATION (Negative Binomial, 10K sims)
 # ═══════════════════════════════════════════════════════════════
 
+def _nb_failures_before_r_successes(n_successes: int, p: float, n_samples: int) -> List[int]:
+    """Negative binomial (failures before r successes), pure Python — no NumPy/SciPy."""
+    rng = random.Random()
+    r_need = max(1, int(n_successes))
+    p = max(0.01, min(0.99, float(p)))
+    out: List[int] = []
+    for _ in range(n_samples):
+        fails = 0
+        succ = 0
+        while succ < r_need:
+            if rng.random() < p:
+                succ += 1
+            else:
+                fails += 1
+        out.append(fails)
+    return out
+
+
 def negative_binomial_innings(
     mean_score: float,
     variance_factor: float = 1.4,
@@ -299,10 +315,8 @@ def negative_binomial_innings(
     n_param = max(n_param, 1)
     p_param = max(0.01, min(p_param, 0.99))
 
-    # NumPy only (avoids SciPy ~100MB+ in serverless bundles; matches scipy.nbinom integer-n case)
     n_int = int(max(1, round(float(n_param))))
-    rng = np.random.default_rng()
-    samples = rng.negative_binomial(n_int, float(p_param), size=n_samples).tolist()
+    samples = _nb_failures_before_r_successes(n_int, p_param, n_samples)
     # Clamp to reasonable cricket range
     return [max(50, min(300, s)) for s in samples]
 
