@@ -1,6 +1,7 @@
 /**
- * Backend origin for REST and WebSocket. Prefer REACT_APP_BACKEND_URL in .env.
- * In development, defaults to http://localhost:8000 when unset (avoids "undefined/api").
+ * Backend origin for REST and WebSocket.
+ * - Production build: set REACT_APP_BACKEND_URL (e.g. in .env.production or CI).
+ * - Development: defaults to http://localhost:8000 when unset.
  */
 function resolveBackendUrl() {
   const raw = process.env.REACT_APP_BACKEND_URL;
@@ -18,3 +19,8 @@ function resolveBackendUrl() {
 
 export const BACKEND_URL = resolveBackendUrl();
 export const API_BASE = BACKEND_URL ? `${BACKEND_URL}/api` : "";
+
+/** True when a backend origin is resolved (production must set REACT_APP_BACKEND_URL). */
+export function isApiConfigured() {
+  return Boolean(BACKEND_URL);
+}

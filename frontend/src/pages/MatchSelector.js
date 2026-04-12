@@ -6,7 +6,7 @@ import { Lightning, MapPin, Clock, CaretRight, Broadcast, Trophy, CalendarBlank,
 import { Badge } from "@/components/ui/badge";
 import CricApiLivePanel from "@/components/CricApiLivePanel";
 import InfoTooltip from "@/components/InfoTooltip";
-import { API_BASE } from "@/lib/apiBase";
+import { API_BASE, BACKEND_URL, isApiConfigured } from "@/lib/apiBase";
 
 const API = API_BASE;
 
@@ -229,6 +229,45 @@ export default function MatchSelector() {
           <p className="text-sm text-[#A1A1AA] mt-2" style={{ fontFamily: "'IBM Plex Sans'" }}>
             IPL 2026 &middot; {schedule?.total ?? 0} matches &middot; Powered by Claude Opus
           </p>
+          {!isApiConfigured() && (
+            <div className="mt-3 mx-auto max-w-xl rounded-md border border-[#FF3B30]/50 bg-[#FF3B30]/10 px-3 py-2 text-left" data-testid="api-url-missing-banner">
+              <p className="text-[11px] text-[#FCA5A5] font-medium">Backend URL not configured</p>
+              <p className="text-[10px] text-[#A1A1AA] mt-1">
+                Set <code className="text-[#E5E5E5]">REACT_APP_BACKEND_URL</code> in <code className="text-[#E5E5E5]">frontend/.env.local</code> or production env, then rebuild. See <code className="text-[#E5E5E5]">frontend/.env.example</code>.
+              </p>
+            </div>
+          )}
+          {isApiConfigured() && (
+            <div
+              className="mt-3 mx-auto max-w-2xl rounded-md border border-white/10 bg-[#141414] px-3 py-2 text-left"
+              data-testid="api-connection-status"
+            >
+              <p className="text-[10px] text-[#737373] uppercase tracking-wider font-bold mb-1">Backend</p>
+              <p className="text-[11px] text-[#A3A3A3] font-mono break-all">{BACKEND_URL}</p>
+              {!apiStatus && (
+                <p className="text-[10px] text-[#737373] mt-2">Checking API…</p>
+              )}
+              {apiStatus?.configured === false && (
+                <p className="text-[10px] text-[#FCA5A5] mt-2">{apiStatus.hint || apiStatus.error || "Not configured"}</p>
+              )}
+              {apiStatus && apiStatus.configured !== false && (
+                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
+                  <span className={apiStatus._health?.ok ? "text-[#34C759]" : "text-[#FF3B30]"}>
+                    HTTP {apiStatus._health?.ok ? "✓" : "✗"} /api/health
+                  </span>
+                  <span className={apiStatus._dbHealth?.ok ? "text-[#34C759]" : "text-[#FF3B30]"}>
+                    MongoDB {apiStatus._dbHealth?.ok ? "✓" : "✗"}
+                    {apiStatus._dbHealth?.ipl_schedule_documents != null && (
+                      <span className="text-[#737373] ml-1">({apiStatus._dbHealth.ipl_schedule_documents} schedule docs)</span>
+                    )}
+                  </span>
+                  <span className="text-[#737373]">
+                    Matches in DB: {apiStatus.matchesInDB ?? "—"}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
           {scheduleError && (
             <div className="mt-3 mx-auto max-w-lg rounded-md border border-[#FF3B30]/40 bg-[#FF3B30]/10 px-3 py-2 text-left" data-testid="schedule-error-banner">
               <p className="text-[11px] text-[#FCA5A5] font-medium">Schedule could not fully load</p>
