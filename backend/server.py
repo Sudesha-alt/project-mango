@@ -6,6 +6,8 @@ import os
 import logging
 import json
 import asyncio
+import re
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone, timedelta
@@ -283,18 +285,53 @@ def _filter_squads_to_playing_xi(match_squads: dict, sm_data: dict, team1: str, 
 
     logger.info(f"Playing XI filter: T1 names={len(t1_lineup_names)}, T2 names={len(t2_lineup_names)}")
 
+    def _normalize_name(name: str) -> str:
+        s = (name or "").lower()
+        # Keep ASCII letters/spaces only to reduce punctuation/noise variance.
+        s = re.sub(r"[^a-z\s]", " ", s)
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+
+    def _compact_vowels(name: str) -> str:
+        # Reduce repeated vowels to handle variants like sooryavanshi vs suryavanshi.
+        return re.sub(r"[aeiou]+", "a", _normalize_name(name))
+
     def _match_player(player_name: str, lineup_names: set) -> bool:
-        """Check if a DB player name matches any lineup name (exact or partial)."""
-        pn = player_name.lower()
+        """Check if a DB player name matches any lineup name (exact/initials/fuzzy)."""
+        pn = _normalize_name(player_name)
+        if not pn:
+            return False
         if pn in lineup_names:
             return True
+
+        pn_compact = _compact_vowels(pn)
+        pn_parts = pn.split()
+        pn_last = pn_parts[-1] if pn_parts else ""
+        pn_first_initial = pn_parts[0][0] if pn_parts and pn_parts[0] else ""
+
         for ln in lineup_names:
-            if pn in ln or ln in pn:
+            ln_norm = _normalize_name(ln)
+            if not ln_norm:
+                continue
+            if pn in ln_norm or ln_norm in pn:
                 return True
-            pn_parts = pn.split()
-            ln_parts = ln.split()
-            if len(pn_parts) > 1 and len(ln_parts) > 1 and pn_parts[-1] == ln_parts[-1]:
-                if pn_parts[0][0] == ln_parts[0][0]:
+
+            ln_parts = ln_norm.split()
+            ln_last = ln_parts[-1] if ln_parts else ""
+            ln_first_initial = ln_parts[0][0] if ln_parts and ln_parts[0] else ""
+
+            # Strong deterministic match: surname + first initial.
+            if pn_last and ln_last and pn_last == ln_last and pn_first_initial == ln_first_initial:
+                return True
+
+            # Handle transliteration/spelling variants by compacting vowels.
+            if _compact_vowels(ln_norm) == pn_compact:
+                return True
+
+            # Final fallback: high fuzzy ratio with same first initial.
+            if pn_first_initial and ln_first_initial and pn_first_initial == ln_first_initial:
+                ratio = SequenceMatcher(None, pn, ln_norm).ratio()
+                if ratio >= 0.88:
                     return True
         return False
 
