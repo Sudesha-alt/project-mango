@@ -20,7 +20,9 @@ Design Principles:
 - Momentum from last 2 match results (W/L).
 """
 import math
+import re
 import logging
+from difflib import SequenceMatcher
 from typing import Dict, Optional, Tuple, List
 
 logger = logging.getLogger(__name__)
@@ -386,13 +388,70 @@ def _favours_from_logit(logit: float, eps: float = 0.015) -> str:
     return "neutral"
 
 
+def _norm_name_key(name: str) -> str:
+    s = (name or "").lower()
+    s = re.sub(r"[^a-z\s]", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _vaibhav_suryavanshi_family_key(name: str) -> Optional[str]:
+    n = _norm_name_key(name)
+    if "vaibhav" in n and "vanshi" in n:
+        return "vaibhav_suryavanshi"
+    return None
+
+
+def resolve_star_player_rating(name: str) -> int:
+    """Map SportMonks / XI name spellings to STAR_PLAYERS card rating (default 65)."""
+    if not name or not str(name).strip():
+        return 65
+    name = str(name).strip()
+    if name in STAR_PLAYERS:
+        return STAR_PLAYERS[name]
+    nl = name.lower()
+    for k, v in STAR_PLAYERS.items():
+        if k.lower() == nl:
+            return v
+    vk = _vaibhav_suryavanshi_family_key(name)
+    if vk:
+        for k, v in STAR_PLAYERS.items():
+            if _vaibhav_suryavanshi_family_key(k):
+                return v
+    nn = _norm_name_key(name)
+    if not nn:
+        return 65
+    nparts = nn.split()
+    fi = nparts[0][0] if nparts and nparts[0] else ""
+    best_rating = 65
+    best_ratio = 0.0
+    for k, v in STAR_PLAYERS.items():
+        kn = _norm_name_key(k)
+        if not kn:
+            continue
+        kparts = kn.split()
+        ki = kparts[0][0] if kparts and kparts[0] else ""
+        if fi and ki and fi != ki:
+            continue
+        ratio = SequenceMatcher(None, nn, kn).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_rating = v
+    if best_ratio >= 0.88:
+        return best_rating
+    for k, v in STAR_PLAYERS.items():
+        kn = _norm_name_key(k)
+        if len(nn) >= 8 and kn and (nn in kn or kn in nn):
+            return v
+    return 65
+
+
 def _chase_strength_index(players: List[dict]) -> float:
     """0–1 index: stronger top-order chasing depth → higher. Neutral 0.5 if no data."""
     ratings = []
     for p in players:
         if p.get("role") not in BAT_ROLES_DEW:
             continue
-        ratings.append(STAR_PLAYERS.get(p.get("name", ""), 65))
+        ratings.append(resolve_star_player_rating(p.get("name", "")))
     if not ratings:
         return 0.5
     top6 = sorted(ratings, reverse=True)[:6]
@@ -426,13 +485,23 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
     venue_key = _match_venue(venue_str)
     match_time = match_info.get("dateTimeGMT", "")
 
-    # Remap squad_data keys to team1/team2
+    def _squad_list_for_team(label: str) -> list:
+        if not label or not squad_data:
+            return []
+        if label in squad_data:
+            return squad_data[label] or []
+        ll = label.lower().strip()
+        for k, v in squad_data.items():
+            if (k or "").lower().strip() == ll:
+                return v or []
+        return []
+
+    # Remap squad_data to team1/team2 using schedule labels (dict key order is not reliable)
     remapped_squads = {}
     if squad_data:
-        squad_names = list(squad_data.keys())
         remapped_squads = {
-            "team1": squad_data.get(squad_names[0], []) if len(squad_names) > 0 else [],
-            "team2": squad_data.get(squad_names[1], []) if len(squad_names) > 1 else [],
+            "team1": _squad_list_for_team(team1),
+            "team2": _squad_list_for_team(team2),
         }
 
     # ── Enhance squad ratings with actual player performance stats ──
@@ -450,7 +519,7 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
             bat = ps.get("batting", {})
             bowl = ps.get("bowling", {})
             # Compute dynamic rating from actual performance
-            base = STAR_PLAYERS.get(name, 65)
+            base = resolve_star_player_rating(name)
             adj = 0
             if bat.get("innings", 0) > 0:
                 bat_avg = bat.get("avg", 0)
@@ -541,7 +610,7 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
         for team_key, counters in [("team1", []), ("team2", [])]:
             players = remapped_squads.get(team_key, [])
             bowlers = [p for p in players if p.get("role") in ("Bowler", "All-rounder")]
-            bowlers_rated = sorted(bowlers, key=lambda p: STAR_PLAYERS.get(p.get("name",""), 65), reverse=True)[:5]
+            bowlers_rated = sorted(bowlers, key=lambda p: resolve_star_player_rating(p.get("name", "")), reverse=True)[:5]
             pace = sum(1 for p in bowlers_rated if p.get("name", "") in PACE_BOWLERS or p.get("name", "") not in SPIN_BOWLERS)
             spin = sum(1 for p in bowlers_rated if p.get("name", "") in SPIN_BOWLERS)
             if team_key == "team1":
@@ -868,7 +937,7 @@ def _compute_squad_ratings(squad_data: dict) -> Tuple:
         for p in players:
             name = p.get("name", "")
             role = p.get("role", "Batsman")
-            base_rating = STAR_PLAYERS.get(name, 65)
+            base_rating = resolve_star_player_rating(name)
             overseas_bonus = 4 if p.get("isOverseas") and base_rating >= 78 else 0
             captain_bonus = 3 if p.get("isCaptain") else 0
             player_rating = min(99, base_rating + overseas_bonus + captain_bonus)
@@ -1085,7 +1154,7 @@ def _compute_bowling_depth(squad_data: dict, t1_rating: dict, t2_rating: dict,
         for p in players:
             name = p.get("name", "")
             role = p.get("role", "Batsman")
-            base_rating = STAR_PLAYERS.get(name, 65)
+            base_rating = resolve_star_player_rating(name)
 
             if role in ("Bowler", "All-rounder"):
                 if base_rating >= 89:
@@ -1209,7 +1278,7 @@ def _compute_conditions_from_weather(
     for team_key in ["team1", "team2"]:
         players = squads.get(team_key, [])
         bowlers = [p for p in players if p.get("role") in ("Bowler", "All-rounder")]
-        bowlers_rated = sorted(bowlers, key=lambda p: STAR_PLAYERS.get(p.get("name", ""), 65), reverse=True)[:5]
+        bowlers_rated = sorted(bowlers, key=lambda p: resolve_star_player_rating(p.get("name", "")), reverse=True)[:5]
         pace = sum(1 for p in bowlers_rated if p.get("name", "") in PACE_BOWLERS or (p.get("name", "") not in SPIN_BOWLERS))
         spin = sum(1 for p in bowlers_rated if p.get("name", "") in SPIN_BOWLERS)
         if team_key == "team1":
@@ -1228,8 +1297,8 @@ def _compute_conditions_from_weather(
         t2_players = squads.get("team2", [])
         t1_batters = [p for p in t1_players if p.get("role") in BAT_ROLES_DEW]
         t2_batters = [p for p in t2_players if p.get("role") in BAT_ROLES_DEW]
-        t1_bat_avg = sum(STAR_PLAYERS.get(p.get("name", ""), 65) for p in t1_batters) / max(len(t1_batters), 1)
-        t2_bat_avg = sum(STAR_PLAYERS.get(p.get("name", ""), 65) for p in t2_batters) / max(len(t2_batters), 1)
+        t1_bat_avg = sum(resolve_star_player_rating(p.get("name", "")) for p in t1_batters) / max(len(t1_batters), 1)
+        t2_bat_avg = sum(resolve_star_player_rating(p.get("name", "")) for p in t2_batters) / max(len(t2_batters), 1)
         bat_diff = (t1_bat_avg - t2_bat_avg) / 100
         dew_logit = 0.6 * bat_diff
         conditions_logit += dew_logit
@@ -1247,8 +1316,8 @@ def _compute_conditions_from_weather(
         t2_players = squads.get("team2", [])
         t1_batters = [p for p in t1_players if p.get("role") in BAT_ROLES_DEW]
         t2_batters = [p for p in t2_players if p.get("role") in BAT_ROLES_DEW]
-        t1_bat_avg = sum(STAR_PLAYERS.get(p.get("name", ""), 65) for p in t1_batters) / max(len(t1_batters), 1)
-        t2_bat_avg = sum(STAR_PLAYERS.get(p.get("name", ""), 65) for p in t2_batters) / max(len(t2_batters), 1)
+        t1_bat_avg = sum(resolve_star_player_rating(p.get("name", "")) for p in t1_batters) / max(len(t1_batters), 1)
+        t2_bat_avg = sum(resolve_star_player_rating(p.get("name", "")) for p in t2_batters) / max(len(t2_batters), 1)
         bat_diff = (t1_bat_avg - t2_bat_avg) / 100
         dew_logit = 0.35 * bat_diff
         conditions_logit += dew_logit
