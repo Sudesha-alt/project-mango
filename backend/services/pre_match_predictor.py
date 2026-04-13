@@ -312,6 +312,7 @@ STAR_PLAYERS = {
 ROLE_WEIGHTS = {
     "Batsman": {"batting": 9, "bowling": 1},
     "Wicketkeeper": {"batting": 7, "bowling": 0},
+    "WK-Batsman": {"batting": 7, "bowling": 0},
     "All-rounder": {"batting": 6, "bowling": 6},
     "Bowler": {"batting": 2, "bowling": 9},
 }
@@ -443,6 +444,56 @@ def resolve_star_player_rating(name: str) -> int:
         if len(nn) >= 8 and kn and (nn in kn or kn in nn):
             return v
     return 65
+
+
+def _name_matches_any_member(name: str, pool: set) -> bool:
+    """Fuzzy match XI/API names to curated PACE_BOWLERS / SPIN_BOWLERS sets."""
+    if not name or not pool:
+        return False
+    if name in pool:
+        return True
+    nn = _norm_name_key(name)
+    if not nn:
+        return False
+    nparts = nn.split()
+    fi = nparts[0][0] if nparts and nparts[0] else ""
+    best_ratio = 0.0
+    for candidate in pool:
+        cn = _norm_name_key(candidate)
+        if not cn:
+            continue
+        if nn == cn:
+            return True
+        if len(nn) >= 6 and len(cn) >= 6 and (nn in cn or cn in nn):
+            return True
+        cparts = cn.split()
+        ci = cparts[0][0] if cparts and cparts[0] else ""
+        if fi and ci and fi != ci:
+            continue
+        ratio = SequenceMatcher(None, nn, cn).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+    return best_ratio >= 0.86
+
+
+def _is_listed_pace_bowler(name: str) -> bool:
+    return _name_matches_any_member(name, PACE_BOWLERS)
+
+
+def _is_listed_spin_bowler(name: str) -> bool:
+    return _name_matches_any_member(name, SPIN_BOWLERS)
+
+
+def _is_listed_primary_bowler(name: str) -> bool:
+    return _is_listed_pace_bowler(name) or _is_listed_spin_bowler(name)
+
+
+def _is_bowling_contributor(p: dict) -> bool:
+    """True if this XI player should count in bowling depth / pace-spin tallies."""
+    role = (p.get("role") or "Batsman").strip()
+    if role in ("Bowler", "All-rounder"):
+        return True
+    return _is_listed_primary_bowler(p.get("name", ""))
 
 
 def _chase_strength_index(players: List[dict]) -> float:
@@ -609,10 +660,15 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
         t1_pace, t1_spin, t2_pace, t2_spin = 0, 0, 0, 0
         for team_key, counters in [("team1", []), ("team2", [])]:
             players = remapped_squads.get(team_key, [])
-            bowlers = [p for p in players if p.get("role") in ("Bowler", "All-rounder")]
+            bowlers = [p for p in players if _is_bowling_contributor(p)]
             bowlers_rated = sorted(bowlers, key=lambda p: resolve_star_player_rating(p.get("name", "")), reverse=True)[:5]
-            pace = sum(1 for p in bowlers_rated if p.get("name", "") in PACE_BOWLERS or p.get("name", "") not in SPIN_BOWLERS)
-            spin = sum(1 for p in bowlers_rated if p.get("name", "") in SPIN_BOWLERS)
+            pace = sum(
+                1
+                for p in bowlers_rated
+                if _is_listed_pace_bowler(p.get("name", ""))
+                or not _is_listed_spin_bowler(p.get("name", ""))
+            )
+            spin = sum(1 for p in bowlers_rated if _is_listed_spin_bowler(p.get("name", "")))
             if team_key == "team1":
                 t1_pace, t1_spin = pace, spin
             else:
@@ -952,6 +1008,9 @@ def _compute_squad_ratings(squad_data: dict) -> Tuple:
                     bat_ratings.append(player_rating)
                 if weights["bowling"] >= 6:
                     bowl_ratings.append(player_rating)
+                elif weights["bowling"] < 6 and _is_listed_primary_bowler(name):
+                    # SportMonks / fallback XI often marks specialist bowlers as "Batsman"
+                    bowl_ratings.append(player_rating)
 
         bat_avg = sum(sorted(bat_ratings, reverse=True)[:6]) / min(6, max(len(bat_ratings), 1)) if bat_ratings else 50
         bowl_avg = sum(sorted(bowl_ratings, reverse=True)[:5]) / min(5, max(len(bowl_ratings), 1)) if bowl_ratings else 50
@@ -1153,10 +1212,10 @@ def _compute_bowling_depth(squad_data: dict, t1_rating: dict, t2_rating: dict,
 
         for p in players:
             name = p.get("name", "")
-            role = p.get("role", "Batsman")
+            role = (p.get("role") or "Batsman").strip()
             base_rating = resolve_star_player_rating(name)
 
-            if role in ("Bowler", "All-rounder"):
+            if role in ("Bowler", "All-rounder") or _is_listed_primary_bowler(name):
                 if base_rating >= 89:
                     score = 5
                 elif base_rating >= 83:
@@ -1165,8 +1224,8 @@ def _compute_bowling_depth(squad_data: dict, t1_rating: dict, t2_rating: dict,
                     score = 3
                 else:
                     score = 2
-                is_pace = name in PACE_BOWLERS
-                is_spin = name in SPIN_BOWLERS
+                is_pace = _is_listed_pace_bowler(name)
+                is_spin = _is_listed_spin_bowler(name)
                 if not is_pace and not is_spin:
                     is_pace = True  # default unknown bowlers to pace
                 # Venue-weighted score: pacers score more at pace venues, spinners at spin venues
@@ -1176,6 +1235,27 @@ def _compute_bowling_depth(squad_data: dict, t1_rating: dict, t2_rating: dict,
                     "name": name, "score": score * 4, "venue_score": round(venue_score, 1),
                     "rating": base_rating, "is_pace": is_pace, "is_spin": is_spin,
                 })
+
+        if not bowler_entries and players:
+            for p in sorted(
+                players,
+                key=lambda x: resolve_star_player_rating(x.get("name", "")),
+                reverse=True,
+            )[:5]:
+                name = p.get("name", "")
+                base_rating = resolve_star_player_rating(name)
+                score = 2 + min(3, max(0, (base_rating - 60) // 10))
+                is_pace, is_spin = True, False
+                venue_score = score * 4 * (1 + v_pace_assist)
+                bowler_entries.append({
+                    "name": name or "Unknown",
+                    "score": score * 4,
+                    "venue_score": round(venue_score, 1),
+                    "rating": base_rating,
+                    "is_pace": is_pace,
+                    "is_spin": is_spin,
+                })
+            detail[f"{team_key}_depth_fallback"] = True
 
         # Sort by venue_score descending & take top 5
         bowler_entries.sort(key=lambda x: x["venue_score"], reverse=True)
@@ -1277,10 +1357,15 @@ def _compute_conditions_from_weather(
     t1_pace, t1_spin, t2_pace, t2_spin = 0, 0, 0, 0
     for team_key in ["team1", "team2"]:
         players = squads.get(team_key, [])
-        bowlers = [p for p in players if p.get("role") in ("Bowler", "All-rounder")]
+        bowlers = [p for p in players if _is_bowling_contributor(p)]
         bowlers_rated = sorted(bowlers, key=lambda p: resolve_star_player_rating(p.get("name", "")), reverse=True)[:5]
-        pace = sum(1 for p in bowlers_rated if p.get("name", "") in PACE_BOWLERS or (p.get("name", "") not in SPIN_BOWLERS))
-        spin = sum(1 for p in bowlers_rated if p.get("name", "") in SPIN_BOWLERS)
+        pace = sum(
+            1
+            for p in bowlers_rated
+            if _is_listed_pace_bowler(p.get("name", ""))
+            or not _is_listed_spin_bowler(p.get("name", ""))
+        )
+        spin = sum(1 for p in bowlers_rated if _is_listed_spin_bowler(p.get("name", "")))
         if team_key == "team1":
             t1_pace, t1_spin = pace, spin
         else:
