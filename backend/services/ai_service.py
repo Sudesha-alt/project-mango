@@ -761,13 +761,17 @@ async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_i
         for team_name, players in squads.items():
             if players:
                 player_lines = []
-                for p in players:
+                for p in players[:11]:
                     name = p.get("name", "?")
                     role = p.get("role", "Unknown")
                     overseas = " [OVERSEAS]" if p.get("isOverseas") else ""
                     captain = " [C]" if p.get("isCaptain") else ""
                     player_lines.append(f"  - {name} ({role}){overseas}{captain}")
-                squad_block += f"\n{team_name} EXPECTED PLAYING XI ({len(players)} players):\n" + "\n".join(player_lines) + "\n"
+                squad_block += (
+                    f"\n{team_name} EXPECTED PLAYING XI ({len(player_lines)} players):\n"
+                    + "\n".join(player_lines)
+                    + "\n"
+                )
 
     # ── Build player performance stats section ──
     perf_block = ""
@@ -776,7 +780,12 @@ async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_i
             team_perf = player_performance.get(team_key, {})
             if team_perf:
                 perf_lines = []
+                count = 0
                 for pid, ps in team_perf.items():
+                    if count >= 11:
+                        break
+                    if not isinstance(ps, dict):
+                        continue
                     name = ps.get("name", "?")
                     matches = ps.get("matches", 0)
                     bat = ps.get("batting", {})
@@ -787,6 +796,7 @@ async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_i
                     if bowl.get("innings", 0) > 0:
                         line += f" | Bowl: {bowl.get('wickets',0)} wkts, Econ {bowl.get('economy',0)}"
                     perf_lines.append(line)
+                    count += 1
                 if perf_lines:
                     perf_block += f"\n{label} — PLAYER FORM (Last 5 matches from SportMonks) [SPORTMONKS DATA]:\n" + "\n".join(perf_lines) + "\n"
 

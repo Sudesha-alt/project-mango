@@ -205,6 +205,190 @@ def _player_name_matches(a: str, b: str) -> bool:
     return False
 
 
+# SportMonks "last match" XI sometimes omits players who are confirmed starters; inject from DB roster.
+RR_VAIBHAV_CANONICAL = "Vaibhav Suryavanshi"
+RR_VAIBHAV_INJECT_REPLACE_FIRST = (
+    "Brijesh Sharma",
+    "Vignesh Puthur",
+    "Sushant Mishra",
+    "Ravi Singh",
+    "Yash Raj Punja",
+)
+
+
+def _is_rajasthan_team_label(team_label: str) -> bool:
+    return "rajasthan" in (team_label or "").lower()
+
+
+def _find_rr_vaibhav_roster_row(full_roster: list) -> Optional[dict]:
+    for p in full_roster or []:
+        if not isinstance(p, dict):
+            continue
+        if _player_name_matches(p.get("name", ""), RR_VAIBHAV_CANONICAL):
+            return dict(p)
+    return None
+
+
+def _xi_rows_include_vaibhav(xi_rows: list) -> bool:
+    for p in xi_rows or []:
+        if not isinstance(p, dict):
+            continue
+        nm = p.get("name") or p.get("fullname") or ""
+        if _player_name_matches(nm, RR_VAIBHAV_CANONICAL):
+            return True
+    return False
+
+
+def ensure_rr_vaibhav_in_playing_xi_rows(
+    xi_rows: list,
+    team_label: str,
+    full_team_roster: list,
+) -> list:
+    """If Rajasthan XI has no Vaibhav Suryavanshi but he is on the roster, swap out a fringe pick."""
+    if not xi_rows or not _is_rajasthan_team_label(team_label):
+        return xi_rows
+    if len(xi_rows) < 11:
+        return xi_rows
+    if _xi_rows_include_vaibhav(xi_rows):
+        return xi_rows
+    roster_v = _find_rr_vaibhav_roster_row(full_team_roster)
+    if not roster_v:
+        return xi_rows
+    out: list = []
+    for p in xi_rows:
+        if isinstance(p, dict):
+            out.append(dict(p))
+        else:
+            out.append(p)
+    row = {
+        "name": roster_v.get("name", RR_VAIBHAV_CANONICAL),
+        "role": roster_v.get("role", "Batsman"),
+        "isCaptain": bool(roster_v.get("isCaptain", False)),
+        "isOverseas": bool(roster_v.get("isOverseas", False)),
+    }
+    for drop in RR_VAIBHAV_INJECT_REPLACE_FIRST:
+        for i, p in enumerate(out):
+            if not isinstance(p, dict):
+                continue
+            nm = p.get("name") or p.get("fullname") or ""
+            if _player_name_matches(nm, drop):
+                logger.info("RR XI: injected %s (replaced %s)", RR_VAIBHAV_CANONICAL, nm)
+                out[i] = {**p, **row}
+                return out
+    last = out[-1]
+    last_nm = last.get("name", "") if isinstance(last, dict) else ""
+    logger.info("RR XI: injected %s (replaced last: %s)", RR_VAIBHAV_CANONICAL, last_nm)
+    out[-1] = {**last, **row} if isinstance(last, dict) else row
+    return out
+
+
+def _playing_xi_squads_from_doc(
+    xi_doc: dict,
+    match_squads: dict,
+    team1: str,
+    team2: str,
+) -> dict:
+    """
+    Build squad dict for pre-match algo / Claude strictly from the playing_xi collection
+    (Expected11 per side), merged with ipl_squads rows when names match.
+    Never includes players not listed in the cached XI.
+    """
+    if not xi_doc or not _prematch_xi_complete(xi_doc):
+        return {}
+
+    def _named_rows(rows: list) -> list:
+        out = []
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            nm = (row.get("name") or row.get("fullname") or "").strip()
+            if nm:
+                out.append(row)
+        return out
+
+    t1_rows = _named_rows(xi_doc.get("team1_xi"))
+    t2_rows = _named_rows(xi_doc.get("team2_xi"))
+    if len(t1_rows) < MIN_PLAYING_XI or len(t2_rows) < MIN_PLAYING_XI:
+        return {}
+
+    def _enrich(rows: list, sched_team: str) -> list:
+        squad_list = (match_squads or {}).get(sched_team, [])
+        res: list = []
+        seen: set = set()
+        for row in rows:
+            if len(res) >= MIN_PLAYING_XI:
+                break
+            nm = (row.get("name") or row.get("fullname") or "").strip()
+            key = _normalize_player_name(nm)
+            if key in seen:
+                continue
+            seen.add(key)
+            match_p = next(
+                (p for p in squad_list if _player_name_matches(p.get("name", ""), nm)),
+                None,
+            )
+            if match_p:
+                res.append(dict(match_p))
+            else:
+                res.append({
+                    "name": nm,
+                    "role": row.get("role", "Batsman"),
+                    "isCaptain": bool(row.get("isCaptain") or row.get("is_captain")),
+                    "isOverseas": bool(row.get("isOverseas") or row.get("is_overseas")),
+                })
+        if len(res) < MIN_PLAYING_XI:
+            return []
+        return res[:MIN_PLAYING_XI]
+
+    t1_final = _enrich(t1_rows, team1)
+    t2_final = _enrich(t2_rows, team2)
+    if len(t1_final) < MIN_PLAYING_XI or len(t2_final) < MIN_PLAYING_XI:
+        return {}
+    return {team1: t1_final, team2: t2_final}
+
+
+def _filter_player_performance_to_playing_xi(
+    player_performance: Optional[dict],
+    playing_xi_squads: dict,
+) -> dict:
+    """Restrict SportMonks player_performance blobs to Expected XI names only."""
+    if not player_performance or not playing_xi_squads:
+        return player_performance or {}
+    roster_names: list = []
+    for players in playing_xi_squads.values():
+        for p in players or []:
+            n = (p.get("name") or "").strip()
+            if n:
+                roster_names.append(n)
+    if not roster_names:
+        return {}
+
+    def _keep(name: str) -> bool:
+        return any(_player_name_matches(name or "", rn) for rn in roster_names)
+
+    out: dict = {}
+    for side in ("team1", "team2"):
+        raw = player_performance.get(side)
+        if not raw:
+            continue
+        if isinstance(raw, dict):
+            filtered = {
+                k: v
+                for k, v in raw.items()
+                if isinstance(v, dict) and _keep(v.get("name", ""))
+            }
+            if filtered:
+                out[side] = filtered
+        elif isinstance(raw, list):
+            filtered = [
+                x for x in raw
+                if isinstance(x, dict) and _keep(x.get("name", ""))
+            ]
+            if filtered:
+                out[side] = filtered
+    return out
+
+
 def _recent_form_impact_score(season_stats: Optional[dict]) -> Optional[float]:
     """0-100 score from SportMonks last-N aggregates (batting and/or bowling), same spirit as form_service."""
     if not season_stats:
@@ -398,6 +582,13 @@ def _filter_squads_to_playing_xi(match_squads: dict, sm_data: dict, team1: str, 
         filtered_squads[squad_names[1]] = match_squads.get(squad_names[1], [])
         if t2_lineup_names:
             logger.warning(f"Low XI match for {squad_names[1]} ({len(t2_filtered)}/{len(t2_lineup_names)}), using full squad")
+
+    for sname in squad_names:
+        rows = filtered_squads.get(sname)
+        if isinstance(rows, list) and rows:
+            filtered_squads[sname] = ensure_rr_vaibhav_in_playing_xi_rows(
+                rows, sname, match_squads.get(sname, [])
+            )
 
     return filtered_squads
 
@@ -2096,8 +2287,10 @@ async def get_pre_match_prediction(match_id: str):
 async def api_pre_match_predict(match_id: str, force: bool = False):
     """
     Predict upcoming match winner using 8-category algorithm.
-    Requires a full Expected Playing XI (11 per side) from SportMonks or the
-    “Fetch Playing XI” cache — squad-only guesses are not accepted.
+
+    Strict gate: Expected Playing XI must already exist in the playing_xi collection
+    (11 named players per side from “Fetch Playing XI”). Inline SportMonks lineup
+    fetch is not used here — only the generated cache drives the XI.
 
     Auto-refreshes stale predictions (>6 hours old) to keep data fresh.
     """
@@ -2154,102 +2347,57 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
     # Fetch squads from DB (user-provided IPL 2026 rosters)
     match_squads = await _get_squads_for_match(team1, team2)
 
-    # ── Fetch ACTUAL Playing XI from SportMonks API ──
-    # Try live match first, then last completed match per team
-    api_xi_data = {"team1_xi": [], "team2_xi": [], "source": "none"}
-    try:
-        live_xi = await fetch_playing_xi_from_live(team1, team2)
-        if live_xi.get("team1_xi") and live_xi.get("team2_xi"):
-            api_xi_data = live_xi
-            logger.info(f"Got Playing XI from LIVE match: {len(live_xi['team1_xi'])} + {len(live_xi['team2_xi'])}")
-        else:
-            # Fetch last played XI for each team separately
-            t1_xi = await fetch_last_played_xi(team1)
-            t2_xi = await fetch_last_played_xi(team2)
-            if t1_xi or t2_xi:
-                api_xi_data = {
-                    "team1_xi": t1_xi,
-                    "team2_xi": t2_xi,
-                    "source": "last_match",
-                }
-                logger.info(f"Got Playing XI from last matches: {len(t1_xi)} + {len(t2_xi)}")
-    except Exception as e:
-        logger.warning(f"Failed to fetch Playing XI from API: {e}")
-
-    # Prefer completed "Fetch Playing XI" cache when present (11+11)
+    # ── Strict: Expected XI must come from generated playing_xi cache (Fetch Playing XI) ──
     xi_doc = await db.playing_xi.find_one({"matchId": match_id}, {"_id": 0})
-    if xi_doc and _prematch_xi_complete(xi_doc):
-        api_xi_data = {
-            "team1_xi": xi_doc.get("team1_xi", []),
-            "team2_xi": xi_doc.get("team2_xi", []),
-            "source": xi_doc.get("source", "last_match"),
-        }
-
-    # ── Build xi_data + prediction_squads from real lineups only (no squad-guess fallback) ──
-    prediction_squads = {}
-    xi_data = {}
-    squad_names = list(match_squads.keys()) if match_squads else []
-
-    if api_xi_data.get("team1_xi") and api_xi_data.get("team2_xi"):
-        t1_api_names = [p.get("name", "") for p in api_xi_data["team1_xi"] if p.get("name")]
-        t2_api_names = [p.get("name", "") for p in api_xi_data["team2_xi"] if p.get("name")]
-
-        t1_filtered = (
-            [
-                p
-                for p in match_squads.get(squad_names[0], [])
-                if any(_player_name_matches(p.get("name", ""), api_nm) for api_nm in t1_api_names)
-            ]
-            if len(squad_names) >= 1
-            else []
-        )
-        t2_filtered = (
-            [
-                p
-                for p in match_squads.get(squad_names[1], [])
-                if any(_player_name_matches(p.get("name", ""), api_nm) for api_nm in t2_api_names)
-            ]
-            if len(squad_names) >= 2
-            else []
-        )
-
-        if len(t1_filtered) >= 8 and len(t2_filtered) >= 8 and len(squad_names) >= 2:
-            prediction_squads = {squad_names[0]: t1_filtered, squad_names[1]: t2_filtered}
-            xi_data = {
-                "team1_xi": [{"name": p.get("name"), "role": p.get("role", ""),
-                              "isCaptain": p.get("isCaptain", False)} for p in t1_filtered],
-                "team2_xi": [{"name": p.get("name"), "role": p.get("role", ""),
-                              "isCaptain": p.get("isCaptain", False)} for p in t2_filtered],
-                "source": api_xi_data.get("source", "api"),
-                "confidence": "api-verified",
-            }
-            logger.info(f"Using DB-matched API Playing XI: {len(t1_filtered)} + {len(t2_filtered)} players")
-        else:
-            r1 = _squad_rows_from_lineup_xi(api_xi_data["team1_xi"])
-            r2 = _squad_rows_from_lineup_xi(api_xi_data["team2_xi"])
-            prediction_squads = {team1: r1, team2: r2}
-            xi_data = {
-                "team1_xi": api_xi_data["team1_xi"],
-                "team2_xi": api_xi_data["team2_xi"],
-                "source": api_xi_data.get("source", "api"),
-                "confidence": "api-verified",
-            }
-            logger.info(
-                f"Using SportMonks lineup rows for squads (DB overlap low): "
-                f"{len(r1)} + {len(r2)} players"
-            )
-
-    if not _prematch_xi_complete(xi_data):
+    if not xi_doc or not _prematch_xi_complete(xi_doc):
         raise HTTPException(
             status_code=400,
             detail={
                 "error": "playing_xi_required",
                 "message": (
-                    "Expected Playing XI (11 players per side) is required before pre-match prediction. "
-                    "Run “Fetch Playing XI” for this match (or ensure SportMonks returns last-match lineups), then try again."
+                    "Expected Playing XI (11 named players per side) must be generated before pre-match prediction. "
+                    "Run “Fetch Playing XI” for this match, wait until it completes, then try again."
                 ),
             },
         )
+
+    prediction_squads = _playing_xi_squads_from_doc(xi_doc, match_squads, team1, team2)
+    if not prediction_squads:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "playing_xi_invalid",
+                "message": (
+                    "Could not build Playing XI from cache. Re-run “Fetch Playing XI” for this match "
+                    "and ensure both teams have 11 named players."
+                ),
+            },
+        )
+
+    xi_data = {
+        "team1_xi": [
+            {
+                "name": p.get("name"),
+                "role": p.get("role", ""),
+                "isCaptain": p.get("isCaptain", False),
+            }
+            for p in prediction_squads.get(team1, [])
+        ],
+        "team2_xi": [
+            {
+                "name": p.get("name"),
+                "role": p.get("role", ""),
+                "isCaptain": p.get("isCaptain", False),
+            }
+            for p in prediction_squads.get(team2, [])
+        ],
+        "source": xi_doc.get("source", "last_match"),
+        "confidence": xi_doc.get("confidence", "api-verified"),
+    }
+    logger.info(
+        f"Pre-match using cached Expected XI only: {len(prediction_squads.get(team1, []))}+"
+        f"{len(prediction_squads.get(team2, []))} players (matchId={match_id})"
+    )
 
     # Fetch weather for venue (Open-Meteo, free)
     prematch_city = match_info.get("city", "")
@@ -2270,6 +2418,8 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
         logger.info(f"Player performance fetched: {len(t1_perf)} + {len(t2_perf)} players")
     except Exception as e:
         logger.warning(f"Failed to fetch player performance: {e}")
+
+    player_performance = _filter_player_performance_to_playing_xi(player_performance, prediction_squads)
 
     # Fetch form data from DB completed matches + player performance
     form_data = await fetch_team_form(db, team1, team2, player_performance=player_performance)
@@ -2526,77 +2676,74 @@ async def _background_repredict_all():
             else:
                 logger.warning(f"[RePredict {i+1}/{len(upcoming)}] Algo failed: {mid} - {algo_result.get('error', 'unknown')}")
 
-            # ── Step 3: Re-run Claude deep analysis with Playing XI ──
+            # ── Step 3: Re-run Claude deep analysis (Expected XI from playing_xi only) ──
             repredict_status["phase"] = f"claude {t1_short} vs {t2_short}"
             venue = match.get("venue", "")
-            match_squads = await _get_squads_for_match(team1, team2)
-
-            # Filter to Playing XI for Claude
-            playing_xi_squads = match_squads
-            try:
-                t1_xi = await fetch_last_played_xi(team1)
-                t2_xi = await fetch_last_played_xi(team2)
-                if t1_xi or t2_xi:
-                    xi_sm_data = {"team1_playing_xi": t1_xi, "team2_playing_xi": t2_xi}
-                    filtered = _filter_squads_to_playing_xi(match_squads, xi_sm_data, team1, team2)
-                    if filtered:
-                        playing_xi_squads = filtered
-            except Exception as e:
-                logger.warning(f"[RePredict] XI filter failed for {mid}: {e}")
-
-            match_news = await fetch_match_news(team1, team2)
-
-            # Fetch enrichment data for the new 7-layer prompt
-            algo_pred = None
-            try:
-                algo_pred = await db.pre_match_predictions.find_one({"matchId": mid}, {"_id": 0})
-            except Exception:
-                pass
-            player_perf = {}
-            try:
-                t1p = await db.player_performance.find_one({"team": team1}, {"_id": 0})
-                t2p = await db.player_performance.find_one({"team": team2}, {"_id": 0})
-                if t1p:
-                    player_perf["team1"] = t1p.get("players", t1p)
-                if t2p:
-                    player_perf["team2"] = t2p.get("players", t2p)
-            except Exception:
-                pass
-            weather_data = None
-            try:
-                city_name = match.get("city", "") or venue.split(",")[-1].strip() if venue else ""
-                if city_name:
-                    weather_data = await get_weather(city_name, match.get("dateTimeGMT"))
-            except Exception:
-                pass
-            form_data = None
-            try:
-                form_data = await fetch_team_form(db, team1, team2, player_performance=player_perf)
-            except Exception:
-                pass
-
-            try:
-                analysis = await claude_deep_match_analysis(
-                    team1, team2, venue, match, squads=playing_xi_squads, news=match_news,
-                    algo_prediction=algo_pred, player_performance=player_perf,
-                    weather=weather_data, form_data=form_data,
+            if not algo_ok:
+                logger.warning(f"[RePredict] Skipping Claude for {mid} (pre-match did not complete)")
+            else:
+                xi_doc_r = await db.playing_xi.find_one({"matchId": mid}, {"_id": 0})
+                match_squads = await _get_squads_for_match(team1, team2)
+                playing_xi_squads = (
+                    _playing_xi_squads_from_doc(xi_doc_r, match_squads, team1, team2)
+                    if xi_doc_r
+                    else {}
                 )
-                if analysis and "error" not in analysis:
-                    await db.claude_analysis.update_one(
-                        {"matchId": mid},
-                        {"$set": {
-                            "matchId": mid,
-                            "analysis": analysis,
-                            "updatedAt": datetime.now(timezone.utc).isoformat(),
-                            "playing_xi_used": True,
-                        }},
-                        upsert=True,
-                    )
-                    logger.info(f"[RePredict {i+1}/{len(upcoming)}] Claude done: {t1_short} vs {t2_short}")
+                if not playing_xi_squads:
+                    logger.warning(f"[RePredict] Skipping Claude for {mid} (invalid Expected XI cache)")
                 else:
-                    logger.warning(f"[RePredict] Claude returned error for {mid}: {analysis.get('error', '')}")
-            except Exception as e:
-                logger.error(f"[RePredict] Claude failed for {mid}: {e}")
+                    match_news = await fetch_match_news(team1, team2)
+                    algo_pred = None
+                    try:
+                        algo_pred = await db.pre_match_predictions.find_one({"matchId": mid}, {"_id": 0})
+                    except Exception:
+                        pass
+                    player_perf = {}
+                    try:
+                        t1p = await db.player_performance.find_one({"team": team1}, {"_id": 0})
+                        t2p = await db.player_performance.find_one({"team": team2}, {"_id": 0})
+                        if t1p:
+                            player_perf["team1"] = t1p.get("players", t1p)
+                        if t2p:
+                            player_perf["team2"] = t2p.get("players", t2p)
+                    except Exception:
+                        pass
+                    player_perf = _filter_player_performance_to_playing_xi(player_perf, playing_xi_squads)
+                    weather_data = None
+                    try:
+                        city_name = match.get("city", "") or venue.split(",")[-1].strip() if venue else ""
+                        if city_name:
+                            weather_data = await get_weather(city_name, match.get("dateTimeGMT"))
+                    except Exception:
+                        pass
+                    form_data = None
+                    try:
+                        form_data = await fetch_team_form(db, team1, team2, player_performance=player_perf)
+                    except Exception:
+                        pass
+
+                    try:
+                        analysis = await claude_deep_match_analysis(
+                            team1, team2, venue, match, squads=playing_xi_squads, news=match_news,
+                            algo_prediction=algo_pred, player_performance=player_perf,
+                            weather=weather_data, form_data=form_data,
+                        )
+                        if analysis and "error" not in analysis:
+                            await db.claude_analysis.update_one(
+                                {"matchId": mid},
+                                {"$set": {
+                                    "matchId": mid,
+                                    "analysis": analysis,
+                                    "updatedAt": datetime.now(timezone.utc).isoformat(),
+                                    "playing_xi_used": True,
+                                }},
+                                upsert=True,
+                            )
+                            logger.info(f"[RePredict {i+1}/{len(upcoming)}] Claude done: {t1_short} vs {t2_short}")
+                        else:
+                            logger.warning(f"[RePredict] Claude returned error for {mid}: {analysis.get('error', '')}")
+                    except Exception as e:
+                        logger.error(f"[RePredict] Claude failed for {mid}: {e}")
 
             repredict_status["completed"] += 1
 
@@ -2677,28 +2824,36 @@ async def _background_claude_rerun_all():
         try:
             await db.claude_analysis.delete_one({"matchId": mid})
 
+            xi_doc_r = await db.playing_xi.find_one({"matchId": mid}, {"_id": 0})
             match_squads = await _get_squads_for_match(team1, team2)
-            playing_xi_squads = match_squads
-            try:
-                t1_xi = await fetch_last_played_xi(team1)
-                t2_xi = await fetch_last_played_xi(team2)
-                if t1_xi or t2_xi:
-                    xi_sm_data = {"team1_playing_xi": t1_xi, "team2_playing_xi": t2_xi}
-                    filtered = _filter_squads_to_playing_xi(match_squads, xi_sm_data, team1, team2)
-                    if filtered:
-                        playing_xi_squads = filtered
-            except Exception as e:
-                logger.warning(f"[Claude Rerun] XI filter failed for {mid}: {e}")
-
+            playing_xi_squads = (
+                _playing_xi_squads_from_doc(xi_doc_r, match_squads, team1, team2)
+                if xi_doc_r
+                else {}
+            )
             algo_pred = await db.pre_match_predictions.find_one({"matchId": mid}, {"_id": 0})
+            if (
+                not playing_xi_squads
+                or not algo_pred
+                or not algo_pred.get("prediction")
+            ):
+                logger.warning(
+                    f"[Claude Rerun] Skip {mid}: need playing_xi (11+11) + pre-match prediction first"
+                )
+                claude_rerun_status["failed"] += 1
+                continue
+
             player_perf = {}
             try:
                 t1p = await db.player_performance.find_one({"team": team1}, {"_id": 0})
                 t2p = await db.player_performance.find_one({"team": team2}, {"_id": 0})
-                if t1p: player_perf["team1"] = t1p.get("players", t1p)
-                if t2p: player_perf["team2"] = t2p.get("players", t2p)
+                if t1p:
+                    player_perf["team1"] = t1p.get("players", t1p)
+                if t2p:
+                    player_perf["team2"] = t2p.get("players", t2p)
             except Exception:
                 pass
+            player_perf = _filter_player_performance_to_playing_xi(player_perf, playing_xi_squads)
             weather_data = None
             try:
                 city_name = match.get("city", "") or (venue.split(",")[-1].strip() if venue else "")
@@ -2911,9 +3066,15 @@ async def _bg_fetch_playing_xi(match_id: str, team1: str, team2: str, venue: str
             )
             t1_db = list(filtered.get(team1, []) or [])
             t2_db = list(filtered.get(team2, []) or [])
+            roster1 = match_squads.get(team1, []) if match_squads else []
+            roster2 = match_squads.get(team2, []) if match_squads else []
+            t1_use = t1_db if len(t1_db) >= 8 else list(t1_xi_raw)
+            t2_use = t2_db if len(t2_db) >= 8 else list(t2_xi_raw)
+            t1_use = ensure_rr_vaibhav_in_playing_xi_rows(t1_use, team1, roster1)
+            t2_use = ensure_rr_vaibhav_in_playing_xi_rows(t2_use, team2, roster2)
             xi_data = {
-                "team1_xi": t1_db if len(t1_db) >= 8 else t1_xi_raw,
-                "team2_xi": t2_db if len(t2_db) >= 8 else t2_xi_raw,
+                "team1_xi": t1_use,
+                "team2_xi": t2_use,
                 "confidence": "api-verified",
                 "source": "last_match",
             }
@@ -2930,6 +3091,8 @@ async def _bg_fetch_playing_xi(match_id: str, team1: str, team2: str, venue: str
             if len(squad_names) >= 2:
                 t1_xi = generate_expected_xi(match_squads.get(team1, []))
                 t2_xi = generate_expected_xi(match_squads.get(team2, []))
+                t1_xi = ensure_rr_vaibhav_in_playing_xi_rows(t1_xi, team1, match_squads.get(team1, []))
+                t2_xi = ensure_rr_vaibhav_in_playing_xi_rows(t2_xi, team2, match_squads.get(team2, []))
                 xi_data = {
                     "team1_xi": t1_xi,
                     "team2_xi": t2_xi,
@@ -3163,25 +3326,31 @@ async def api_claude_analysis(match_id: str, background_tasks: BackgroundTasks =
     team2 = match_info.get("team2", "")
     venue = match_info.get("venue", "")
 
-    # ── 1. Get squads and filter to Playing XI ──
+    # ── 1. Strict Expected XI from playing_xi collection (same gate as pre-match predict) ──
+    xi_doc = await db.playing_xi.find_one({"matchId": match_id}, {"_id": 0})
+    if not xi_doc or not _prematch_xi_complete(xi_doc):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "playing_xi_required",
+                "message": (
+                    "Claude pre-match analysis requires Expected Playing XI (11 per side). "
+                    "Run “Fetch Playing XI”, then pre-match prediction, then try again."
+                ),
+            },
+        )
     match_squads = await _get_squads_for_match(team1, team2)
-    playing_xi_squads = match_squads
-    try:
-        t1_xi = await fetch_last_played_xi(team1)
-        t2_xi = await fetch_last_played_xi(team2)
-        if t1_xi or t2_xi:
-            xi_sm_data = {
-                "team1_playing_xi": t1_xi,
-                "team2_playing_xi": t2_xi,
-            }
-            filtered = _filter_squads_to_playing_xi(match_squads, xi_sm_data, team1, team2)
-            if filtered:
-                playing_xi_squads = filtered
-                logger.info(f"Claude analysis using Playing XI: {sum(len(v) for v in filtered.values())} players")
-    except Exception as e:
-        logger.warning(f"Failed to filter Playing XI for Claude: {e}")
+    playing_xi_squads = _playing_xi_squads_from_doc(xi_doc, match_squads, team1, team2)
+    if not playing_xi_squads:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "playing_xi_invalid",
+                "message": "Could not build Playing XI from cache. Re-run “Fetch Playing XI” for this match.",
+            },
+        )
 
-    # ── 2. Fetch algorithm prediction (pre-match) for data pass-through ──
+    # ── 2. Algorithm output must exist (computed only after Expected XI is present) ──
     algo_prediction = None
     try:
         algo_cached = await db.pre_match_predictions.find_one({"matchId": match_id}, {"_id": 0})
@@ -3190,6 +3359,17 @@ async def api_claude_analysis(match_id: str, background_tasks: BackgroundTasks =
             logger.info(f"Claude analysis enriched with algorithm prediction for {match_id}")
     except Exception as e:
         logger.warning(f"Failed to fetch algo prediction for Claude: {e}")
+    if not algo_prediction or not algo_prediction.get("prediction"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "pre_match_required",
+                "message": (
+                    "Run pre-match prediction first (8-factor model). "
+                    "It is only available after Expected Playing XI is generated."
+                ),
+            },
+        )
 
     # ── 3. Fetch player performance stats from SportMonks ──
     player_performance = {}
@@ -3202,6 +3382,8 @@ async def api_claude_analysis(match_id: str, background_tasks: BackgroundTasks =
             player_performance["team2"] = t2_perf.get("players", t2_perf)
     except Exception as e:
         logger.warning(f"Failed to fetch player performance for Claude: {e}")
+
+    player_performance = _filter_player_performance_to_playing_xi(player_performance, playing_xi_squads)
 
     # ── 4. Fetch weather for venue ──
     weather = None
