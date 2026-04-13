@@ -69,7 +69,12 @@ from services.beta_prediction_engine import run_beta_prediction
 from services.consultant_engine import run_consultation, build_features
 from services.cricdata_service import fetch_live_ipl_details, fetch_venue_stats_from_cricapi
 from services.pre_match_predictor import compute_prediction, STAR_PLAYERS
-from services.live_predictor import compute_live_prediction, compute_combined_prediction, detect_match_phase
+from services.live_predictor import (
+    compute_live_prediction,
+    compute_combined_prediction,
+    detect_match_phase,
+    stabilize_team1_win_pct,
+)
 from services.weather_service import fetch_weather_for_venue
 from services.schedule_data import get_schedule_documents, TEAM_SHORT_CODES, CITY_STADIUMS
 from services.web_scraper import fetch_match_news
@@ -1333,8 +1338,26 @@ async def refresh_claude_prediction(match_id: str, body: RefreshClaudeRequest = 
             claude_t2 = 100 - claude_t1
             claude_prediction["source"] = "legacy_fallback"
 
+        prev_claude_t1 = None
+        _prev_cp = cached.get("claudePrediction") if isinstance(cached, dict) else None
+        if _prev_cp and not _prev_cp.get("error") and _prev_cp.get("team1_win_pct") is not None:
+            try:
+                prev_claude_t1 = float(_prev_cp["team1_win_pct"])
+            except (TypeError, ValueError):
+                prev_claude_t1 = None
+
+        claude_t1, claude_stab = stabilize_team1_win_pct(
+            claude_t1, prev_claude_t1, ema_alpha=0.42, min_lead_past_50_to_flip=3.25
+        )
+        claude_t2 = 100.0 - claude_t1
         claude_prediction["team1_win_pct"] = round(claude_t1, 1)
         claude_prediction["team2_win_pct"] = round(claude_t2, 1)
+        claude_prediction["stabilization"] = claude_stab
+        s10_sync = claude_prediction.get("section_10_final_prediction")
+        if isinstance(s10_sync, dict):
+            s10_sync["team1_win_pct"] = round(claude_t1, 1)
+            s10_sync["team2_win_pct"] = round(claude_t2, 1)
+
         claude_prediction["algo_baseline_t1_pct"] = round(algo_t1_pct, 1)
         claude_prediction["adjustment_applied"] = round(adjustment, 1)
 
