@@ -3657,12 +3657,18 @@ async def api_claude_live(match_id: str):
     live_squads = _filter_squads_to_playing_xi(
         match_squads, sm_data, match_info.get("team1", ""), match_info.get("team2", "")
     )
+    xi_for_live = None
+    try:
+        xi_for_live = await db.playing_xi.find_one({"matchId": match_id}, {"_id": 0})
+    except Exception:
+        xi_for_live = None
     analysis = await claude_live_analysis(
         match_info,
         live_data,
         algo_probs,
         squads=live_squads,
         sm_data=sm_data if isinstance(sm_data, dict) else None,
+        playing_xi_doc=xi_for_live,
     )
 
     return {
