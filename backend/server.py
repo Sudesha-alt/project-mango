@@ -168,6 +168,43 @@ def _squad_rows_from_lineup_xi(xi_list: list) -> list:
     return rows
 
 
+def _normalize_player_name(name: str) -> str:
+    s = (name or "").lower()
+    s = re.sub(r"[^a-z\s]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _compact_player_name_vowels(name: str) -> str:
+    return re.sub(r"[aeiou]+", "a", _normalize_player_name(name))
+
+
+def _player_name_matches(a: str, b: str) -> bool:
+    """Robust player name match for DB roster vs SportMonks lineup."""
+    na = _normalize_player_name(a)
+    nb = _normalize_player_name(b)
+    if not na or not nb:
+        return False
+    if na == nb or na in nb or nb in na:
+        return True
+
+    a_parts = na.split()
+    b_parts = nb.split()
+    a_last = a_parts[-1] if a_parts else ""
+    b_last = b_parts[-1] if b_parts else ""
+    a_first_i = a_parts[0][0] if a_parts and a_parts[0] else ""
+    b_first_i = b_parts[0][0] if b_parts and b_parts[0] else ""
+
+    if a_last and b_last and a_last == b_last and a_first_i and a_first_i == b_first_i:
+        return True
+    if _compact_player_name_vowels(na) == _compact_player_name_vowels(nb):
+        return True
+    if a_first_i and b_first_i and a_first_i == b_first_i:
+        if SequenceMatcher(None, na, nb).ratio() >= 0.88:
+            return True
+    return False
+
+
 def _recent_form_impact_score(season_stats: Optional[dict]) -> Optional[float]:
     """0-100 score from SportMonks last-N aggregates (batting and/or bowling), same spirit as form_service."""
     if not season_stats:
@@ -2154,16 +2191,24 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
     squad_names = list(match_squads.keys()) if match_squads else []
 
     if api_xi_data.get("team1_xi") and api_xi_data.get("team2_xi"):
-        t1_api_names = {p.get("name", "").lower() for p in api_xi_data["team1_xi"] if p.get("name")}
-        t2_api_names = {p.get("name", "").lower() for p in api_xi_data["team2_xi"] if p.get("name")}
+        t1_api_names = [p.get("name", "") for p in api_xi_data["team1_xi"] if p.get("name")]
+        t2_api_names = [p.get("name", "") for p in api_xi_data["team2_xi"] if p.get("name")]
 
         t1_filtered = (
-            [p for p in match_squads.get(squad_names[0], []) if p.get("name", "").lower() in t1_api_names]
+            [
+                p
+                for p in match_squads.get(squad_names[0], [])
+                if any(_player_name_matches(p.get("name", ""), api_nm) for api_nm in t1_api_names)
+            ]
             if len(squad_names) >= 1
             else []
         )
         t2_filtered = (
-            [p for p in match_squads.get(squad_names[1], []) if p.get("name", "").lower() in t2_api_names]
+            [
+                p
+                for p in match_squads.get(squad_names[1], [])
+                if any(_player_name_matches(p.get("name", ""), api_nm) for api_nm in t2_api_names)
+            ]
             if len(squad_names) >= 2
             else []
         )
