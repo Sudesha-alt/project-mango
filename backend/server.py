@@ -205,6 +205,83 @@ def _player_name_matches(a: str, b: str) -> bool:
     return False
 
 
+# SportMonks "last match" XI sometimes omits players who are confirmed starters; inject from DB roster.
+RR_VAIBHAV_CANONICAL = "Vaibhav Suryavanshi"
+RR_VAIBHAV_INJECT_REPLACE_FIRST = (
+    "Brijesh Sharma",
+    "Vignesh Puthur",
+    "Sushant Mishra",
+    "Ravi Singh",
+    "Yash Raj Punja",
+)
+
+
+def _is_rajasthan_team_label(team_label: str) -> bool:
+    return "rajasthan" in (team_label or "").lower()
+
+
+def _find_rr_vaibhav_roster_row(full_roster: list) -> Optional[dict]:
+    for p in full_roster or []:
+        if not isinstance(p, dict):
+            continue
+        if _player_name_matches(p.get("name", ""), RR_VAIBHAV_CANONICAL):
+            return dict(p)
+    return None
+
+
+def _xi_rows_include_vaibhav(xi_rows: list) -> bool:
+    for p in xi_rows or []:
+        if not isinstance(p, dict):
+            continue
+        nm = p.get("name") or p.get("fullname") or ""
+        if _player_name_matches(nm, RR_VAIBHAV_CANONICAL):
+            return True
+    return False
+
+
+def ensure_rr_vaibhav_in_playing_xi_rows(
+    xi_rows: list,
+    team_label: str,
+    full_team_roster: list,
+) -> list:
+    """If Rajasthan XI has no Vaibhav Suryavanshi but he is on the roster, swap out a fringe pick."""
+    if not xi_rows or not _is_rajasthan_team_label(team_label):
+        return xi_rows
+    if len(xi_rows) < 11:
+        return xi_rows
+    if _xi_rows_include_vaibhav(xi_rows):
+        return xi_rows
+    roster_v = _find_rr_vaibhav_roster_row(full_team_roster)
+    if not roster_v:
+        return xi_rows
+    out: list = []
+    for p in xi_rows:
+        if isinstance(p, dict):
+            out.append(dict(p))
+        else:
+            out.append(p)
+    row = {
+        "name": roster_v.get("name", RR_VAIBHAV_CANONICAL),
+        "role": roster_v.get("role", "Batsman"),
+        "isCaptain": bool(roster_v.get("isCaptain", False)),
+        "isOverseas": bool(roster_v.get("isOverseas", False)),
+    }
+    for drop in RR_VAIBHAV_INJECT_REPLACE_FIRST:
+        for i, p in enumerate(out):
+            if not isinstance(p, dict):
+                continue
+            nm = p.get("name") or p.get("fullname") or ""
+            if _player_name_matches(nm, drop):
+                logger.info("RR XI: injected %s (replaced %s)", RR_VAIBHAV_CANONICAL, nm)
+                out[i] = {**p, **row}
+                return out
+    last = out[-1]
+    last_nm = last.get("name", "") if isinstance(last, dict) else ""
+    logger.info("RR XI: injected %s (replaced last: %s)", RR_VAIBHAV_CANONICAL, last_nm)
+    out[-1] = {**last, **row} if isinstance(last, dict) else row
+    return out
+
+
 def _recent_form_impact_score(season_stats: Optional[dict]) -> Optional[float]:
     """0-100 score from SportMonks last-N aggregates (batting and/or bowling), same spirit as form_service."""
     if not season_stats:
