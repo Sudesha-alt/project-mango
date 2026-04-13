@@ -12,7 +12,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from services.sportmonks_service import parse_fixture
+from services.sportmonks_service import parse_fixture, _parse_impact_subs_from_lineup
 
 
 def _make_player(pid, name, team_id, substitution=False):
@@ -209,6 +209,23 @@ def test_impact_sub_within_cap():
 # ═══════════════════════════════════════════════════════
 # TEST 5: Empty lineup → both playing_xi should be empty
 # ═══════════════════════════════════════════════════════
+
+def test_parse_impact_subs_from_lineup():
+    """Named subs: substitution=true rows only, scoped to team_id."""
+    lineup = [
+        _make_player(1, "Alpha One", team_id=100, substitution=False),
+        _make_player(2, "Alpha Sub", team_id=100, substitution=True),
+        _make_player(101, "Beta One", team_id=200, substitution=False),
+        _make_player(102, "Beta Sub", team_id=200, substitution=True),
+    ]
+    t1_subs = _parse_impact_subs_from_lineup(lineup, 100)
+    t2_subs = _parse_impact_subs_from_lineup(lineup, 200)
+    assert len(t1_subs) == 1
+    assert t1_subs[0]["name"] == "Alpha Sub" and t1_subs[0]["sm_player_id"] == 2
+    assert len(t2_subs) == 1
+    assert t2_subs[0]["name"] == "Beta Sub" and t2_subs[0]["sm_player_id"] == 102
+
+
 def test_empty_lineup():
     """No lineup data at all."""
     fixture = _build_fixture([])

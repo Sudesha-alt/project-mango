@@ -1,7 +1,7 @@
 import os
 import logging
 import httpx
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -1141,6 +1141,156 @@ def _norm_id(v) -> int:
         return int(v) if v is not None else 0
     except (TypeError, ValueError):
         return 0
+
+
+def _sm_team_name_from_id(team_id: int) -> str:
+    """Canonical display label for a SportMonks IPL team id."""
+    if not team_id:
+        return "Unknown"
+    tid = _norm_id(team_id)
+    for canonical, sm_id in TEAM_SM_IDS.items():
+        if _norm_id(sm_id) == tid:
+            return canonical.title()
+    return f"Team {tid}"
+
+
+def _opponent_name_from_fixture(fix: dict, team_id: int) -> str:
+    """Opponent franchise name for a team in a season fixture row."""
+    tid = _norm_id(team_id)
+    try:
+        lt_i = _norm_id(fix.get("localteam_id"))
+        vt_i = _norm_id(fix.get("visitorteam_id"))
+    except (TypeError, ValueError):
+        return "Unknown"
+    if lt_i == tid:
+        opp_id = vt_i
+    elif vt_i == tid:
+        opp_id = lt_i
+    else:
+        return "Unknown"
+    return _sm_team_name_from_id(opp_id)
+
+
+def _parse_impact_subs_from_lineup(lineup_data: list, team_id: int) -> List[dict]:
+    """Players flagged substitution=true in lineup (named impact / bench subs, 11+2 model)."""
+    subs: List[dict] = []
+    tid = _norm_id(team_id)
+    if not lineup_data:
+        return subs
+    for p in lineup_data:
+        lineup_info = p.get("lineup") or {}
+        if not isinstance(lineup_info, dict):
+            lineup_info = {}
+        if _norm_id(lineup_info.get("team_id")) != tid:
+            continue
+        is_sub = lineup_info.get("substitution", False)
+        if isinstance(is_sub, int):
+            is_sub = bool(is_sub)
+        if not is_sub:
+            continue
+        subs.append({
+            "name": (p.get("fullname") or p.get("lastname") or "").strip() or "?",
+            "sm_player_id": p.get("id"),
+        })
+    return subs
+
+
+async def fetch_team_impact_sub_history(team_name: str, num_matches: int = 4) -> dict:
+    """Last N completed IPL matches per team: who was listed as substitution (impact) in lineups.
+
+    Uses SportMonks lineup pivot field substitution=true. Does not prove they entered the game.
+    """
+    team_id = _get_team_sm_id(team_name)
+    if not team_id:
+        logger.warning(f"fetch_team_impact_sub_history: unknown team {team_name!r}")
+        return {
+            "team": team_name,
+            "error": "unknown_team",
+            "matches_considered": 0,
+            "fixtures": [],
+            "frequency": [],
+        }
+
+    tid = int(team_id)
+    all_finished: List[dict] = []
+    for year in [2026, 2025, 2024]:
+        season_id = IPL_SEASON_IDS.get(year)
+        if not season_id:
+            continue
+        fixtures = await fetch_season_fixtures(season_id)
+        finished = [f for f in fixtures if (f.get("status") or "").lower() == "finished"]
+        team_fixtures = [
+            f for f in finished
+            if _norm_id(f.get("localteam_id")) == tid or _norm_id(f.get("visitorteam_id")) == tid
+        ]
+        team_fixtures.sort(key=lambda x: x.get("starting_at", "") or "", reverse=True)
+        all_finished.extend(team_fixtures)
+        if len(all_finished) >= num_matches:
+            break
+
+    all_finished = all_finished[:num_matches]
+    if not all_finished:
+        return {
+            "team": team_name,
+            "matches_considered": 0,
+            "fixtures": [],
+            "frequency": [],
+            "source": "sportmonks_lineup_substitution_flag",
+        }
+
+    rows: List[dict] = []
+    freq: Dict[int, dict] = {}
+
+    for fix in all_finished:
+        fid = fix.get("id")
+        if not fid:
+            continue
+        data = await _get(f"fixtures/{fid}", {"include": "lineup"})
+        if _sm_response_failed(data):
+            logger.warning(f"Impact sub history: lineup fetch failed for fixture {fid}")
+            continue
+        fd = data.get("data") or {}
+        lineup_raw = fd.get("lineup", {})
+        if isinstance(lineup_raw, dict):
+            lineup_raw = lineup_raw.get("data", [])
+        elif not isinstance(lineup_raw, list):
+            lineup_raw = []
+
+        subs = _parse_impact_subs_from_lineup(lineup_raw, tid)
+        for s in subs:
+            pid = s.get("sm_player_id")
+            if pid is None:
+                continue
+            try:
+                pid_i = int(pid)
+            except (TypeError, ValueError):
+                continue
+            ent = freq.setdefault(pid_i, {"name": s.get("name") or "?", "appearances": 0})
+            ent["appearances"] += 1
+            ent["name"] = s.get("name") or ent["name"]
+
+        rows.append({
+            "fixture_id": fid,
+            "starting_at": fix.get("starting_at", ""),
+            "opponent": _opponent_name_from_fixture(fix, tid),
+            "impact_subs": subs,
+        })
+
+    frequency = sorted(
+        (
+            {"sm_player_id": pid, "name": v["name"], "appearances": v["appearances"]}
+            for pid, v in freq.items()
+        ),
+        key=lambda x: -x["appearances"],
+    )
+
+    return {
+        "team": team_name,
+        "matches_considered": len(rows),
+        "source": "sportmonks_lineup_substitution_flag",
+        "fixtures": rows,
+        "frequency": frequency,
+    }
 
 
 def _parse_lineup(lineup_data: list, team_id: int) -> list:
