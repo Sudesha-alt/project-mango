@@ -71,7 +71,7 @@ from services.sportmonks_service import (
 from services.beta_prediction_engine import run_beta_prediction
 from services.consultant_engine import run_consultation, build_features
 from services.cricdata_service import fetch_live_ipl_details, fetch_venue_stats_from_cricapi
-from services.pre_match_predictor import compute_prediction, STAR_PLAYERS
+from services.pre_match_predictor import compute_prediction, resolve_star_player_rating
 from services.live_predictor import (
     compute_live_prediction,
     compute_combined_prediction,
@@ -583,7 +583,7 @@ async def _enrich_playing_xi_with_impact(
         for p in players:
             d = dict(p)
             nm = (d.get("name") or "").strip()
-            d["impact_points"] = int(STAR_PLAYERS.get(nm, 65))
+            d["impact_points"] = int(resolve_star_player_rating(nm))
             ss = d.get("season_stats")
             rf = _recent_form_impact_score(ss)
             if rf is not None:
