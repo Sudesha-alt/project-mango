@@ -644,3 +644,60 @@ def compute_combined_prediction(
         "betting_odds_t1_pct": round(odds_t1_pct, 1) if betting_odds_pct else None,
         "model": "phase-weighted-v2",
     }
+
+
+def _win_pct_side(t1_pct: float, band: float = 0.08) -> int:
+    """Which side of a fair coin team1 is on: +1 favored, -1 underdog, 0 toss-up."""
+    if t1_pct > 50.0 + band:
+        return 1
+    if t1_pct < 50.0 - band:
+        return -1
+    return 0
+
+
+def stabilize_team1_win_pct(
+    new_t1_pct: float,
+    prev_t1_pct: Optional[float],
+    *,
+    ema_alpha: float = 0.42,
+    min_lead_past_50_to_flip: float = 3.25,
+) -> tuple[float, Dict[str, Any]]:
+    """
+    Reduce spurious favorite flips when re-running stochastic models (e.g. Claude) on the same state.
+
+    - Exponential blend: display value moves partway toward the new reading (ema_alpha = weight on new).
+    - Flip guard: if the raw new pick favors the opposite team vs previous, require
+      |new - 50| >= min_lead_past_50_to_flip before trusting that flip; otherwise blend
+      the pre-EMA value back toward the previous favorite so small noise does not swap sides.
+
+    Tuning: raise min_lead_past_50_to_flip for stricter flip resistance; lower ema_alpha for stickier display.
+    """
+    new_t1_pct = max(1.0, min(99.0, float(new_t1_pct)))
+    meta: Dict[str, Any] = {
+        "raw_team1_pct": round(new_t1_pct, 2),
+        "flip_guarded": False,
+    }
+    if prev_t1_pct is None:
+        meta["stabilized_team1_pct"] = round(new_t1_pct, 1)
+        return round(new_t1_pct, 1), meta
+
+    prev_t1_pct = max(1.0, min(99.0, float(prev_t1_pct)))
+    meta["prev_team1_pct"] = round(prev_t1_pct, 2)
+
+    s_new = _win_pct_side(new_t1_pct)
+    s_prev = _win_pct_side(prev_t1_pct)
+    adjusted = new_t1_pct
+
+    if s_prev != 0 and s_new != 0 and s_new != s_prev:
+        lead = abs(new_t1_pct - 50.0)
+        if lead < min_lead_past_50_to_flip:
+            # Weak contradictory reading — stay closer to previous favorite
+            adjusted = 50.0 + 0.72 * (prev_t1_pct - 50.0) + 0.28 * (new_t1_pct - 50.0)
+            adjusted = max(1.0, min(99.0, adjusted))
+            meta["flip_guarded"] = True
+
+    blended = ema_alpha * adjusted + (1.0 - ema_alpha) * prev_t1_pct
+    blended = max(1.0, min(99.0, blended))
+    out = round(blended, 1)
+    meta["stabilized_team1_pct"] = out
+    return out, meta

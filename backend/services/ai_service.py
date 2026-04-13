@@ -11,6 +11,77 @@ logger = logging.getLogger(__name__)
 
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
+
+
+def _claude_prediction_temperature() -> float:
+    """Lower variance for structured JSON predictions (env CLAUDE_PREDICTION_TEMPERATURE, default 0.35)."""
+    try:
+        t = float(os.environ.get("CLAUDE_PREDICTION_TEMPERATURE", "0.35"))
+    except (TypeError, ValueError):
+        t = 0.35
+    return max(0.0, min(1.0, t))
+
+
+def _live_match_phase_descriptor(sm_data: dict) -> str:
+    """Powerplay / middle / death label; distinguishes chase vs first innings."""
+    inn = int(sm_data.get("current_innings", 1) or 1)
+    cs = sm_data.get("current_score", {}) or {}
+    try:
+        overs = float(cs.get("overs", 0) or 0)
+    except (TypeError, ValueError):
+        overs = 0.0
+    parts = [f"Innings {inn}", f"{overs} overs completed"]
+    if inn == 1:
+        if overs <= 6.0:
+            parts.append("PHASE: Powerplay (1st innings)")
+        elif overs <= 15.0:
+            parts.append("PHASE: Middle overs — build/accelerate")
+        else:
+            parts.append("PHASE: Death / finish (1st innings)")
+    else:
+        if overs <= 6.0:
+            parts.append("PHASE: Chase — powerplay")
+        elif overs <= 15.0:
+            parts.append("PHASE: Chase — middle overs")
+        else:
+            parts.append("PHASE: Chase — death / closing overs")
+    t = sm_data.get("target")
+    if t is not None:
+        parts.append(f"Target {t}")
+    return " | ".join(parts)
+
+
+def _compact_sm_for_prompt(sm_data: dict, max_chars: int = 8000) -> str:
+    if not sm_data:
+        return ""
+    keys = (
+        "current_innings", "current_score", "innings", "crr", "rrr", "batting_team", "bowling_team",
+        "target", "note", "status", "recent_balls", "active_batsmen", "active_bowler",
+        "batsmen_inn1", "batsmen_inn2", "bowlers_inn1", "bowlers_inn2",
+        "yet_to_bat", "yet_to_bowl", "toss",
+    )
+    try:
+        payload = {k: sm_data[k] for k in keys if k in sm_data}
+        s = json.dumps(payload, indent=2, default=str)
+        if len(s) > max_chars:
+            s = s[:max_chars] + "\n... [truncated]"
+        return s
+    except Exception:
+        return "{}"
+
+
+def _algo_probs_json_block(algo_probs: dict, max_chars: int = 3500) -> str:
+    if not algo_probs:
+        return "{}"
+    try:
+        s = json.dumps(algo_probs, indent=2, default=str)
+        if len(s) > max_chars:
+            s = s[:max_chars] + "\n... [truncated]"
+        return s
+    except Exception:
+        return "{}"
+
+
 # ─── Claude Opus helpers ──────────────────────────────────────
 
 def _get_claude_chat(session_id: str, system_msg: str):
@@ -942,10 +1013,17 @@ RULES:
 
 # ─── Claude Live Match Analysis (NEW) ─────────────────────────
 
-async def claude_live_analysis(match_info: dict, live_data: dict, algo_probs: dict, squads: dict = None) -> dict:
+async def claude_live_analysis(
+    match_info: dict,
+    live_data: dict,
+    algo_probs: dict,
+    squads: dict = None,
+    sm_data: Optional[dict] = None,
+) -> dict:
     """
     Claude Opus: Generate real-time analysis during a live match.
     Combines scraped live data with algorithm outputs and full squad info.
+    When sm_data is set, it is authoritative for scores and lineups vs scraped text.
     """
     team1 = match_info.get("team1", "Team A")
     team2 = match_info.get("team2", "Team B")
@@ -973,8 +1051,13 @@ async def claude_live_analysis(match_info: dict, live_data: dict, algo_probs: di
     squad1_text = format_squad(squad1)
     squad2_text = format_squad(squad2)
 
-    # Scrape latest live data
+    sm_data = sm_data if isinstance(sm_data, dict) else None
+    sm_authoritative = _compact_sm_for_prompt(sm_data) if sm_data else ""
+    phase_line = _live_match_phase_descriptor(sm_data) if sm_data else ""
+
+    # Scrape latest live data (secondary when SportMonks snapshot exists)
     live_scraped = await search_cricket_live(team1, team2)
+    scrape_limit = 2500 if sm_authoritative else 4000
 
     chat = _get_claude_chat(
         f"live-analysis-{uuid.uuid4().hex[:8]}",
@@ -982,13 +1065,24 @@ async def claude_live_analysis(match_info: dict, live_data: dict, algo_probs: di
 Be sharp, data-driven, and reference specific player performances happening NOW.
 Never hedge — give clear directional advice.
 
+When an AUTHORITATIVE SPORTMONKS SNAPSHOT block is present, treat it as ground truth for runs, wickets, overs, who is batting/bowling, and recent balls. If scraped web text disagrees, ignore the scrape for factual scores and prefer SportMonks.
+
 CRITICAL DATA CONSTRAINT: Only reference cricket data from 2023-2026. Do NOT cite any player stats, records, or historical performances from before 2023. Only reference players from the Expected Playing XI provided — these are the 11 players on the field, not the full squad."""
     )
+
+    sm_block = ""
+    if sm_authoritative:
+        sm_block = f"""
+=== AUTHORITATIVE SPORTMONKS SNAPSHOT (ground truth for live state) ===
+Match phase: {phase_line}
+{sm_authoritative}
+
+"""
 
     prompt = f"""Analyze this LIVE IPL 2026 match. Give me a real-time prediction update.
 
 {team1} ({t1_short}) vs {team2} ({t2_short})
-
+{sm_block}
 === {team1} EXPECTED PLAYING XI ===
 {squad1_text}
 
@@ -996,13 +1090,13 @@ CRITICAL DATA CONSTRAINT: Only reference cricket data from 2023-2026. Do NOT cit
 {squad2_text}
 
 === LIVE MATCH DATA (from our system) ===
-{json.dumps(live_data, indent=2, default=str)[:4000]}
+{json.dumps(live_data, indent=2, default=str)[:6000]}
 
-=== ALGORITHM PROBABILITIES ===
-{json.dumps(algo_probs, indent=2, default=str)[:1000]}
+=== ALGORITHM PROBABILITIES (full model output; anchor win_probability near ensemble unless scorecard justifies a shift) ===
+{json.dumps(algo_probs, indent=2, default=str)[:3500]}
 
-=== LATEST SCRAPED DATA ===
-{live_scraped[:4000]}
+=== LATEST SCRAPED DATA (rumor / context only if SportMonks snapshot above is present) ===
+{live_scraped[:scrape_limit]}
 
 Consider the Playing XIs above — remaining batting depth, available bowling changes, and each player's IPL form. Only reference these 11 players per team.
 
@@ -1028,7 +1122,10 @@ Return JSON:
 }}"""
 
     try:
-        response = await chat.send_message(UserMessage(text=prompt))
+        response = await chat.send_message(
+            UserMessage(text=prompt),
+            temperature=_claude_prediction_temperature(),
+        )
         return _extract_json(response)
     except Exception as e:
         logger.error(f"Claude live analysis error: {e}")
@@ -1297,6 +1394,8 @@ async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_in
     # Pre-game algo probability
     algo_t1_pct = algo_probs.get("ensemble", 0.5) * 100
     algo_t2_pct = 100 - algo_t1_pct
+    phase_line = _live_match_phase_descriptor(sm_data)
+    algo_detail_json = _algo_probs_json_block(algo_probs)
 
     # Market odds text
     market_text = "Not provided"
@@ -1313,7 +1412,7 @@ async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_in
 
     chat = _get_claude_chat(
         f"sm-live-pred-{uuid.uuid4().hex[:8]}",
-        """You are an expert IPL cricket match prediction analyst with live data access.
+        f"""You are an expert IPL cricket match prediction analyst with live data access.
 
 CRITICAL RULES:
 
@@ -1334,12 +1433,14 @@ Rule 6 — Toss scenarios must be mathematically consistent with venue data.
 
 Rule 7 — No cross-format stats as primary evidence. IPL and international T20 only.
 
+Rule 8 — Statistical anchor: Treat the PRE-GAME ensemble and full model JSON as a prior. Move section_10 win percentages more than ~12 points away from ensemble {t1_short} {round(algo_t1_pct, 1)}% only when the live scorecard or a confirmed XI fact clearly justifies it; otherwise stay close and express uncertainty in confidence, not arbitrary swings.
+
 FORMAT RULES:
 - All probabilities: whole numbers only. No ranges.
 - Every stat tagged with its source season.
 - Word "unpredictable" is banned. Express all uncertainty as probability or confidence level.
 - Both teams sum to exactly 100%.
-- This is a committed prediction. State it like one."""
+- This is a committed prediction. State it like one.""",
     )
 
     prompt = f"""ANALYSE THIS LIVE IPL 2026 MATCH. Produce ALL 11 sections.
@@ -1354,6 +1455,7 @@ current runs/wickets/overs, CRR/RRR, who is batting/bowling and their figures, a
 - Innings: {"1st" if current_inn == 1 else "2nd"}, Score: {current_score.get('runs',0)}/{current_score.get('wickets',0)} in {current_score.get('overs',0)} overs
 {f"- Target: {target}" if target else ""}
 - CRR: {sm_data.get('crr', 0)} | RRR: {sm_data.get('rrr', 'N/A')}
+- Match phase: {phase_line}
 - {sm_data.get('note', '')}
 {prev_inn_text}
 
@@ -1415,8 +1517,13 @@ current runs/wickets/overs, CRR/RRR, who is batting/bowling and their figures, a
 === IPL 2026 STANDINGS ===
 {standings_text}
 
-=== PRE-GAME ALGORITHM PROBABILITY ===
+=== PRE-GAME ENSEMBLE (team1 win % summary) ===
 {t1_short} {round(algo_t1_pct, 1)}% / {t2_short} {round(algo_t2_pct, 1)}%
+
+=== BALL-BY-BALL / ENSEMBLE MODEL OUTPUT (JSON — statistical anchor) ===
+{algo_detail_json}
+
+Anchor: section_10 team1_win_pct + team2_win_pct = 100 (integers). If Section 10 for {t1_short} differs from ensemble {round(algo_t1_pct, 1)}% by more than 12 points, cite a concrete fact from THIS scorecard (runs/wickets/overs, RRR, batter/bowler today) or a confirmed XI gap — not reputation alone.
 
 === MARKET ODDS ===
 {market_text}
@@ -1527,7 +1634,10 @@ Return JSON with this EXACT structure:
 CRITICAL: All sections must be completed. No skipping. Be decisive — never say "too close to call." Own the prediction."""
 
     try:
-        response = await chat.send_message(UserMessage(text=prompt))
+        response = await chat.send_message(
+            UserMessage(text=prompt),
+            temperature=_claude_prediction_temperature(),
+        )
         return _extract_json(response)
     except Exception as e:
         logger.error(f"Claude SportMonks prediction error: {e}")
