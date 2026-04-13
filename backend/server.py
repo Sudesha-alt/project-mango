@@ -3228,7 +3228,13 @@ async def api_claude_live(match_id: str):
     live_squads = _filter_squads_to_playing_xi(
         match_squads, sm_data, match_info.get("team1", ""), match_info.get("team2", "")
     )
-    analysis = await claude_live_analysis(match_info, live_data, algo_probs, squads=live_squads)
+    analysis = await claude_live_analysis(
+        match_info,
+        live_data,
+        algo_probs,
+        squads=live_squads,
+        sm_data=sm_data if isinstance(sm_data, dict) else None,
+    )
 
     return {
         "matchId": match_id,

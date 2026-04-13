@@ -37,13 +37,16 @@ class ClaudeChat:
         self._model = model
         return self
 
-    async def send_message(self, msg: UserMessage) -> str:
-        message = await self._client.messages.create(
-            model=self._model,
-            max_tokens=16384,
-            system=self._system,
-            messages=[{"role": "user", "content": msg.text}],
-        )
+    async def send_message(self, msg: UserMessage, temperature: float | None = None) -> str:
+        kwargs = {
+            "model": self._model,
+            "max_tokens": 16384,
+            "system": self._system,
+            "messages": [{"role": "user", "content": msg.text}],
+        }
+        if temperature is not None:
+            kwargs["temperature"] = max(0.0, min(1.0, float(temperature)))
+        message = await self._client.messages.create(**kwargs)
         parts: list[str] = []
         for block in message.content:
             btype = getattr(block, "type", None)
