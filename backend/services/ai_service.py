@@ -885,10 +885,11 @@ ANALYTICAL PHILOSOPHY — NON-NEGOTIABLE RULES:
 6. Win probability must reflect genuine asymmetry. Never default to false 50/50.
 7. Algorithm vs analyst tension is a feature. When your prediction diverges from the algorithm, explain why.
 8. Label all SportMonks data clearly with [SPORTMONKS DATA] tags.
+9. EXPECTED PLAYING XI is the only source of who is playing this match. Do not name franchise captains, marquee signings, or players from news unless they appear in those XI lists. If news or algorithm "top performers" mention someone not in the XI, ignore them for lineups and matchups. Injured or rested stars not in the XI must not be described as playing.
 
 STYLE: Sharp, confident, direct. Short sentences. Zero hedging. Write for someone who watches every IPL game. Always name names — never "their opening bowler." Disagreeing with the algorithm is encouraged when contextual case is strong.
 
-CRITICAL DATA CONSTRAINT: Only use IPL 2023-2026 data. Only reference players from the Expected Playing XI — the actual 11, NOT the full squad."""
+CRITICAL DATA CONSTRAINT: Only use IPL 2023-2026 data. Only reference players from the Expected Playing XI — the actual 11, NOT the full squad. Never substitute another team's roster or general IPL narratives for this fixture's XI."""
     )
 
     prompt = f"""Analyze this IPL 2026 match using the data below. Produce a full 7-layer contextual analysis.
@@ -905,6 +906,8 @@ Date: {date_str} | Time (IST): {time_ist}
 {weather_block}
 {news_section}
 === END DATA ===
+
+MANDATORY: team1_xi_display and team2_xi_display must list exactly the 11 player names from EXPECTED PLAYING XIs above (same names). Do not add anyone from news, other franchises, or algorithm summaries if they are missing from those lists.
 
 Return a JSON object with this EXACT structure:
 {{

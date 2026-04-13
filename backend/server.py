@@ -6,6 +6,7 @@ import os
 import logging
 import json
 import asyncio
+import copy
 import re
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -179,12 +180,24 @@ def _compact_player_name_vowels(name: str) -> str:
     return re.sub(r"[aeiou]+", "a", _normalize_player_name(name))
 
 
+def _vaibhav_suryavanshi_family_key(name: str) -> Optional[str]:
+    """Unify Vaibhav Suryavanshi vs Sooryanvanshi / Sooryanvanshi-style transliterations."""
+    n = _normalize_player_name(name)
+    if "vaibhav" in n and "vanshi" in n:
+        return "vaibhav_suryavanshi"
+    return None
+
+
 def _player_name_matches(a: str, b: str) -> bool:
     """Robust player name match for DB roster vs SportMonks lineup."""
     na = _normalize_player_name(a)
     nb = _normalize_player_name(b)
     if not na or not nb:
         return False
+    vk_a = _vaibhav_suryavanshi_family_key(a)
+    vk_b = _vaibhav_suryavanshi_family_key(b)
+    if vk_a and vk_b:
+        return True
     if na == nb or na in nb or nb in na:
         return True
 
@@ -386,6 +399,127 @@ def _filter_player_performance_to_playing_xi(
             ]
             if filtered:
                 out[side] = filtered
+    return out
+
+
+def _xi_flat_names(playing_xi_squads: dict) -> list:
+    names: list = []
+    for players in (playing_xi_squads or {}).values():
+        for p in players or []:
+            n = (p.get("name") or "").strip()
+            if n:
+                names.append(n)
+    return names
+
+
+def _top_performer_in_xi(entry: dict, allow_names: list) -> bool:
+    if not isinstance(entry, dict) or not allow_names:
+        return False
+    nm = entry.get("name") or entry.get("player") or ""
+    return any(_player_name_matches(nm, an) for an in allow_names if an)
+
+
+def _filter_form_data_to_playing_xi(
+    form_data: Optional[dict],
+    playing_xi_squads: dict,
+    team1: str,
+    team2: str,
+) -> Optional[dict]:
+    """Keep form top_performers aligned with Expected XI only (defensive vs stale perf)."""
+    if not form_data or not playing_xi_squads:
+        return form_data
+    for key, tname in (("team1", team1), ("team2", team2)):
+        block = form_data.get(key)
+        if not isinstance(block, dict):
+            continue
+        allow = [
+            (p.get("name") or "").strip()
+            for p in (playing_xi_squads.get(tname) or [])
+            if (p.get("name") or "").strip()
+        ]
+        tp = block.get("top_performers")
+        if isinstance(tp, list):
+            block["top_performers"] = [x for x in tp if _top_performer_in_xi(x, allow)]
+    return form_data
+
+
+def _scrub_algo_prediction_for_claude(
+    algo_doc: Optional[dict],
+    playing_xi_squads: dict,
+    team1: str,
+    team2: str,
+) -> Optional[dict]:
+    """Deep-copy cached pre-match doc and strip current_form top_performers not on Expected XI."""
+    if not algo_doc or not playing_xi_squads:
+        return algo_doc
+    scrubbed = copy.deepcopy(algo_doc)
+    pred = scrubbed.get("prediction") or scrubbed
+    factors = pred.get("factors")
+    if not isinstance(factors, dict):
+        return scrubbed
+    cf = factors.get("current_form")
+    if not isinstance(cf, dict):
+        return scrubbed
+
+    def _filt(tp, tname: str):
+        allow = [
+            (p.get("name") or "").strip()
+            for p in (playing_xi_squads.get(tname) or [])
+            if (p.get("name") or "").strip()
+        ]
+        if not isinstance(tp, list):
+            return tp
+        return [x for x in tp if _top_performer_in_xi(x, allow)]
+
+    cf["team1_top_performers"] = _filt(cf.get("team1_top_performers"), team1)
+    cf["team2_top_performers"] = _filt(cf.get("team2_top_performers"), team2)
+    factors["current_form"] = cf
+    pred["factors"] = factors
+    if scrubbed.get("prediction") is not None:
+        scrubbed["prediction"] = pred
+    return scrubbed
+
+
+def _filter_news_items_for_xi(
+    news: Optional[list],
+    team1: str,
+    team2: str,
+    playing_xi_squads: dict,
+) -> list:
+    """
+    Drop obvious cross-franchise noise (e.g. CSK/Samson roundups) and shorten bodies for Claude.
+    """
+    if not news:
+        return []
+    allow = _xi_flat_names(playing_xi_squads)
+
+    def _allow_substr(sub: str) -> bool:
+        sub_l = sub.lower().strip()
+        if not sub_l:
+            return False
+        return any(sub_l in _normalize_player_name(n) for n in allow)
+
+    t1_words = set(team1.lower().split())
+    t2_words = set(team2.lower().split())
+    out: list = []
+    for article in news[:12]:
+        if not isinstance(article, dict):
+            continue
+        title = article.get("title", "") or ""
+        body = (article.get("body", "") or "")[:350]
+        text_lower = (title + " " + body).lower()
+        t1_match = any(w in text_lower for w in t1_words if len(w) > 3)
+        t2_match = any(w in text_lower for w in t2_words if len(w) > 3)
+        ipl_match = "ipl" in text_lower or "cricket" in text_lower
+        if not ((t1_match or t2_match) and ipl_match):
+            continue
+        if re.search(r"\bsamson\b", text_lower) and not _allow_substr("samson"):
+            if any(x in text_lower for x in ("chennai", "csk", "super king")):
+                continue
+        item = {**article, "body": body[:120]}
+        out.append(item)
+        if len(out) >= 5:
+            break
     return out
 
 
@@ -2423,6 +2557,7 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
 
     # Fetch form data from DB completed matches + player performance
     form_data = await fetch_team_form(db, team1, team2, player_performance=player_performance)
+    form_data = _filter_form_data_to_playing_xi(form_data, prediction_squads, team1, team2)
 
     # Fetch momentum (last 2 results)
     momentum_data = await fetch_momentum(db, team1, team2)
@@ -2721,11 +2856,21 @@ async def _background_repredict_all():
                         form_data = await fetch_team_form(db, team1, team2, player_performance=player_perf)
                     except Exception:
                         pass
+                    if form_data:
+                        form_data = _filter_form_data_to_playing_xi(
+                            form_data, playing_xi_squads, team1, team2
+                        )
+                    news_for_claude = _filter_news_items_for_xi(
+                        match_news, team1, team2, playing_xi_squads
+                    )
+                    algo_for_claude = _scrub_algo_prediction_for_claude(
+                        algo_pred, playing_xi_squads, team1, team2
+                    )
 
                     try:
                         analysis = await claude_deep_match_analysis(
-                            team1, team2, venue, match, squads=playing_xi_squads, news=match_news,
-                            algo_prediction=algo_pred, player_performance=player_perf,
+                            team1, team2, venue, match, squads=playing_xi_squads, news=news_for_claude,
+                            algo_prediction=algo_for_claude, player_performance=player_perf,
                             weather=weather_data, form_data=form_data,
                         )
                         if analysis and "error" not in analysis:
@@ -2866,12 +3011,22 @@ async def _background_claude_rerun_all():
                 form_data = await fetch_team_form(db, team1, team2, player_performance=player_perf)
             except Exception:
                 pass
+            if form_data:
+                form_data = _filter_form_data_to_playing_xi(
+                    form_data, playing_xi_squads, team1, team2
+                )
 
             match_news = await fetch_match_news(team1, team2)
+            news_for_claude = _filter_news_items_for_xi(
+                match_news, team1, team2, playing_xi_squads
+            )
+            algo_for_claude = _scrub_algo_prediction_for_claude(
+                algo_pred, playing_xi_squads, team1, team2
+            )
 
             analysis = await claude_deep_match_analysis(
-                team1, team2, venue, match, squads=playing_xi_squads, news=match_news,
-                algo_prediction=algo_pred, player_performance=player_perf,
+                team1, team2, venue, match, squads=playing_xi_squads, news=news_for_claude,
+                algo_prediction=algo_for_claude, player_performance=player_perf,
                 weather=weather_data, form_data=form_data,
             )
 
@@ -3400,16 +3555,26 @@ async def api_claude_analysis(match_id: str, background_tasks: BackgroundTasks =
         form_data = await fetch_team_form(db, team1, team2, player_performance=player_performance)
     except Exception as e:
         logger.warning(f"Failed to fetch form data for Claude: {e}")
+    if form_data:
+        form_data = _filter_form_data_to_playing_xi(
+            form_data, playing_xi_squads, team1, team2
+        )
 
     # ── 6. Fetch news ──
     match_news = await fetch_match_news(team1, team2)
+    news_for_claude = _filter_news_items_for_xi(
+        match_news, team1, team2, playing_xi_squads
+    )
+    algo_for_claude = _scrub_algo_prediction_for_claude(
+        algo_prediction, playing_xi_squads, team1, team2
+    )
 
     # ── 7. Run Claude 7-layer analysis ──
     analysis = await claude_deep_match_analysis(
         team1, team2, venue, match_info,
         squads=playing_xi_squads,
-        news=match_news,
-        algo_prediction=algo_prediction,
+        news=news_for_claude,
+        algo_prediction=algo_for_claude,
         player_performance=player_performance,
         weather=weather,
         form_data=form_data,
