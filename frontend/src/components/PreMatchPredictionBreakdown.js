@@ -8,14 +8,16 @@ const API = API_BASE;
 
 function FactorBar({ label, weight, logit, icon: Icon, tooltip, team1, team2, team1Detail, team2Detail }) {
   // logit > 0 favors team1, logit < 0 favors team2
-  const absLogit = Math.abs(logit);
+  const safeLogit = Number.isFinite(logit) ? logit : 0;
+  const absLogit = Math.abs(safeLogit);
   const barWidth = Math.min(100, absLogit * 300); // visual scale
-  const favorsTeam1 = logit > 0;
-  const favorsTeam2 = logit < 0;
+  const favorsTeam1 = safeLogit > 0;
+  const favorsTeam2 = safeLogit < 0;
   const neutral = absLogit < 0.01;
+  const testId = `factor-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`;
 
   return (
-    <div className="py-3 border-b border-[#262626] last:border-0 space-y-2" data-testid={`factor-${label.toLowerCase().replace(/\s+/g, '-')}`}>
+    <div className="py-3 border-b border-[#262626] last:border-0 space-y-2" data-testid={testId}>
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1.5">
@@ -25,36 +27,43 @@ function FactorBar({ label, weight, logit, icon: Icon, tooltip, team1, team2, te
         </div>
         <span className="text-[9px] font-mono text-[#737373]">Weight: {(weight * 100).toFixed(0)}%</span>
       </div>
-      {/* Two-sided bar */}
+      {/* Two-sided bar — neutral shows a visible “even” marker (zero logit used to render empty) */}
       <div className="flex items-center gap-1">
-        {/* Team 1 side (left) */}
-        <div className="flex-1 flex justify-end">
-          <div className="w-full h-2 bg-[#1A1A1A] rounded-l-full relative overflow-hidden">
-            {favorsTeam1 && (
-              <div className="absolute top-0 right-0 h-full rounded-l-full bg-[#34C759] transition-all duration-500"
-                style={{ width: `${barWidth}%` }} />
-            )}
-            {favorsTeam2 && (
-              <div className="absolute top-0 right-0 h-full rounded-l-full bg-[#FF3B30]/20 transition-all duration-500"
-                style={{ width: `${barWidth}%` }} />
-            )}
+        {neutral ? (
+          <div className="flex-1 flex items-center justify-center gap-2 py-0.5">
+            <div className="flex-1 h-2 bg-[#1A1A1A] rounded-full max-w-[45%]" />
+            <span className="text-[8px] font-mono text-[#525252] uppercase tracking-wider shrink-0">Even</span>
+            <div className="flex-1 h-2 bg-[#1A1A1A] rounded-full max-w-[45%]" />
           </div>
-        </div>
-        {/* Center divider */}
-        <div className="w-px h-4 bg-[#525252] flex-shrink-0" />
-        {/* Team 2 side (right) */}
-        <div className="flex-1">
-          <div className="w-full h-2 bg-[#1A1A1A] rounded-r-full relative overflow-hidden">
-            {favorsTeam2 && (
-              <div className="absolute top-0 left-0 h-full rounded-r-full bg-[#34C759] transition-all duration-500"
-                style={{ width: `${barWidth}%` }} />
-            )}
-            {favorsTeam1 && (
-              <div className="absolute top-0 left-0 h-full rounded-r-full bg-[#FF3B30]/20 transition-all duration-500"
-                style={{ width: `${barWidth}%` }} />
-            )}
-          </div>
-        </div>
+        ) : (
+          <>
+            <div className="flex-1 flex justify-end">
+              <div className="w-full h-2 bg-[#1A1A1A] rounded-l-full relative overflow-hidden">
+                {favorsTeam1 && (
+                  <div className="absolute top-0 right-0 h-full rounded-l-full bg-[#34C759] transition-all duration-500"
+                    style={{ width: `${barWidth}%` }} />
+                )}
+                {favorsTeam2 && (
+                  <div className="absolute top-0 right-0 h-full rounded-l-full bg-[#FF3B30]/20 transition-all duration-500"
+                    style={{ width: `${barWidth}%` }} />
+                )}
+              </div>
+            </div>
+            <div className="w-px h-4 bg-[#525252] flex-shrink-0" />
+            <div className="flex-1">
+              <div className="w-full h-2 bg-[#1A1A1A] rounded-r-full relative overflow-hidden">
+                {favorsTeam2 && (
+                  <div className="absolute top-0 left-0 h-full rounded-r-full bg-[#34C759] transition-all duration-500"
+                    style={{ width: `${barWidth}%` }} />
+                )}
+                {favorsTeam1 && (
+                  <div className="absolute top-0 left-0 h-full rounded-r-full bg-[#FF3B30]/20 transition-all duration-500"
+                    style={{ width: `${barWidth}%` }} />
+                )}
+              </div>
+            </div>
+          </>
+        )}
       </div>
       {/* Team details row */}
       <div className="flex items-start justify-between gap-2">
@@ -252,12 +261,12 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
           </div>
         )}
 
-        {/* Cat 6: Bowling Depth (8%) */}
-        <FactorBar label="Bowling Depth & Balance" weight={factors.bowling_depth?.weight || 0.08} logit={factors.bowling_depth?.logit_contribution || 0} icon={Target}
-          tooltip={`Venue-weighted bowling quality. Pace assist: ${factors.bowling_depth?.venue_pace_assist || "?"}, Spin assist: ${factors.bowling_depth?.venue_spin_assist || "?"}`}
+        {/* Cat 6: Bowling Depth (8%) — use ?? so real0 counts are not shown as "?" */}
+        <FactorBar label="Bowling Depth & Balance" weight={factors.bowling_depth?.weight ?? 0.08} logit={factors.bowling_depth?.logit_contribution ?? 0} icon={Target}
+          tooltip={`Venue-weighted bowling quality. Pace assist: ${factors.bowling_depth?.venue_pace_assist ?? "?"}, Spin assist: ${factors.bowling_depth?.venue_spin_assist ?? "?"}`}
           team1={t1} team2={t2}
-          team1Detail={`${factors.bowling_depth?.team1_bowler_count || "?"} bowlers (P${factors.bowling_depth?.team1_pace_count || 0} S${factors.bowling_depth?.team1_spin_count || 0}) VQ:${factors.bowling_depth?.team1_venue_quality || "?"}`}
-          team2Detail={`${factors.bowling_depth?.team2_bowler_count || "?"} bowlers (P${factors.bowling_depth?.team2_pace_count || 0} S${factors.bowling_depth?.team2_spin_count || 0}) VQ:${factors.bowling_depth?.team2_venue_quality || "?"}`}
+          team1Detail={`${factors.bowling_depth?.team1_bowler_count ?? "?"} bowlers (P${factors.bowling_depth?.team1_pace_count ?? 0} S${factors.bowling_depth?.team1_spin_count ?? 0}) VQ:${factors.bowling_depth?.team1_venue_quality ?? "?"}`}
+          team2Detail={`${factors.bowling_depth?.team2_bowler_count ?? "?"} bowlers (P${factors.bowling_depth?.team2_pace_count ?? 0} S${factors.bowling_depth?.team2_spin_count ?? 0}) VQ:${factors.bowling_depth?.team2_venue_quality ?? "?"}`}
         />
 
         {/* Cat 7: Conditions (5%) */}

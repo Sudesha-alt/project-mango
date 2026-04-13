@@ -208,10 +208,11 @@ export function AlgorithmRadarChart({ probabilities = {} }) {
 // CHART 5: Pre-match Radar (team comparison)
 export function PreMatchRadarChart({ team1Data = {}, team2Data = {}, team1 = "T1", team2 = "T2" }) {
   const axes = ["Form", "H2H", "Venue", "Batting", "Bowling", "NRR"];
+  const key = (axis) => axis.toLowerCase();
   const data = axes.map((axis) => ({
     axis,
-    [team1]: team1Data[axis.toLowerCase()] || Math.random() * 40 + 40,
-    [team2]: team2Data[axis.toLowerCase()] || Math.random() * 40 + 40,
+    [team1]: team1Data[key(axis)] ?? 50,
+    [team2]: team2Data[key(axis)] ?? 50,
   }));
 
   return (

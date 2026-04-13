@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useMatchData } from "@/hooks/useMatchData";
 import PlayingXIPerformance from "@/components/PlayingXIPerformance";
@@ -14,6 +14,11 @@ import axios from "axios";
 import { API_BASE } from "@/lib/apiBase";
 
 const API = API_BASE;
+
+function clampRadarPct(n) {
+  if (typeof n !== "number" || Number.isNaN(n)) return 50;
+  return Math.min(100, Math.max(0, n));
+}
 
 export default function PreMatch() {
   const { matchId } = useParams();
@@ -90,6 +95,45 @@ export default function PreMatch() {
   const team2 = matchInfo?.team2 || "Team B";
   const t1Short = matchInfo?.team1Short || team1.slice(0, 3).toUpperCase();
   const t2Short = matchInfo?.team2Short || team2.slice(0, 3).toUpperCase();
+
+  const [prematchRadarT1, prematchRadarT2] = useMemo(() => {
+    const f = algoData?.prediction?.factors;
+    if (!f) return [{}, {}];
+    const h2hT = f.h2h?.total ?? 0;
+    const t1h = h2hT > 0 ? (100 * (f.h2h.team1_wins ?? 0)) / h2hT : 50;
+    const t2h = h2hT > 0 ? (100 * (f.h2h.team2_wins ?? 0)) / h2hT : 50;
+    let v1 = 50;
+    let v2 = 50;
+    if (f.venue_pitch_home?.team1_home) v1 += 8;
+    if (f.venue_pitch_home?.team2_home) v2 += 8;
+    const pl = Number(f.venue_pitch_home?.pitch_logit) || 0;
+    v1 = clampRadarPct(v1 + pl * 15);
+    v2 = clampRadarPct(v2 - pl * 15);
+    const bd1 = f.bowling_depth?.team1_depth_share_pct;
+    const bd2 = f.bowling_depth?.team2_depth_share_pct;
+    const b1 = typeof bd1 === "number" ? bd1 : clampRadarPct(f.squad_strength?.team1_bowling ?? 50);
+    const b2 = typeof bd2 === "number" ? bd2 : clampRadarPct(f.squad_strength?.team2_bowling ?? 50);
+    const n1 = 50 + Math.min(25, Math.max(-25, (Number(f.current_form?.team1_nrr) || 0) * 12));
+    const n2 = 50 + Math.min(25, Math.max(-25, (Number(f.current_form?.team2_nrr) || 0) * 12));
+    return [
+      {
+        form: clampRadarPct(f.current_form?.team1_form_score ?? 50),
+        h2h: clampRadarPct(t1h),
+        venue: clampRadarPct(v1),
+        batting: clampRadarPct(f.squad_strength?.team1_batting ?? 50),
+        bowling: clampRadarPct(b1),
+        nrr: clampRadarPct(n1),
+      },
+      {
+        form: clampRadarPct(f.current_form?.team2_form_score ?? 50),
+        h2h: clampRadarPct(t2h),
+        venue: clampRadarPct(v2),
+        batting: clampRadarPct(f.squad_strength?.team2_batting ?? 50),
+        bowling: clampRadarPct(b2),
+        nrr: clampRadarPct(n2),
+      },
+    ];
+  }, [algoData]);
 
   return (
     <div data-testid="pre-match-page" className="max-w-[1440px] mx-auto px-4 lg:px-6 py-6">
@@ -170,7 +214,7 @@ export default function PreMatch() {
               <WeatherCard matchId={matchId} />
               {/* Match News */}
               <NewsCard matchId={matchId} />
-              <PreMatchRadarChart team1={t1Short} team2={t2Short} />
+              <PreMatchRadarChart team1={t1Short} team2={t2Short} team1Data={prematchRadarT1} team2Data={prematchRadarT2} />
             </div>
           </div>
         </>
