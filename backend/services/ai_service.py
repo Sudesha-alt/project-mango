@@ -51,6 +51,70 @@ def _live_match_phase_descriptor(sm_data: dict) -> str:
     return " | ".join(parts)
 
 
+def build_live_opening_context(
+    match_info: dict,
+    sm_data: Optional[dict],
+    playing_xi_doc: Optional[dict],
+) -> str:
+    """
+    Nominated openers = first two players in our Expected XI list order for the team batting
+    each innings. Also echo SportMonks scorecard positions 1–2 so Claude can spot API mismatch.
+    """
+    if not sm_data or not isinstance(sm_data, dict):
+        return ""
+    team1 = match_info.get("team1", "")
+    team2 = match_info.get("team2", "")
+    t1_id = sm_data.get("team1_id")
+    inn = sm_data.get("innings") or {}
+    lines: List[str] = []
+
+    def _xi_first_two(team_xi_key: str) -> List[str]:
+        rows = (playing_xi_doc or {}).get(team_xi_key) or []
+        out: List[str] = []
+        for r in rows[:2]:
+            if not isinstance(r, dict):
+                continue
+            n = (r.get("name") or r.get("fullname") or "").strip()
+            if n:
+                out.append(n)
+        return out
+
+    def _scorecard_top2(inn_num: int) -> List[str]:
+        bats = sm_data.get(f"batsmen_inn{inn_num}") or []
+        if not bats:
+            return []
+        ordered = sorted(
+            bats,
+            key=lambda x: (x.get("sort") if x.get("sort") is not None else 99),
+        )
+        return [b.get("name") for b in ordered[:2] if b.get("name")]
+
+    for inn_label in (1, 2):
+        block = inn.get(str(inn_label)) or inn.get(inn_label)
+        if not isinstance(block, dict):
+            continue
+        tid = block.get("team_id")
+        if not tid or t1_id is None:
+            continue
+        batting_side = team1 if tid == t1_id else team2
+        xi_key = "team1_xi" if tid == t1_id else "team2_xi"
+        pair = _xi_first_two(xi_key)
+        if len(pair) >= 2:
+            lines.append(
+                f"Innings {inn_label} ({batting_side}): NOMINATED OPENERS (Expected XI list order, positions 1–2) — "
+                f"{pair[0]}, {pair[1]}"
+            )
+        sc2 = _scorecard_top2(inn_label)
+        if sc2:
+            lines.append(
+                f"  Scorecard batting rows positions 1–2 (SportMonks sort): {', '.join(sc2)}"
+            )
+
+    if not lines:
+        return ""
+    return "=== OPENING PARTNERSHIPS (authoritative naming — read before inferring openers) ===\n" + "\n".join(lines)
+
+
 def _compact_sm_for_prompt(sm_data: dict, max_chars: int = 8000) -> str:
     if not sm_data:
         return ""
@@ -1032,6 +1096,7 @@ async def claude_live_analysis(
     algo_probs: dict,
     squads: dict = None,
     sm_data: Optional[dict] = None,
+    playing_xi_doc: Optional[dict] = None,
 ) -> dict:
     """
     Claude Opus: Generate real-time analysis during a live match.
@@ -1080,6 +1145,8 @@ Never hedge — give clear directional advice.
 
 When an AUTHORITATIVE SPORTMONKS SNAPSHOT block is present, treat it as ground truth for runs, wickets, overs, who is batting/bowling, and recent balls. If scraped web text disagrees, ignore the scrape for factual scores and prefer SportMonks.
 
+OPENING BATSMEN: When an "OPENING PARTNERSHIPS" block is present, use its NOMINATED OPENERS line as the opening pair for that innings (Expected XI list order). Do NOT infer openers from the Playing XI block order below, from alphabetical listing, from generic IPL reputation, or by assuming the two current strikers are the openers (after wickets, a non-opener may be at the crease). The scorecard line shows SportMonks positions 1–2 for cross-check only.
+
 CRITICAL DATA CONSTRAINT: Only reference cricket data from 2023-2026. Do NOT cite any player stats, records, or historical performances from before 2023. Only reference players from the Expected Playing XI provided — these are the 11 players on the field, not the full squad."""
     )
 
@@ -1092,11 +1159,14 @@ Match phase: {phase_line}
 
 """
 
+    opening_block = build_live_opening_context(match_info, sm_data, playing_xi_doc)
+    if opening_block:
+        opening_block = opening_block + "\n\n"
+
     prompt = f"""Analyze this LIVE IPL 2026 match. Give me a real-time prediction update.
 
 {team1} ({t1_short}) vs {team2} ({t2_short})
-{sm_block}
-=== {team1} EXPECTED PLAYING XI ===
+{sm_block}{opening_block}=== {team1} EXPECTED PLAYING XI ===
 {squad1_text}
 
 === {team2} EXPECTED PLAYING XI ===
