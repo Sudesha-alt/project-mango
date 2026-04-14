@@ -51,6 +51,58 @@ def _live_match_phase_descriptor(sm_data: dict) -> str:
     return " | ".join(parts)
 
 
+def _impact_hist_team_lines(block: Optional[dict]) -> List[str]:
+    if not block or not isinstance(block, dict):
+        return ["  (not available)"]
+    if block.get("error"):
+        return [f"  (unavailable: {block.get('error')})"]
+    fixtures = block.get("fixtures") or []
+    if not fixtures:
+        return ["  No recent finished matches with substitution-flag lineups found."]
+    out: List[str] = []
+    for fx in fixtures:
+        subs = fx.get("impact_subs") or []
+        names = ", ".join(s.get("name", "?") for s in subs if isinstance(s, dict)) or "none listed"
+        opp = fx.get("opponent", "?")
+        started = (fx.get("starting_at") or "")[:10]
+        out.append(f"  vs {opp} ({started}): {names}")
+    freq = block.get("frequency") or []
+    if freq:
+        top = "; ".join(
+            f"{f.get('name', '?')} (×{f.get('appearances', 0)})"
+            for f in freq[:8]
+            if isinstance(f, dict)
+        )
+        out.append(f"  Most frequent named subs in sample: {top}")
+    return out
+
+
+def format_impact_sub_history_for_prompt(
+    team1: str,
+    team2: str,
+    t1_short: str,
+    t2_short: str,
+    hist: Optional[dict],
+) -> str:
+    """Human-readable block for Claude: last-N match impact / named subs from SportMonks lineups."""
+    if not hist or not isinstance(hist, dict):
+        return ""
+    h1 = hist.get("team1")
+    h2 = hist.get("team2")
+    if not h1 and not h2:
+        return ""
+    lines = [
+        "=== IMPACT PLAYER / NAMED SUBSTITUTE HISTORY [SPORTMONKS DATA] ===",
+        "Per team: last completed IPL matches; players with lineup.substitution=true (11+2 named subs). "
+        "This is official squad sheet designation, not proof they were used in play.",
+        f"{team1} ({t1_short}):",
+        *_impact_hist_team_lines(h1 if isinstance(h1, dict) else None),
+        f"{team2} ({t2_short}):",
+        *_impact_hist_team_lines(h2 if isinstance(h2, dict) else None),
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def build_live_opening_context(
     match_info: dict,
     sm_data: Optional[dict],
@@ -806,7 +858,8 @@ def _format_top_performers(performers: list) -> str:
 async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_info: dict,
                                      squads: dict = None, news: list = None,
                                      algo_prediction: dict = None, player_performance: dict = None,
-                                     weather: dict = None, form_data: dict = None) -> dict:
+                                     weather: dict = None, form_data: dict = None,
+                                     impact_sub_history: dict = None) -> dict:
     """
     Claude Opus: Elite 7-layer pre-match analysis.
     Combines actual SportMonks API data (Expected XI, player stats, H2H, algorithm output)
@@ -876,14 +929,22 @@ Model Confidence: {pred.get('confidence', 'unknown')}
 Combined Logit: {pred.get('combined_logit', 0)}
 
 Category Breakdown:
-- Squad Strength (25%): {t1_short} bat {factors.get('squad_strength',{}).get('team1_batting','?')}/bowl {factors.get('squad_strength',{}).get('team1_bowling','?')} | {t2_short} bat {factors.get('squad_strength',{}).get('team2_batting','?')}/bowl {factors.get('squad_strength',{}).get('team2_bowling','?')} | Logit: {factors.get('squad_strength',{}).get('logit_contribution',0)}
-- Current Form (21%): {t1_short} score {factors.get('current_form',{}).get('team1_form_score','?')} ({factors.get('current_form',{}).get('team1_wins',0)}W) | {t2_short} score {factors.get('current_form',{}).get('team2_form_score','?')} ({factors.get('current_form',{}).get('team2_wins',0)}W) | Logit: {factors.get('current_form',{}).get('logit_contribution',0)}
-- Venue+Pitch+Home (18%): Pitch: {factors.get('venue_pitch_home',{}).get('pitch_type','?')}, Pace: {factors.get('venue_pitch_home',{}).get('pace_assist','?')}, Spin: {factors.get('venue_pitch_home',{}).get('spin_assist','?')}, Home: {factors.get('venue_pitch_home',{}).get('home_team','neutral')} | Logit: {factors.get('venue_pitch_home',{}).get('logit_contribution',0)}
-- H2H (11%): {t1_short} {factors.get('h2h',{}).get('team1_wins',0)} wins / {t2_short} {factors.get('h2h',{}).get('team2_wins',0)} wins (total {factors.get('h2h',{}).get('total',0)}) | Logit: {factors.get('h2h',{}).get('logit_contribution',0)}
-- Toss Impact (9%): Time: {factors.get('toss_impact',{}).get('match_time_class','?')}, Dew: {factors.get('toss_impact',{}).get('dew_factor','none')}, Pref: {factors.get('toss_impact',{}).get('preferred_decision','?')} | Logit: {factors.get('toss_impact',{}).get('logit_contribution',0)}
-- Bowling Depth (8%): {t1_short} VQ:{factors.get('bowling_depth',{}).get('team1_venue_quality','?')} ({factors.get('bowling_depth',{}).get('team1_variety','?')}) | {t2_short} VQ:{factors.get('bowling_depth',{}).get('team2_venue_quality','?')} ({factors.get('bowling_depth',{}).get('team2_variety','?')}) | Logit: {factors.get('bowling_depth',{}).get('logit_contribution',0)}
-- Conditions (5%): {factors.get('conditions',{}).get('conditions_edge_text','Neutral')} | Logit: {factors.get('conditions',{}).get('logit_contribution',0)}
-- Momentum (3%): {t1_short} last 2: {factors.get('momentum',{}).get('team1_last2',[])} | {t2_short} last 2: {factors.get('momentum',{}).get('team2_last2',[])} | Logit: {factors.get('momentum',{}).get('logit_contribution',0)}
+- Squad Strength (11%): {t1_short} bat {factors.get('squad_strength',{}).get('team1_batting','?')}/bowl {factors.get('squad_strength',{}).get('team1_bowling','?')} | {t2_short} bat {factors.get('squad_strength',{}).get('team2_batting','?')}/bowl {factors.get('squad_strength',{}).get('team2_bowling','?')} | Logit: {factors.get('squad_strength',{}).get('logit_contribution',0)}
+- Current Form (11%): {t1_short} score {factors.get('current_form',{}).get('team1_form_score','?')} ({factors.get('current_form',{}).get('team1_wins',0)}W) | {t2_short} score {factors.get('current_form',{}).get('team2_form_score','?')} ({factors.get('current_form',{}).get('team2_wins',0)}W) | Logit: {factors.get('current_form',{}).get('logit_contribution',0)}
+- Venue-Pitch Fit (8%): Pitch: {factors.get('venue_pitch',{}).get('pitch_type','?')}, Pace: {factors.get('venue_pitch',{}).get('pace_assist','?')}, Spin: {factors.get('venue_pitch',{}).get('spin_assist','?')} | Logit: {factors.get('venue_pitch',{}).get('logit_contribution',0)}
+- Home Ground Advantage (5%): Home side: {factors.get('home_ground_advantage',{}).get('home_team','neutral')} | Logit: {factors.get('home_ground_advantage',{}).get('logit_contribution',0)}
+- H2H (7%): {t1_short} {factors.get('h2h',{}).get('team1_wins',0)} wins / {t2_short} {factors.get('h2h',{}).get('team2_wins',0)} wins (total {factors.get('h2h',{}).get('total',0)}) | Logit: {factors.get('h2h',{}).get('logit_contribution',0)}
+- Toss Impact (7%): Time: {factors.get('toss_impact',{}).get('match_time_class','?')}, Dew: {factors.get('toss_impact',{}).get('dew_factor','none')}, Pref: {factors.get('toss_impact',{}).get('preferred_decision','?')} | Logit: {factors.get('toss_impact',{}).get('logit_contribution',0)}
+- Bowling Depth (5%): {t1_short} VQ:{factors.get('bowling_depth',{}).get('team1_venue_quality','?')} ({factors.get('bowling_depth',{}).get('team1_variety','?')}) | {t2_short} VQ:{factors.get('bowling_depth',{}).get('team2_venue_quality','?')} ({factors.get('bowling_depth',{}).get('team2_variety','?')}) | Logit: {factors.get('bowling_depth',{}).get('logit_contribution',0)}
+- Bowling Strength (6%): {t1_short} bowl {factors.get('bowling_strength',{}).get('team1_bowling_rating','?')} | {t2_short} bowl {factors.get('bowling_strength',{}).get('team2_bowling_rating','?')} | Logit: {factors.get('bowling_strength',{}).get('logit_contribution',0)}
+- Batting Depth (8%): Middle/lower-order resilience signal | Logit: {factors.get('batting_depth',{}).get('logit_contribution',0)}
+- Powerplay Performance (6%): First-6-overs bat+ball edge | Logit: {factors.get('powerplay_performance',{}).get('logit_contribution',0)}
+- Death Overs Performance (6%): Overs 16-20 execution edge | Logit: {factors.get('death_overs_performance',{}).get('logit_contribution',0)}
+- Key Players Availability (6%): XI availability risk edge | Logit: {factors.get('key_players_availability',{}).get('logit_contribution',0)}
+- All-rounder Depth (5%): Multi-skill bench/XI flexibility | Logit: {factors.get('allrounder_depth',{}).get('logit_contribution',0)}
+- Top Order Consistency (3%): Recent top-order stability edge | Logit: {factors.get('top_order_consistency',{}).get('logit_contribution',0)}
+- Conditions (4%): {factors.get('conditions',{}).get('conditions_edge_text','Neutral')} | Logit: {factors.get('conditions',{}).get('logit_contribution',0)}
+- Momentum (2%): {t1_short} last 2: {factors.get('momentum',{}).get('team1_last2',[])} | {t2_short} last 2: {factors.get('momentum',{}).get('team2_last2',[])} | Logit: {factors.get('momentum',{}).get('logit_contribution',0)}
 
 Top Performers (from form data):
 {t1_short}: {_format_top_performers(factors.get('current_form',{}).get('team1_top_performers',[]))}
@@ -936,6 +997,10 @@ Dew Factor: {impact.get('dew_factor', 'unknown')} | Cricket Impact: {impact.get(
         if news_lines:
             news_section = "\n=== LATEST NEWS ===\n" + "\n".join(news_lines) + "\n"
 
+    impact_block = format_impact_sub_history_for_prompt(
+        team1, team2, t1_short, t2_short, impact_sub_history
+    )
+
     chat = _get_claude_chat(
         f"deep-{uuid.uuid4().hex[:8]}",
         """You are an elite IPL cricket analyst and prediction engine. You produce structured, data-driven, layered match previews that combine live API data with deep contextual cricket intelligence. Your analysis is opinionated, precise, and built for serious cricket followers who want more than surface-level previews.
@@ -950,6 +1015,7 @@ ANALYTICAL PHILOSOPHY — NON-NEGOTIABLE RULES:
 7. Algorithm vs analyst tension is a feature. When your prediction diverges from the algorithm, explain why.
 8. Label all SportMonks data clearly with [SPORTMONKS DATA] tags.
 9. EXPECTED PLAYING XI is the only source of who is playing this match. Do not name franchise captains, marquee signings, or players from news unless they appear in those XI lists. If news or algorithm "top performers" mention someone not in the XI, ignore them for lineups and matchups. Injured or rested stars not in the XI must not be described as playing.
+10. When IMPACT PLAYER / NAMED SUBSTITUTE HISTORY is present, use it in Layer 7 (impact sub options): cite who has recently been the named sub and tie it to this match's demands. Do not treat substitution flag as proof they played; phrase as "named impact / bench sub on sheet."
 
 STYLE: Sharp, confident, direct. Short sentences. Zero hedging. Write for someone who watches every IPL game. Always name names — never "their opening bowler." Disagreeing with the algorithm is encouraged when contextual case is strong.
 
@@ -964,7 +1030,7 @@ Date: {date_str} | Time (IST): {time_ist}
 
 === EXPECTED PLAYING XIs [SPORTMONKS DATA] ===
 {squad_block}
-{perf_block}
+{impact_block}{perf_block}
 {algo_block}
 {h2h_block}
 {weather_block}
@@ -1033,7 +1099,7 @@ Return a JSON object with this EXACT structure:
     {{
       "layer_num": 7,
       "title": "IMPACT PLAYER OPTIONS",
-      "analysis": "Assess likely impact sub choices given pitch and match demands. Evaluate fit for this specific game. 2-4 sentences.",
+      "analysis": "Assess likely impact sub choices given pitch and match demands. If IMPACT PLAYER / NAMED SUBSTITUTE HISTORY is present, anchor on who has recently been the named sub (lineup substitution flag). Evaluate fit for this specific game. 2-4 sentences.",
       "advantage": "{t1_short}" or "{t2_short}",
       "advantage_reason": "One-line reason"
     }}
@@ -1097,6 +1163,7 @@ async def claude_live_analysis(
     squads: dict = None,
     sm_data: Optional[dict] = None,
     playing_xi_doc: Optional[dict] = None,
+    impact_sub_history: Optional[dict] = None,
 ) -> dict:
     """
     Claude Opus: Generate real-time analysis during a live match.
@@ -1147,6 +1214,8 @@ When an AUTHORITATIVE SPORTMONKS SNAPSHOT block is present, treat it as ground t
 
 OPENING BATSMEN: When an "OPENING PARTNERSHIPS" block is present, use its NOMINATED OPENERS line as the opening pair for that innings (Expected XI list order). Do NOT infer openers from the Playing XI block order below, from alphabetical listing, from generic IPL reputation, or by assuming the two current strikers are the openers (after wickets, a non-opener may be at the crease). The scorecard line shows SportMonks positions 1–2 for cross-check only.
 
+IMPACT SUBS: When "IMPACT PLAYER / NAMED SUBSTITUTE HISTORY" is present, use it for bench / impact-sub context (who has recently been the named sub on official lineups). It does not prove they entered the game.
+
 CRITICAL DATA CONSTRAINT: Only reference cricket data from 2023-2026. Do NOT cite any player stats, records, or historical performances from before 2023. Only reference players from the Expected Playing XI provided — these are the 11 players on the field, not the full squad."""
     )
 
@@ -1163,10 +1232,16 @@ Match phase: {phase_line}
     if opening_block:
         opening_block = opening_block + "\n\n"
 
+    impact_block = format_impact_sub_history_for_prompt(
+        team1, team2, t1_short, t2_short, impact_sub_history
+    )
+    if impact_block:
+        impact_block = impact_block + "\n"
+
     prompt = f"""Analyze this LIVE IPL 2026 match. Give me a real-time prediction update.
 
 {team1} ({t1_short}) vs {team2} ({t2_short})
-{sm_block}{opening_block}=== {team1} EXPECTED PLAYING XI ===
+{sm_block}{opening_block}{impact_block}=== {team1} EXPECTED PLAYING XI ===
 {squad1_text}
 
 === {team2} EXPECTED PLAYING XI ===
@@ -1454,6 +1529,14 @@ async def claude_sportmonks_prediction(sm_data: dict, algo_probs: dict, match_in
             t2_stats_lines.append(f"  {name} — No IPL 2026 stats available")
     t2_season_stats_text = "\n".join(t2_stats_lines) or "  No player stats available"
 
+    _ish = enrichment.get("impact_sub_history") if isinstance(enrichment, dict) else None
+    impact_sub_hist_text = format_impact_sub_history_for_prompt(
+        team1, team2, t1_short, t2_short, _ish if isinstance(_ish, dict) else None
+    )
+    impact_sub_hist_display = impact_sub_hist_text.strip() or (
+        "Not available for this request."
+    )
+
     # User context (gut feeling + betting odds + DLS)
     user_context_text = ""
     if gut_feeling and gut_feeling.strip():
@@ -1517,6 +1600,8 @@ Rule 6 — Toss scenarios must be mathematically consistent with venue data.
 Rule 7 — No cross-format stats as primary evidence. IPL and international T20 only.
 
 Rule 8 — Statistical anchor: Treat the PRE-GAME ensemble and full model JSON as a prior. Move section_10 win percentages more than ~12 points away from ensemble {t1_short} {round(algo_t1_pct, 1)}% only when the live scorecard or a confirmed XI fact clearly justifies it; otherwise stay close and express uncertainty in confidence, not arbitrary swings.
+
+Rule 9 — Impact / named subs: When IMPACT PLAYER / NAMED SUBSTITUTE HISTORY is present, use it for bench-sheet patterns (lineup substitution flag in last completed matches). It does not prove a player actually substituted into the game.
 
 FORMAT RULES:
 - All probabilities: whole numbers only. No ranges.
@@ -1599,6 +1684,9 @@ current runs/wickets/overs, CRR/RRR, who is batting/bowling and their figures, a
 
 === IPL 2026 STANDINGS ===
 {standings_text}
+
+=== IMPACT PLAYER / NAMED SUBSTITUTE HISTORY (SportMonks — last 4 completed IPL matches per team, lineup substitution flag) ===
+{impact_sub_hist_display}
 
 === PRE-GAME ENSEMBLE (team1 win % summary) ===
 {t1_short} {round(algo_t1_pct, 1)}% / {t2_short} {round(algo_t2_pct, 1)}%

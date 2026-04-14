@@ -66,6 +66,7 @@ from services.sportmonks_service import (
     fetch_h2h_record,
     fetch_team_standings,
     fetch_player_season_stats_for_xi,
+    fetch_team_impact_sub_history,
     format_livescore_entry_text,
 )
 from services.beta_prediction_engine import run_beta_prediction
@@ -1670,20 +1671,31 @@ async def refresh_claude_prediction(match_id: str, body: RefreshClaudeRequest = 
         standings_task = fetch_team_standings(2026)
         t1_stats_task = fetch_player_season_stats_for_xi(t1_xi, team1, 5) if t1_xi else _noop_list(t1_xi)
         t2_stats_task = fetch_player_season_stats_for_xi(t2_xi, team2, 5) if t2_xi else _noop_list(t2_xi)
+        impact_t1_task = fetch_team_impact_sub_history(team1, 4)
+        impact_t2_task = fetch_team_impact_sub_history(team2, 4)
 
-        venue_stats, h2h_record, standings, t1_enriched, t2_enriched = await _aio.gather(
+        venue_stats, h2h_record, standings, t1_enriched, t2_enriched, imp1, imp2 = await _aio.gather(
             venue_stats_task, h2h_task, standings_task, t1_stats_task, t2_stats_task,
+            impact_t1_task, impact_t2_task,
             return_exceptions=True
         )
         for name, val in [("venue_stats", venue_stats), ("h2h", h2h_record), ("standings", standings)]:
             if isinstance(val, Exception):
                 logger.warning(f"Refresh enrichment {name} failed: {val}")
+        if isinstance(imp1, Exception):
+            logger.warning(f"Refresh enrichment impact_sub team1 failed: {imp1}")
+        if isinstance(imp2, Exception):
+            logger.warning(f"Refresh enrichment impact_sub team2 failed: {imp2}")
         enrichment_data = {
             "venue_stats": venue_stats if not isinstance(venue_stats, Exception) else {},
             "h2h": h2h_record if not isinstance(h2h_record, Exception) else {},
             "standings": standings if not isinstance(standings, Exception) else [],
             "team1_enriched_xi": t1_enriched if not isinstance(t1_enriched, Exception) else t1_xi,
             "team2_enriched_xi": t2_enriched if not isinstance(t2_enriched, Exception) else t2_xi,
+            "impact_sub_history": {
+                "team1": imp1 if not isinstance(imp1, Exception) else {},
+                "team2": imp2 if not isinstance(imp2, Exception) else {},
+            },
         }
     except Exception as e:
         logger.error(f"Refresh enrichment failed: {e}")
@@ -3569,6 +3581,20 @@ async def api_claude_analysis(match_id: str, background_tasks: BackgroundTasks =
         algo_prediction, playing_xi_squads, team1, team2
     )
 
+    impact_sub_history = {"team1": {}, "team2": {}}
+    try:
+        h1, h2 = await asyncio.gather(
+            fetch_team_impact_sub_history(team1, 4),
+            fetch_team_impact_sub_history(team2, 4),
+            return_exceptions=True,
+        )
+        impact_sub_history = {
+            "team1": h1 if not isinstance(h1, Exception) else {"team": team1, "error": str(h1)},
+            "team2": h2 if not isinstance(h2, Exception) else {"team": team2, "error": str(h2)},
+        }
+    except Exception as e:
+        logger.warning(f"Impact sub history fetch for Claude pre-match failed: {e}")
+
     # ── 7. Run Claude 7-layer analysis ──
     analysis = await claude_deep_match_analysis(
         team1, team2, venue, match_info,
@@ -3578,6 +3604,7 @@ async def api_claude_analysis(match_id: str, background_tasks: BackgroundTasks =
         player_performance=player_performance,
         weather=weather,
         form_data=form_data,
+        impact_sub_history=impact_sub_history,
     )
 
     # Cache in DB
@@ -3597,6 +3624,10 @@ async def api_claude_analysis(match_id: str, background_tasks: BackgroundTasks =
             "has_weather": bool(weather and weather.get("available")),
             "has_form": bool(form_data),
             "has_news": bool(match_news),
+            "has_impact_sub_history": bool(
+                (impact_sub_history.get("team1") or {}).get("fixtures")
+                or (impact_sub_history.get("team2") or {}).get("fixtures")
+            ),
         }
     }
     await db.claude_analysis.update_one(
@@ -3662,6 +3693,23 @@ async def api_claude_live(match_id: str):
         xi_for_live = await db.playing_xi.find_one({"matchId": match_id}, {"_id": 0})
     except Exception:
         xi_for_live = None
+
+    impact_sub_history = {"team1": {}, "team2": {}}
+    try:
+        t1n = match_info.get("team1", "")
+        t2n = match_info.get("team2", "")
+        h1, h2 = await asyncio.gather(
+            fetch_team_impact_sub_history(t1n, 4),
+            fetch_team_impact_sub_history(t2n, 4),
+            return_exceptions=True,
+        )
+        impact_sub_history = {
+            "team1": h1 if not isinstance(h1, Exception) else {"team": t1n, "error": str(h1)},
+            "team2": h2 if not isinstance(h2, Exception) else {"team": t2n, "error": str(h2)},
+        }
+    except Exception as e:
+        logger.warning(f"Impact sub history for Claude live failed: {e}")
+
     analysis = await claude_live_analysis(
         match_info,
         live_data,
@@ -3669,6 +3717,7 @@ async def api_claude_live(match_id: str):
         squads=live_squads,
         sm_data=sm_data if isinstance(sm_data, dict) else None,
         playing_xi_doc=xi_for_live,
+        impact_sub_history=impact_sub_history,
     )
 
     return {
