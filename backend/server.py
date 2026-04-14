@@ -1550,6 +1550,7 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
         "weightedPrediction": weighted_pred,
         "combinedPrediction": combined_pred,
         "historicalPrediction": historical_pred,
+        "preMatchComputedAt": pre_match_cached.get("computed_at") if pre_match_cached else None,
         "momentum": calculate_momentum(ball_objects),
         "ballHistory": ball_objects,
         "batsmen": [
@@ -1802,6 +1803,8 @@ async def refresh_claude_prediction(match_id: str, body: RefreshClaudeRequest = 
     historical_pred = pre_match_cached.get("prediction", {}) if pre_match_cached else {}
     if historical_pred:
         cached["historicalPrediction"] = historical_pred
+    if pre_match_cached and pre_match_cached.get("computed_at"):
+        cached["preMatchComputedAt"] = pre_match_cached["computed_at"]
     if weighted_pred:
         cached["weightedPrediction"] = weighted_pred
         live_match_state[match_id] = cached
@@ -1835,6 +1838,7 @@ async def refresh_claude_prediction(match_id: str, body: RefreshClaudeRequest = 
         "weightedPrediction": weighted_pred,
         "combinedPrediction": combined_pred,
         "historicalPrediction": historical_pred,
+        "preMatchComputedAt": pre_match_cached.get("computed_at") if pre_match_cached else None,
         "probabilities": cached.get("probabilities", {}),
         "refreshedAt": datetime.now(timezone.utc).isoformat(),
     }
@@ -2340,6 +2344,24 @@ def _compute_live_prediction(result: Dict, match_info: Dict) -> Dict:
 
 
 
+async def _attach_pre_match_historical(match_id: str, payload: dict) -> None:
+    """Overlay historicalPrediction from pre_match_predictions (DB source of truth for pre-game model)."""
+    if not isinstance(payload, dict):
+        return
+    try:
+        pre = await db.pre_match_predictions.find_one({"matchId": match_id}, {"_id": 0})
+    except Exception:
+        return
+    if not pre:
+        return
+    pred = pre.get("prediction")
+    if isinstance(pred, dict) and pred:
+        payload["historicalPrediction"] = pred
+    ca = pre.get("computed_at")
+    if ca:
+        payload["preMatchComputedAt"] = ca
+
+
 @api_router.get("/matches/{match_id}/state")
 async def get_match_state(match_id: str):
     """Get last known state of a live match, always including schedule info."""
@@ -2352,6 +2374,7 @@ async def get_match_state(match_id: str):
             for key in ("city", "timeIST", "match_number", "series"):
                 if key in schedule_info and key not in result:
                     result[key] = schedule_info[key]
+        await _attach_pre_match_historical(match_id, result)
         return result
 
     cached = await db.live_snapshots.find_one({"matchId": match_id}, {"_id": 0})
@@ -2361,6 +2384,7 @@ async def get_match_state(match_id: str):
             for key in ("city", "timeIST", "match_number", "series"):
                 if key in schedule_info and key not in cached:
                     cached[key] = schedule_info[key]
+        await _attach_pre_match_historical(match_id, cached)
         return cached
 
     return {"matchId": match_id, "info": schedule_info, "noLiveData": True}
