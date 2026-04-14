@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import axios from "axios";
-import { Spinner, Scales, TrendUp, UsersThree, House, TrendDown, Minus, ArrowsClockwise, Target, CloudSun, Lightning, CoinVertical } from "@phosphor-icons/react";
+import { Spinner, Scales, TrendUp, UsersThree, House, TrendDown, Minus, ArrowsClockwise, Target, CloudSun, Lightning } from "@phosphor-icons/react";
 import InfoTooltip from "./InfoTooltip";
 import { API_BASE } from "@/lib/apiBase";
 
@@ -198,83 +198,92 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
         )}
       </div>
 
-      {/* Factor Breakdown — 8 Categories */}
+      {/* Factor Breakdown — 16 Categories */}
       <div>
         <div className="flex items-center justify-between mb-2">
-          <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold flex items-center gap-1">Factor Breakdown (8 Categories) <InfoTooltip text="Squad-based model. Squad (25%) + Form (21%) + Venue (18%) = 64% dominance. No web scraping." /></p>
+          <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold flex items-center gap-1">Factor Breakdown (16 Categories) <InfoTooltip text="All active backend factors are displayed. Toss is intentionally excluded from algorithm scoring." /></p>
         </div>
         <div className="flex items-center justify-between mb-1 px-1">
           <span className="text-[9px] font-bold uppercase tracking-wider text-[#007AFF]">{t1}</span>
           <span className="text-[9px] font-bold uppercase tracking-wider text-[#FF3B30]">{t2}</span>
         </div>
 
-        {/* Cat 1: Squad Strength (25%) */}
-        <FactorBar label="Squad Strength & Balance" weight={factors.squad_strength?.weight || 0.25} logit={factors.squad_strength?.logit_contribution || 0} icon={UsersThree}
-          tooltip="Player Impact Score (55% batting + 45% bowling) with balance penalty. Allrounders get 1.35x multiplier."
+        <FactorBar label="Batting Strength" weight={factors.batting_strength?.weight || 0.08} logit={factors.batting_strength?.logit_contribution || 0} icon={UsersThree}
+          tooltip="Top-order/core batting quality from expected XI ratings."
           team1={t1} team2={t2}
-          team1Detail={`Bat ${factors.squad_strength?.team1_batting || "?"} / Bowl ${factors.squad_strength?.team1_bowling || "?"} (Bal: ${factors.squad_strength?.team1_balance || "?"})`}
-          team2Detail={`Bat ${factors.squad_strength?.team2_batting || "?"} / Bowl ${factors.squad_strength?.team2_bowling || "?"} (Bal: ${factors.squad_strength?.team2_balance || "?"})`}
+          team1Detail={`Bat rating: ${factors.batting_strength?.team1_batting || "?"}`}
+          team2Detail={`Bat rating: ${factors.batting_strength?.team2_batting || "?"}`}
         />
-
-        {/* Cat 2: Current Form (21%) */}
-        <FactorBar label="Current Season Form" weight={factors.current_form?.weight || 0.21} logit={factors.current_form?.logit_contribution || 0} icon={TrendUp}
-          tooltip="IPL 2026 performance. Recency-weighted form score from completed matches. Sample-size damped."
+        <FactorBar label="Batting Depth" weight={factors.batting_depth?.weight || 0.08} logit={factors.batting_depth?.logit_contribution || 0} icon={UsersThree}
+          tooltip="Middle/lower-order depth from batting contributors."
           team1={t1} team2={t2}
-          team1Detail={`Score: ${factors.current_form?.team1_form_score || 50} | ${factors.current_form?.team1_wins || 0}W ${factors.current_form?.team1_matches_played || 0} played`}
-          team2Detail={`Score: ${factors.current_form?.team2_form_score || 50} | ${factors.current_form?.team2_wins || 0}W ${factors.current_form?.team2_matches_played || 0} played`}
+          team1Detail={`Raw logit: ${factors.batting_depth?.raw_logit ?? "0.000"}`}
+          team2Detail="Compared with opposition depth"
         />
-
-        {/* Cat 3: Venue + Home (18%) */}
-        <FactorBar label="Venue + Pitch + Home" weight={factors.venue_pitch_home?.weight || 0.18} logit={factors.venue_pitch_home?.logit_contribution || 0} icon={House}
-          tooltip={`Pitch: ${factors.venue_pitch_home?.pitch_type || "unknown"}. Avg 1st inn: ${factors.venue_pitch_home?.avg_first_innings || "?"}. Bat 1st win: ${factors.venue_pitch_home?.batting_first_win_pct || "?"}%. Pace: ${factors.venue_pitch_home?.pace_assist || "?"}. Spin: ${factors.venue_pitch_home?.spin_assist || "?"}.`}
+        <FactorBar label="Bowling Strength" weight={factors.bowling_strength?.weight || 0.08} logit={factors.bowling_strength?.logit_contribution || 0} icon={Target}
+          tooltip="Top-5 bowling quality from expected XI ratings."
           team1={t1} team2={t2}
-          team1Detail={factors.venue_pitch_home?.team1_home ? "HOME" : "Away"}
-          team2Detail={factors.venue_pitch_home?.team2_home ? "HOME" : "Away"}
+          team1Detail={`Bowl rating: ${factors.bowling_strength?.team1_bowling_rating || "?"}`}
+          team2Detail={`Bowl rating: ${factors.bowling_strength?.team2_bowling_rating || "?"}`}
         />
-        {factors.venue_pitch_home?.pitch_type && (
-          <div className="flex items-center justify-between text-[10px] -mt-1.5 mb-1.5 px-1">
-            <span className="text-[#007AFF]/80">{factors.venue_pitch_home?.pitch_type} | Avg {factors.venue_pitch_home?.avg_first_innings || "?"}</span>
-            <span className="text-[#A3A3A3]">Pace {factors.venue_pitch_home?.pace_assist} | Spin {factors.venue_pitch_home?.spin_assist}</span>
-          </div>
-        )}
-
-        {/* Cat 4: H2H (11%) */}
-        <FactorBar label="Head-to-Head" weight={factors.h2h?.weight || 0.11} logit={factors.h2h?.logit_contribution || 0} icon={Scales}
-          tooltip={`H2H from ${factors.h2h?.source === "historical_ipl" ? "IPL 2023-2025" : "IPL 2026 season"}. ${factors.h2h?.total || 0} total matches.`}
+        <FactorBar label="Bowling Depth" weight={factors.bowling_depth?.weight ?? 0.08} logit={factors.bowling_depth?.logit_contribution ?? 0} icon={Target}
+          tooltip={`Venue-weighted bowling quality. Pace assist: ${factors.bowling_depth?.venue_pace_assist ?? "?"}, Spin assist: ${factors.bowling_depth?.venue_spin_assist ?? "?"}`}
+          team1={t1} team2={t2}
+          team1Detail={`${factors.bowling_depth?.team1_bowler_count ?? "?"} bowlers (P${factors.bowling_depth?.team1_pace_count ?? 0} S${factors.bowling_depth?.team1_spin_count ?? 0})`}
+          team2Detail={`${factors.bowling_depth?.team2_bowler_count ?? "?"} bowlers (P${factors.bowling_depth?.team2_pace_count ?? 0} S${factors.bowling_depth?.team2_spin_count ?? 0})`}
+        />
+        <FactorBar label="All-rounder Strength" weight={factors.allrounder_strength?.weight || 0.08} logit={factors.allrounder_strength?.logit_contribution || 0} icon={Scales}
+          tooltip="Quality ceiling of all-rounders in XI."
+          team1={t1} team2={t2}
+          team1Detail={`AR strength: ${factors.allrounder_strength?.team1_allrounder_strength || "?"}`}
+          team2Detail={`AR strength: ${factors.allrounder_strength?.team2_allrounder_strength || "?"}`}
+        />
+        <FactorBar label="All-rounder Depth" weight={factors.allrounder_depth?.weight || 0.08} logit={factors.allrounder_depth?.logit_contribution || 0} icon={Scales}
+          tooltip="Count/flexibility of all-rounders in expected XI."
+          team1={t1} team2={t2}
+          team1Detail={`AR count: ${factors.allrounder_depth?.team1_allrounder_depth ?? "?"}`}
+          team2Detail={`AR count: ${factors.allrounder_depth?.team2_allrounder_depth ?? "?"}`}
+        />
+        <FactorBar label="Current Form" weight={factors.current_form?.weight || 0.08} logit={factors.current_form?.logit_contribution || 0} icon={TrendUp}
+          tooltip="IPL 2026 recency-weighted form from SportMonks."
+          team1={t1} team2={t2}
+          team1Detail={`Score: ${factors.current_form?.team1_form_score || 50} | ${factors.current_form?.team1_wins || 0}W`}
+          team2Detail={`Score: ${factors.current_form?.team2_form_score || 50} | ${factors.current_form?.team2_wins || 0}W`}
+        />
+        <FactorBar label="Venue Pitch Profile" weight={factors.venue_pitch?.weight || 0.08} logit={factors.venue_pitch?.logit_contribution || 0} icon={House}
+          tooltip={`Profile: ${factors.venue_pitch?.pitch_profile || "?"}. Pace ${factors.venue_pitch?.pace_assist || "?"}, Spin ${factors.venue_pitch?.spin_assist || "?"}.`}
+          team1={t1} team2={t2}
+          team1Detail={`Type: ${factors.venue_pitch?.pitch_type || "?"}`}
+          team2Detail={`Avg 1st inns: ${factors.venue_pitch?.avg_first_innings || "?"}`}
+        />
+        <FactorBar label="Home Ground Advantage" weight={factors.home_ground_advantage?.weight || 0.04} logit={factors.home_ground_advantage?.logit_contribution || 0} icon={House}
+          tooltip="Venue familiarity/home mapping."
+          team1={t1} team2={t2}
+          team1Detail={factors.home_ground_advantage?.team1_home ? "HOME" : "Away/Neutral"}
+          team2Detail={factors.home_ground_advantage?.team2_home ? "HOME" : "Away/Neutral"}
+        />
+        <FactorBar label="Head-to-Head" weight={factors.h2h?.weight || 0.065} logit={factors.h2h?.logit_contribution || 0} icon={Scales}
+          tooltip={`H2H source: ${factors.h2h?.source || "season_2026"}.`}
           team1={t1} team2={t2}
           team1Detail={`${factors.h2h?.team1_wins || 0} wins`}
           team2Detail={`${factors.h2h?.team2_wins || 0} wins (${factors.h2h?.total || 0} total)`}
         />
 
-        {/* Cat 5: Toss (9%) */}
-        <FactorBar label="Toss Impact (Venue)" weight={factors.toss_impact?.weight || 0.09} logit={factors.toss_impact?.logit_contribution || 0} icon={CoinVertical}
-          tooltip={factors.toss_impact?.dew_impact_text || `Venue toss data. Dew: ${factors.toss_impact?.dew_factor || "none"}.`}
-          team1={t1} team2={t2}
-          team1Detail={`${(factors.toss_impact?.match_time_class || (factors.toss_impact?.is_night ? "evening" : "day")).charAt(0).toUpperCase() + (factors.toss_impact?.match_time_class || (factors.toss_impact?.is_night ? "evening" : "day")).slice(1)} | Dew: ${factors.toss_impact?.dew_factor || "none"}`}
-          team2Detail={`Pref: ${factors.toss_impact?.preferred_decision || "?"} | Win%: ${Math.round((factors.toss_impact?.toss_win_pct || 0.5) * 100)}%`}
-        />
-        {factors.toss_impact?.dew_impact_text && (
-          <div className="flex items-center text-[9px] -mt-1.5 mb-1.5 px-1">
-            <span className={`${factors.toss_impact?.match_time_class === "afternoon" ? "text-[#FF9500]" : factors.toss_impact?.dew_factor === "heavy" ? "text-[#FF9500]" : factors.toss_impact?.dew_factor === "moderate" ? "text-[#FFCC00]/80" : "text-[#525252]"}`}>
-              {factors.toss_impact.dew_impact_text}
-            </span>
-          </div>
-        )}
+        <div className="text-[9px] text-[#737373] -mt-1 mb-1 px-1">
+          Toss is handled in Claude contextual analysis, not in algorithm score.
+        </div>
 
-        {/* Cat 6: Bowling Depth (8%) — use ?? so real0 counts are not shown as "?" */}
-        <FactorBar label="Bowling Depth & Balance" weight={factors.bowling_depth?.weight ?? 0.08} logit={factors.bowling_depth?.logit_contribution ?? 0} icon={Target}
-          tooltip={`Venue-weighted bowling quality. Pace assist: ${factors.bowling_depth?.venue_pace_assist ?? "?"}, Spin assist: ${factors.bowling_depth?.venue_spin_assist ?? "?"}`}
-          team1={t1} team2={t2}
-          team1Detail={`${factors.bowling_depth?.team1_bowler_count ?? "?"} bowlers (P${factors.bowling_depth?.team1_pace_count ?? 0} S${factors.bowling_depth?.team1_spin_count ?? 0}) VQ:${factors.bowling_depth?.team1_venue_quality ?? "?"}`}
-          team2Detail={`${factors.bowling_depth?.team2_bowler_count ?? "?"} bowlers (P${factors.bowling_depth?.team2_pace_count ?? 0} S${factors.bowling_depth?.team2_spin_count ?? 0}) VQ:${factors.bowling_depth?.team2_venue_quality ?? "?"}`}
-        />
-
-        {/* Cat 7: Conditions (5%) */}
         <FactorBar label="Conditions (Weather/Dew)" weight={factors.conditions?.weight || 0.05} logit={factors.conditions?.logit_contribution || 0} icon={CloudSun}
-          tooltip={factors.conditions?.conditions_edge_text || "Real-time weather data."}
+          tooltip={factors.conditions?.conditions_edge_text || "Real-time weather conditions."}
           team1={t1} team2={t2}
           team1Detail={`${factors.conditions?.condition || "?"} | ${factors.conditions?.temperature || "?"}C`}
           team2Detail={`Humidity: ${factors.conditions?.humidity || "?"}% | Dew: ${factors.conditions?.dew_factor || "none"}`}
+        />
+        <FactorBar label="Momentum (Last 2)" weight={factors.momentum?.weight || 0.035} logit={factors.momentum?.logit_contribution || 0} icon={Lightning}
+          tooltip="Last-2 results momentum."
+          team1={t1} team2={t2}
+          team1Detail={`Last 2: ${(factors.momentum?.team1_last2 || []).join(", ") || "N/A"}`}
+          team2Detail={`Last 2: ${(factors.momentum?.team2_last2 || []).join(", ") || "N/A"}`}
         />
         {factors.conditions?.conditions_edge_text && factors.conditions?.conditions_edge_text !== "Conditions relatively neutral for both teams" && (
           <div className="flex items-center text-[9px] -mt-1.5 mb-1.5 px-1">
@@ -284,12 +293,29 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
           </div>
         )}
 
-        {/* Cat 8: Momentum (3%) */}
-        <FactorBar label="Momentum (Last 2)" weight={factors.momentum?.weight || 0.03} logit={factors.momentum?.logit_contribution || 0} icon={Lightning}
-          tooltip="Last 2 match results (W/L). Real but small signal."
+        <FactorBar label="Powerplay Performance" weight={factors.powerplay_performance?.weight || 0.055} logit={factors.powerplay_performance?.logit_contribution || 0} icon={TrendUp}
+          tooltip="First-6-over profile strength."
           team1={t1} team2={t2}
-          team1Detail={`Last 2: ${(factors.momentum?.team1_last2 || []).join(", ") || "N/A"} (${factors.momentum?.team1_wins_last2 || 0}W)`}
-          team2Detail={`Last 2: ${(factors.momentum?.team2_last2 || []).join(", ") || "N/A"} (${factors.momentum?.team2_wins_last2 || 0}W)`}
+          team1Detail={`Raw: ${factors.powerplay_performance?.raw_logit ?? "0.000"}`}
+          team2Detail="Compared with opposition"
+        />
+        <FactorBar label="Death Overs Performance" weight={factors.death_overs_performance?.weight || 0.055} logit={factors.death_overs_performance?.logit_contribution || 0} icon={Target}
+          tooltip="Overs 16-20 specialist profile."
+          team1={t1} team2={t2}
+          team1Detail={`Raw: ${factors.death_overs_performance?.raw_logit ?? "0.000"}`}
+          team2Detail="Compared with opposition"
+        />
+        <FactorBar label="Key Players Availability" weight={factors.key_players_availability?.weight || 0.03} logit={factors.key_players_availability?.logit_contribution || 0} icon={UsersThree}
+          tooltip="Availability/injury flags from XI data."
+          team1={t1} team2={t2}
+          team1Detail={`Raw: ${factors.key_players_availability?.raw_logit ?? "0.000"}`}
+          team2Detail="Compared with opposition"
+        />
+        <FactorBar label="Top Order Consistency" weight={factors.top_order_consistency?.weight || 0.03} logit={factors.top_order_consistency?.logit_contribution || 0} icon={TrendUp}
+          tooltip="Top-order form consistency from performer scores."
+          team1={t1} team2={t2}
+          team1Detail={`Raw: ${factors.top_order_consistency?.raw_logit ?? "0.000"}`}
+          team2Detail="Compared with opposition"
         />
       </div>
 
