@@ -112,6 +112,8 @@ export default function LiveMatch() {
       weightedPrediction: res.weightedPrediction,
       combinedPrediction: res.combinedPrediction,
       probabilities: res.probabilities,
+      ...(res.historicalPrediction ? { historicalPrediction: res.historicalPrediction } : {}),
+      ...(res.preMatchComputedAt != null ? { preMatchComputedAt: res.preMatchComputedAt } : {}),
     }));
     if (res.probabilities) {
       setProbHistory((prev) => [...prev, res.probabilities].slice(-50));
@@ -673,20 +675,16 @@ export default function LiveMatch() {
                             </div>
                           </div>
 
-                          {/* Constant 16-factor historical snapshot */}
-                          {historicalPred?.factors && (
-                            <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2.5 space-y-1">
-                              <p className="text-[9px] text-[#FFCC00] uppercase mb-1">Historical 16 Factors (constant during live)</p>
-                              {Object.entries(historicalPred.factors).map(([k, v]) => (
-                                <div key={k} className="flex items-center justify-between text-[10px]">
-                                  <span className="text-[#737373]">{k.replace(/_/g, " ")}</span>
-                                  <span className="font-mono text-[#A3A3A3]">
-                                    w {(Number(v?.weight || 0) * 100).toFixed(1)}% | c {Number(v?.logit_contribution || 0).toFixed(3)}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          )}
+                          <div className="text-[9px] text-[#525252] mt-2 space-y-0.5">
+                            <p>
+                              Combined pre-match win chances from the stored prediction for this fixture (same document as pre-match page). Factor breakdown stays on the pre-match view.
+                            </p>
+                            {matchState?.preMatchComputedAt && (
+                              <p className="font-mono text-[#737373]">
+                                Pre-match computed: {matchState.preMatchComputedAt}
+                              </p>
+                            )}
+                          </div>
 
                           {/* Venue Profile */}
                           {weightedPred.venue_profile && (
