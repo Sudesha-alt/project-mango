@@ -104,15 +104,15 @@ export default function PreMatch() {
     const t2h = h2hT > 0 ? (100 * (f.h2h.team2_wins ?? 0)) / h2hT : 50;
     let v1 = 50;
     let v2 = 50;
-    if (f.venue_pitch_home?.team1_home) v1 += 8;
-    if (f.venue_pitch_home?.team2_home) v2 += 8;
-    const pl = Number(f.venue_pitch_home?.pitch_logit) || 0;
+    if (f.home_ground_advantage?.team1_home) v1 += 8;
+    if (f.home_ground_advantage?.team2_home) v2 += 8;
+    const pl = Number(f.venue_pitch?.pitch_logit) || 0;
     v1 = clampRadarPct(v1 + pl * 15);
     v2 = clampRadarPct(v2 - pl * 15);
     const bd1 = f.bowling_depth?.team1_depth_share_pct;
     const bd2 = f.bowling_depth?.team2_depth_share_pct;
-    const b1 = typeof bd1 === "number" ? bd1 : clampRadarPct(f.squad_strength?.team1_bowling ?? 50);
-    const b2 = typeof bd2 === "number" ? bd2 : clampRadarPct(f.squad_strength?.team2_bowling ?? 50);
+    const b1 = typeof bd1 === "number" ? bd1 : clampRadarPct(f.bowling_strength?.team1_bowling_rating ?? 50);
+    const b2 = typeof bd2 === "number" ? bd2 : clampRadarPct(f.bowling_strength?.team2_bowling_rating ?? 50);
     const n1 = 50 + Math.min(25, Math.max(-25, (Number(f.current_form?.team1_nrr) || 0) * 12));
     const n2 = 50 + Math.min(25, Math.max(-25, (Number(f.current_form?.team2_nrr) || 0) * 12));
     return [
@@ -120,7 +120,7 @@ export default function PreMatch() {
         form: clampRadarPct(f.current_form?.team1_form_score ?? 50),
         h2h: clampRadarPct(t1h),
         venue: clampRadarPct(v1),
-        batting: clampRadarPct(f.squad_strength?.team1_batting ?? 50),
+        batting: clampRadarPct(f.batting_strength?.team1_batting ?? 50),
         bowling: clampRadarPct(b1),
         nrr: clampRadarPct(n1),
       },
@@ -128,7 +128,7 @@ export default function PreMatch() {
         form: clampRadarPct(f.current_form?.team2_form_score ?? 50),
         h2h: clampRadarPct(t2h),
         venue: clampRadarPct(v2),
-        batting: clampRadarPct(f.squad_strength?.team2_batting ?? 50),
+        batting: clampRadarPct(f.batting_strength?.team2_batting ?? 50),
         bowling: clampRadarPct(b2),
         nrr: clampRadarPct(n2),
       },
@@ -170,7 +170,7 @@ export default function PreMatch() {
                 team2={t2Short}
               />
 
-              {/* Algorithm-Based Prediction (5-factor) */}
+              {/* Algorithm-Based Prediction (16-factor) */}
               <PreMatchPredictionBreakdown matchId={matchId} team1={t1Short} team2={t2Short} onDataUpdate={handleAlgoUpdate} />
 
               {/* Claude Opus Deep Analysis */}

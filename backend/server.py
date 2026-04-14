@@ -43,7 +43,7 @@ from services.ai_service import (
     gpt_consultation,
     resolve_tbd_venues,
     claude_deep_match_analysis, claude_live_analysis,
-    claude_sportmonks_prediction
+    claude_sportmonks_prediction, fetch_pre_match_stats, validate_factor_reasons_with_claude
 )
 from services.sportmonks_service import (
     fetch_live_match,
@@ -1518,7 +1518,8 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
     probs["source"] = "ensemble"
 
     pre_match_cached = await db.pre_match_predictions.find_one({"matchId": match_id}, {"_id": 0})
-    pre_match_prob = pre_match_cached.get("prediction", {}).get("team1_win_prob") if pre_match_cached else None
+    historical_pred = pre_match_cached.get("prediction", {}) if pre_match_cached else {}
+    pre_match_prob = historical_pred.get("team1_win_prob") if historical_pred else None
     cached_xi = pre_match_cached.get("playing_xi") if pre_match_cached else None
     weighted_pred = compute_live_prediction(
         sm_data, None, match_info,
@@ -1548,6 +1549,7 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
         "claudePrediction": claude_prediction,
         "weightedPrediction": weighted_pred,
         "combinedPrediction": combined_pred,
+        "historicalPrediction": historical_pred,
         "momentum": calculate_momentum(ball_objects),
         "ballHistory": ball_objects,
         "batsmen": [
@@ -1797,6 +1799,9 @@ async def refresh_claude_prediction(match_id: str, body: RefreshClaudeRequest = 
         xi_data=cached_xi,
         enrichment=enrichment_data,
     ) if sm_data else None
+    historical_pred = pre_match_cached.get("prediction", {}) if pre_match_cached else {}
+    if historical_pred:
+        cached["historicalPrediction"] = historical_pred
     if weighted_pred:
         cached["weightedPrediction"] = weighted_pred
         live_match_state[match_id] = cached
@@ -1829,6 +1834,7 @@ async def refresh_claude_prediction(match_id: str, body: RefreshClaudeRequest = 
         "claudePrediction": claude_prediction,
         "weightedPrediction": weighted_pred,
         "combinedPrediction": combined_pred,
+        "historicalPrediction": historical_pred,
         "probabilities": cached.get("probabilities", {}),
         "refreshedAt": datetime.now(timezone.utc).isoformat(),
     }
@@ -2583,7 +2589,14 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
         except Exception as e:
             logger.warning(f"Playing XI impact enrichment skipped: {e}")
 
-    # Run 8-category algorithm — squads are strictly the Playing XI rows above
+    # Web-search enrichment is consumed ONLY for PP/death/key-availability factors.
+    web_context = {}
+    try:
+        web_context = await fetch_pre_match_stats(team1, team2, venue)
+    except Exception as e:
+        logger.warning(f"Web context fetch skipped for {match_id}: {e}")
+
+    # Run pre-match algorithm — squads are strictly the Playing XI rows above
     prediction = compute_prediction(
         squad_data=prediction_squads,
         match_info=match_info,
@@ -2591,7 +2604,15 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
         form_data=form_data,
         momentum_data=momentum_data,
         player_performance=player_performance,
+        web_context=web_context,
     )
+    try:
+        prediction["factor_claude_validation"] = await validate_factor_reasons_with_claude(
+            t1_short, t2_short, prediction
+        )
+    except Exception as e:
+        logger.warning(f"Factor reason validation failed for {match_id}: {e}")
+        prediction["factor_claude_validation"] = {}
 
     # Compute odds direction vs previous prediction
     odds_direction = {"team1": "new", "team2": "new"}

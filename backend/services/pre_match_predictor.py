@@ -531,6 +531,117 @@ def _key_players_availability_logit(remapped_squads: dict) -> float:
     return 0.35 * diff
 
 
+def _normalize_name(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (name or "").lower())
+
+
+def _player_perf_row_for_name(team_perf: dict, player_name: str) -> dict:
+    if not team_perf or not player_name:
+        return {}
+    pnorm = _normalize_name(player_name)
+    for _, row in team_perf.items():
+        if not isinstance(row, dict):
+            continue
+        nm = row.get("name", "")
+        if not nm:
+            continue
+        nn = _normalize_name(nm)
+        if pnorm == nn or pnorm in nn or nn in pnorm:
+            return row
+    return {}
+
+
+def _activity_points_from_perf(perf_row: dict) -> float:
+    if not perf_row:
+        return 0.0
+    bat = perf_row.get("batting", {}) or {}
+    bowl = perf_row.get("bowling", {}) or {}
+    runs = float(bat.get("runs", 0) or 0)
+    sr = float(bat.get("sr", 0) or 0)
+    wickets = float(bowl.get("wickets", 0) or 0)
+    econ = float(bowl.get("economy", 12) or 12)
+    matches = float(perf_row.get("matches", 0) or 0)
+    run_pts = 0.28 * runs
+    sr_bonus = max(0.0, sr - 120.0) * 0.10
+    wkt_pts = 18.0 * wickets
+    econ_bonus = max(0.0, 8.5 - econ) * 8.0
+    match_bonus = min(10.0, matches * 1.4)
+    return max(0.0, min(160.0, run_pts + sr_bonus + wkt_pts + econ_bonus + match_bonus))
+
+
+def _team_xi_activity_sum(team_players: list, team_perf: dict) -> float:
+    total = 0.0
+    for p in team_players or []:
+        row = _player_perf_row_for_name(team_perf or {}, p.get("name", ""))
+        total += _activity_points_from_perf(row)
+    return total
+
+
+def _allrounder_activity_indices(remapped_squads: dict, player_performance: dict) -> Tuple[float, float, float, float]:
+    def team_vals(team_key: str) -> Tuple[float, float]:
+        players = remapped_squads.get(team_key, []) or []
+        perf = player_performance.get(team_key, {}) if isinstance(player_performance, dict) else {}
+        ars = []
+        depth = 0.0
+        for p in players:
+            if (p.get("role") or "").strip() != "All-rounder":
+                continue
+            depth += 1.0
+            rt = _effective_player_rating(p.get("name", ""))
+            prow = _player_perf_row_for_name(perf, p.get("name", ""))
+            ap = _activity_points_from_perf(prow)
+            ars.append(0.65 * rt + 0.35 * min(100.0, ap))
+            if prow:
+                depth += 0.35  # reward actively used all-rounders in season sample
+        strength = sum(sorted(ars, reverse=True)[:3]) / min(3, max(1, len(ars))) if ars else 50.0
+        return strength, depth
+
+    t1s, t1d = team_vals("team1")
+    t2s, t2d = team_vals("team2")
+    return t1s, t2s, t1d, t2d
+
+
+def _powerplay_performance_logit_from_web(web_context: dict) -> Optional[float]:
+    pp = (web_context or {}).get("powerplay") or {}
+    try:
+        t1_runs = float(pp.get("team1_avg_pp_score"))
+        t2_runs = float(pp.get("team2_avg_pp_score"))
+        t1_wk = float(pp.get("team1_avg_pp_wickets_lost"))
+        t2_wk = float(pp.get("team2_avg_pp_wickets_lost"))
+    except (TypeError, ValueError):
+        return None
+    t1 = (t1_runs / 60.0) - (t1_wk / 4.0)
+    t2 = (t2_runs / 60.0) - (t2_wk / 4.0)
+    return 2.8 * (t1 - t2)
+
+
+def _death_overs_performance_logit_from_web(web_context: dict) -> Optional[float]:
+    d = (web_context or {}).get("death_overs") or {}
+    try:
+        t1s = float(d.get("team1_avg_death_score"))
+        t1c = float(d.get("team1_avg_death_conceded"))
+        t2s = float(d.get("team2_avg_death_score"))
+        t2c = float(d.get("team2_avg_death_conceded"))
+    except (TypeError, ValueError):
+        return None
+    t1 = (t1s - t1c) / 30.0
+    t2 = (t2s - t2c) / 30.0
+    return 2.6 * (t1 - t2)
+
+
+def _key_players_availability_logit_from_web(web_context: dict) -> Optional[float]:
+    inj = (web_context or {}).get("injuries") or {}
+    t1 = inj.get("team1_injuries") or []
+    t2 = inj.get("team2_injuries") or []
+    try:
+        t1_impact = sum(float(x.get("impact_score", 0) or 0) for x in t1 if isinstance(x, dict))
+        t2_impact = sum(float(x.get("impact_score", 0) or 0) for x in t2 if isinstance(x, dict))
+    except (TypeError, ValueError):
+        return None
+    # More impact lost on team2 should favor team1 (positive logit)
+    return 0.08 * (t2_impact - t1_impact)
+
+
 def _top_order_consistency_logit(form_data: dict) -> float:
     """Lower spread in top-3 form_score among top_performers → higher consistency index."""
 
@@ -697,7 +808,8 @@ def _team_label(team_key: str, team1: str, team2: str) -> str:
 
 def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
                         weather: Dict = None, form_data: Dict = None,
-                        momentum_data: Dict = None, player_performance: Dict = None) -> Dict:
+                        momentum_data: Dict = None, player_performance: Dict = None,
+                        web_context: Dict = None) -> Dict:
     """
     16-Category Pre-Match Prediction Engine (The Lucky 11, IPL 2026).
     NO web scraping. All data from DB squads, SportMonks API, or weather API.
@@ -710,6 +822,7 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
     form_data = form_data or {}
     momentum_data = momentum_data or {}
     player_performance = player_performance or {}
+    web_context = web_context or {}
 
     team1 = match_info.get("team1", "")
     team2 = match_info.get("team2", "")
@@ -790,11 +903,26 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
     batting_strength_logit = _batting_strength_logit(t1_rating, t2_rating)
     batting_depth_logit = _batting_depth_logit(remapped_squads)
     bowling_strength_logit = _bowling_strength_logit(remapped_squads)
+    t1_ar_strength_act, t2_ar_strength_act, t1_ar_depth_act, t2_ar_depth_act = _allrounder_activity_indices(
+        remapped_squads, player_performance
+    )
+    t1_rating["allrounder_strength"] = round(t1_ar_strength_act, 1)
+    t2_rating["allrounder_strength"] = round(t2_ar_strength_act, 1)
+    t1_rating["allrounder_depth"] = round(max(float(t1_rating.get("allrounder_depth", 0)), t1_ar_depth_act), 2)
+    t2_rating["allrounder_depth"] = round(max(float(t2_rating.get("allrounder_depth", 0)), t2_ar_depth_act), 2)
     allrounder_depth_logit = _allrounder_depth_logit(t1_rating, t2_rating)
     allrounder_strength_logit = _allrounder_strength_logit(t1_rating, t2_rating)
-    powerplay_logit = _powerplay_performance_logit(remapped_squads)
-    death_overs_logit = _death_overs_performance_logit(remapped_squads)
-    key_avail_logit = _key_players_availability_logit(remapped_squads)
+
+    # These three factors consume web-search context when available, fallback to deterministic XI proxy.
+    powerplay_logit = _powerplay_performance_logit_from_web(web_context)
+    if powerplay_logit is None:
+        powerplay_logit = _powerplay_performance_logit(remapped_squads)
+    death_overs_logit = _death_overs_performance_logit_from_web(web_context)
+    if death_overs_logit is None:
+        death_overs_logit = _death_overs_performance_logit(remapped_squads)
+    key_avail_logit = _key_players_availability_logit_from_web(web_context)
+    if key_avail_logit is None:
+        key_avail_logit = _key_players_availability_logit(remapped_squads)
 
     # ━━━━━━ Category 2: Current Season Form — SportMonks API (21%) ━━━━━━
     t1_form = form_data.get("team1", {})
@@ -805,7 +933,18 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
     t2_matches_played = t2_form.get("matches_played", 0)
     min_matches = min(t1_matches_played, t2_matches_played)
     form_damping = min(1.0, min_matches / 3.0) if min_matches > 0 else 0.3
-    form_logit = 3.5 * ((t1_form_score - t2_form_score) / 100) * form_damping
+    # Current form = sum of current-season player activity points for expected XI when available.
+    if remapped_squads.get("team1") and remapped_squads.get("team2") and isinstance(player_performance, dict):
+        t1_form_points = _team_xi_activity_sum(remapped_squads.get("team1", []), player_performance.get("team1", {}))
+        t2_form_points = _team_xi_activity_sum(remapped_squads.get("team2", []), player_performance.get("team2", {}))
+        if (t1_form_points + t2_form_points) > 0:
+            t1_form_score = round(t1_form_points, 1)
+            t2_form_score = round(t2_form_points, 1)
+            form_logit = 3.0 * ((t1_form_points - t2_form_points) / max(t1_form_points + t2_form_points, 1.0))
+        else:
+            form_logit = 3.5 * ((t1_form_score - t2_form_score) / 100) * form_damping
+    else:
+        form_logit = 3.5 * ((t1_form_score - t2_form_score) / 100) * form_damping
 
     # ━━━━━━ Category 3: Venue + Pitch + Home Advantage ━━━━━━
     is_t1_home = _is_home(team1, venue_key) if venue_key else False
