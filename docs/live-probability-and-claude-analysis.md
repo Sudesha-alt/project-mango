@@ -1,6 +1,6 @@
-# Live win probability, decay (α×H+L), phase weighting, and Claude analysis
+# Live win probability, historical score, phase weighting, and Claude analysis
 
-This document describes how **live match probabilities** are produced in Project Mango, how the **alpha-decay (historical × live) model** works, how **phase-based weighting** blends algorithmic and Claude outputs, and what each **Claude** path does. It is aligned with the current backend implementation (`probability_engine.py`, `live_predictor.py`, `ai_service.py`, `server.py`).
+This document describes how **live match probabilities** are produced in Project Mango, how the **historical structural model (H)** works, how **phase-based weighting** blends algorithmic and Claude outputs, and what each **Claude** path does. It is aligned with the current backend implementation (`probability_engine.py`, `live_predictor.py`, `ai_service.py`, `server.py`).
 
 ---
 
@@ -9,7 +9,7 @@ This document describes how **live match probabilities** are produced in Project
 | Layer | Where it lives | Typical field in response | Role |
 |--------|----------------|----------------------------|------|
 | **A. Four-algorithm ensemble** | `services/probability_engine.py` → `ensemble_probability` | `probabilities.ensemble` (0–1), plus `pressure_index`, `dls_resource`, `bayesian`, `monte_carlo` | Scorecard-only statistical blend (no LLM). |
-| **B. Alpha-decay H×L** | `services/live_predictor.py` → `compute_live_prediction` | `weightedPrediction` | Mixes **pre-match structure** (H) with a **six-factor live model** (L); weight on H **decays** as balls are bowled. |
+| **B. Historical structural H** | `services/live_predictor.py` → `compute_live_prediction` | `weightedPrediction` | Uses the **pre-match structural score** (H) only; no alpha decay and no live six-factor blend in this layer. |
 | **C. Phase-weighted Claude blend** | `live_predictor.py` → `compute_combined_prediction` | `combinedPrediction` | After refresh, blends **B** with Claude’s **team1 win %**, with weights that depend on **match phase**; optional gut feeling and market odds slots. |
 
 **Fetch live scores** (`POST /matches/{match_id}/fetch-live`) runs **A** and **B** (B without Claude: `claude_prediction=None`). It does **not** call Claude Opus.
@@ -65,56 +65,21 @@ ensemble = 0.25 × pressure_index
 
 ---
 
-## 3. Layer B — Alpha decay: H × H + (1−α) × L (`compute_live_prediction`)
+## 3. Layer B — Historical structural score H (`compute_live_prediction`)
 
 **Entry:** `compute_live_prediction(sm_data, claude_prediction, match_info, pre_match_prob, xi_data, enrichment)` in `live_predictor.py`.
 
 ### 3.1 Core formula
 
 ```text
-P(team1) = α × H + (1 − α) × L_team1
+P(team1) = H
 ```
 
-- **H** — **Historical / structural** team1-centric score in **[0, 1]** (see §3.3).  
-- **L** — **Live** score in **[0, 1]** from the **batting team’s** perspective (see §3.4); then mapped to **`L_team1`** by flipping if the batting team is not team1.  
-- **α** — **Decay weight** on H; **decreases** as the match progresses so **live state dominates** late (see §3.2).
+- **H** — **Historical / structural** team1-centric score in **[0, 1]** (see §3.2).
 
 Final display: `team1_pct` and `team2_pct` in **[1, 99]** (integer-ish tenths).
 
-### 3.2 Alpha (decay analysis)
-
-**Function:** `compute_alpha(total_balls_bowled, innings)`.
-
-- **`total_balls_bowled`:**  
-  - Innings 1: balls in current innings.  
-  - Innings 2: **120 +** balls in 2nd innings (full first innings assumed120 balls).
-
-**Innings 1**
-
-```text
-progress = min(1, total_balls_bowled / 120)
-α = 0.85 − 0.65 × progress
-```
-
-- Start of match: **α �� 0.85** (heavy weight on pre-match structure).  
-- End of 1st innings: **α → 0.20**.
-
-**Innings 2**
-
-```text
-inn2_balls = max(0, total_balls_bowled − 120)
-progress = min(1, inn2_balls / 120)
-α = 0.20 − 0.15 × progress
-```
-
-- Start of chase: **α = 0.20**.  
-- End of match: **α → 0.05**.
-
-**Global clamp:** `α ∈ [0.05, 0.85]`.
-
-So **“decay analysis”** here means: **trust pre-match / structural factors less and less** as balls are bowled; by the late chase, **at most 5%** of the blend is still H.
-
-### 3.3 H — Historical / structural factors (team1-centric)
+### 3.2 H — Historical / structural factors (team1-centric)
 
 ```text
 H = 0.22 × squad_strength
@@ -130,27 +95,7 @@ H = 0.22 × squad_strength
 | **h2h, venue, form, toss** | `build_historical_factors_from_enrichment` using SportMonks **H2H**, **venue bat-first win %**, **standings win rates**, and **toss winner** heuristic (team1 gets ~0.58 if they won toss, ~0.42 if team2 won, else 0.5). |
 | **Overrides** | If Claude’s JSON includes `historical_factors`, `merge_historical_factors` **overrides** those keys with Claude’s normalized values. |
 
-### 3.4 L — Six-factor live model (then mapped to team1)
-
-Weights:
-
-```text
-L = 0.30 × score_vs_par
-  + 0.25 × wickets_in_hand
-  + 0.15 × recent_over_rate
-  + 0.15 × bowlers_remaining
-  + 0.10 × pre_match_base
-  + 0.05 × match_situation_context
-```
-
-- **score_vs_par:** 2nd innings — CRR vs **required** RRR (sigmoid); 1st innings — runs vs **venue-scaled par curve** `_get_venue_par_at_over`.  
-- **wickets_in_hand:** Wickets left, with phase-dependent exponent; extra penalty in high-RRR death if few wickets left.  
-- **recent_over_rate:** Last **12** balls vs phase-specific target RPO; damped if recent wickets in that window.  
-- **bowlers_remaining:** Depth from `bowling_card` / `yet_to_bowl` and active bowler economy nudge.  
-- **pre_match_base:** Prefer **`claude_prediction.team1_win_pct`** if present; else **`pre_match_prob`** from DB; else 0.5.  
-- **match_situation_context:** New batter / death RRR pressure / last-6 momentum heuristics.
-
-**Perspective:** `L` is for the **batting team**; if the batting team is team2, **`L_team1 = 1 − L`**.
+The model intentionally excludes the live six-factor blend from this layer; live adaptation happens in the Claude layer and the phase-weighted combiner.
 
 ---
 
@@ -238,7 +183,7 @@ If either is present, **algo and Claude weights are scaled by `(1 − gut_weight
 
 ## 7. Auxiliary: `live_prediction` on fetch-live
 
-**`_compute_live_prediction`** builds a **human-facing summary** (phase, CRR, RRR, chase difficulty, batsmen/bowler tags). Its **`win_probability`** field is **`probabilities.ensemble × 100`** — i.e. it tracks the **same scalar** as the four-model ensemble at fetch time, not the α×H+L or phase-weighted number, unless a refresh has already rewritten `ensemble`.
+**`_compute_live_prediction`** builds a **human-facing summary** (phase, CRR, RRR, chase difficulty, batsmen/bowler tags). Its **`win_probability`** field is **`probabilities.ensemble × 100`** — i.e. it tracks the **same scalar** as the four-model ensemble at fetch time, not the historical-only `H` score or phase-weighted number, unless a refresh has already rewritten `ensemble`.
 
 ---
 

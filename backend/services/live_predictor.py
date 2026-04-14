@@ -1,19 +1,10 @@
 """
-Live Match Prediction Engine — Alpha-Blended H×L Model + Phase-Based Weighting
+Live Match Prediction Engine — Historical Structural Score + Phase-Based Weighting
 
-Formula: P(win) = alpha × H + (1 - alpha) × L
+Historical model (team1 perspective):
+    H = 0.22 × Squad Strength + 0.10 × H2H + 0.28 × Venue + 0.25 × Form + 0.15 × Toss
 
-H = Historical/Structural factors (decays as match progresses):
-    0.22 × Squad Strength + 0.10 × H2H + 0.28 × Venue + 0.25 × Form + 0.15 × Toss
-
-L = Live factors (6-factor model):
-    0.30 × Score vs Par + 0.25 × Wickets + 0.15 × Recent Rate
-    + 0.15 × Bowlers Remaining + 0.10 × Pre-match Base + 0.05 × Context
-
-Alpha = Stage-aware non-linear decay:
-    Pre-game: 0.85 → End inn1: 0.20 → End inn2: 0.05
-
-Phase-Based Dynamic Weighting (Algorithm vs Claude):
+Phase-Based Dynamic Weighting (Historical vs Claude):
     Post-Toss:       Algo 70% / Claude 30%
     Mid 1st Innings:  Algo 40% / Claude 60%
     End 1st Innings:  Algo 20% / Claude 80%
@@ -76,25 +67,6 @@ def _get_venue_par_at_over(venue_par_20: int, overs: float) -> float:
         next_base = base_table.get(min(completed + 1, 20), 170)
         base += (next_base - base) * fraction
     return base * scale
-
-
-# ── Fix 1: Non-linear alpha curve ──
-def compute_alpha(balls_bowled_total: int, innings: int) -> float:
-    """
-    Research-calibrated alpha: historical weight drops fast once live data arrives.
-    Stage boundaries (total match balls):
-      0      = pre-game   -> alpha = 0.85
-      120    = end inn1   -> alpha = 0.20
-      240    = end inn2   -> alpha = 0.05
-    """
-    if innings == 1:
-        progress = min(1.0, balls_bowled_total / 120)
-        alpha = 0.85 - (0.65 * progress)
-    else:
-        inn2_balls = max(0, balls_bowled_total - 120)
-        progress = min(1.0, inn2_balls / 120)
-        alpha = 0.20 - (0.15 * progress)
-    return round(max(0.05, min(0.85, alpha)), 3)
 
 
 # ── Fix 3: Squad strength differential ──
@@ -242,13 +214,11 @@ def compute_live_prediction(sm_data: dict, claude_prediction: dict,
                             xi_data: Optional[dict] = None,
                             enrichment: Optional[Dict] = None) -> dict:
     """
-    Alpha-blended H×L Live Prediction.
+    Historical-only live prediction input (team1 perspective).
 
-    P(win) = alpha × H + (1-alpha) × L
+    P(win) = H
 
     H = 0.22×Squad + 0.10×H2H + 0.28×Venue + 0.25×Form + 0.15×Toss
-    L = 6-factor live model
-    Alpha = stage-aware non-linear decay (0.85 → 0.05)
 
     Claude's win % is passed directly as the pre-match base anchor and
     also blended into the final output via phase-based weighting.
@@ -278,19 +248,14 @@ def compute_live_prediction(sm_data: dict, claude_prediction: dict,
             target = None
 
     innings_balls_bowled = int(overs) * 6 + round((overs % 1) * 10)
+    total_balls_bowled = innings_balls_bowled if innings == 1 else (120 + innings_balls_bowled)
     innings_balls_remaining = max(0, 120 - innings_balls_bowled)
     wickets_remaining = max(0, 10 - wickets)
-
-    # Total match balls for alpha
-    total_balls_bowled = innings_balls_bowled if innings == 1 else (120 + innings_balls_bowled)
 
     # ── Fix 4: Venue-aware par scores ──
     venue = match_info.get("venue", "")
     venue_profile = get_venue_profile(venue)
     venue_par_20 = venue_profile["par"]
-
-    # ━━━━━━ Fix 1: Alpha (non-linear) ━━━━━━
-    alpha = compute_alpha(total_balls_bowled, innings)
 
     # ━━━━━━ H: Historical/Structural Factors ━━━━━━
     api_hf = build_historical_factors_from_enrichment(enrichment, match_info, sm_data)
@@ -311,149 +276,15 @@ def compute_live_prediction(sm_data: dict, claude_prediction: dict,
          + 0.25 * form_pct
          + 0.15 * toss_pct)
 
-    # ━━━━━━ L: Live Factors (6-Factor Model) ━━━━━━
-
-    # Factor 1: Score vs Par Score (30%) — venue-aware
-    if innings == 2 and target and target > 0:
-        runs_needed = max(0, target - runs)
-        if innings_balls_remaining > 0:
-            actual_rrr = (runs_needed / innings_balls_remaining) * 6
-        else:
-            actual_rrr = 99 if runs_needed > 0 else 0
-        if actual_rrr > 1e-6:
-            ratio = crr / actual_rrr
-        else:
-            ratio = 2.0 if runs_needed <= 0 else 0.0
-        ratio = max(0.0, min(ratio, 4.0))
-        score_vs_par = 1.0 / (1.0 + math.exp(-6 * (ratio - 1.0)))
-    else:
-        # 1st innings: compare score to venue-specific par
-        par = _get_venue_par_at_over(venue_par_20, overs) if overs > 0 else 1
-        if par > 0:
-            score_ratio = runs / par
-            score_vs_par = 1.0 / (1.0 + math.exp(-5 * (score_ratio - 1.0)))
-        else:
-            score_vs_par = 0.5
-
-    # Factor 2: Wickets in Hand (25%)
-    wick_ratio = wickets_remaining / 10
-    phase_factor = min(1.0, innings_balls_bowled / 72)
-    wickets_in_hand = wick_ratio ** (0.7 + 0.3 * phase_factor)
-    if innings == 2 and rrr and rrr > 10 and wickets_remaining <= 4:
-        wickets_in_hand *= max(0.2, wickets_remaining / 6)
-
-    # Factor 3: Recent Over Rate (15%)
-    last_12 = recent_balls[-12:] if recent_balls else []
-    recent_runs = 0
-    recent_wickets = 0
-    for b in last_12:
-        if isinstance(b, (int, float)):
-            recent_runs += b
-        elif isinstance(b, str):
-            if b.isdigit():
-                recent_runs += int(b)
-            elif b.upper() == "W":
-                recent_wickets += 1
-
-    if last_12:
-        recent_rpo = (recent_runs / len(last_12)) * 6
-        if innings == 2 and rrr and rrr > 0:
-            target_rpo = rrr
-        else:
-            if overs <= 6:
-                target_rpo = venue_par_20 / 20 * 0.85   # Powerplay: ~85% of avg RPO
-            elif overs <= 15:
-                target_rpo = venue_par_20 / 20 * 0.95   # Middle: ~95% of avg RPO
-            else:
-                target_rpo = venue_par_20 / 20 * 1.25    # Death: ~125% of avg RPO
-        ratio = recent_rpo / max(1, target_rpo)
-        recent_over_rate = 1.0 / (1.0 + math.exp(-4 * (ratio - 1.0)))
-        if recent_wickets >= 2:
-            recent_over_rate *= 0.5
-        elif recent_wickets == 1:
-            recent_over_rate *= 0.75
-    else:
-        recent_over_rate = 0.5
-
-    # Factor 4: Bowlers Remaining (15%)
-    bowling_card = sm_data.get("bowling_card", [])
-    yet_to_bowl = sm_data.get("yet_to_bowl", [])
-    if bowling_card or yet_to_bowl:
-        bowlers_with_overs = 0
-        for bwl in bowling_card:
-            bowled = bwl.get("overs", 0) or 0
-            if bowled < 4:
-                bowlers_with_overs += 1
-        bowlers_with_overs += len(yet_to_bowl)
-        bowling_depth = min(1.0, bowlers_with_overs / 5)
-        bowlers_remaining = 1.0 - (bowling_depth * 0.6 + 0.2)
-        if active_bowler:
-            econ = active_bowler.get("economy", 8) or 8
-            if econ > 10:
-                bowlers_remaining = min(1.0, bowlers_remaining + 0.15)
-            elif econ < 6:
-                bowlers_remaining = max(0, bowlers_remaining - 0.15)
-    else:
-        bowlers_remaining = 0.5
-
-    # Factor 5: Pre-match Base Probability (10%)
-    # Prefer the algo+claude adjusted probability (contextual adjustment applied)
+    # Keep for transparency/diagnostics in response payload.
     claude_t1_pct = None
     if claude_prediction and not claude_prediction.get("error"):
         claude_t1_pct = claude_prediction.get("team1_win_pct")
         if claude_t1_pct is not None:
             claude_t1_pct = float(claude_t1_pct)
 
-    if claude_t1_pct is not None:
-        pre_match_base = max(0.01, min(0.99, claude_t1_pct / 100))
-    elif pre_match_prob is not None:
-        pre_match_base = max(0, min(1.0, pre_match_prob / 100))
-    else:
-        pre_match_base = 0.5
-
-    # Factor 6: Match Situation Context (5%)
-    context_score = 0.5
-    if active_batsmen:
-        min_balls = min((bat.get("balls", 0) or 0) for bat in active_batsmen)
-        if min_balls < 3:
-            context_score -= 0.15
-        elif min_balls < 8:
-            context_score -= 0.08
-
-    if innings == 2 and overs >= 15 and rrr and rrr > 10:
-        context_score -= 0.10
-    elif innings == 1 and overs >= 15 and crr > 10:
-        context_score += 0.10
-
-    last_6 = recent_balls[-6:] if recent_balls else []
-    last6_runs = sum(int(b) if isinstance(b, str) and b.isdigit() else (b if isinstance(b, (int, float)) else 0) for b in last_6)
-    if last_6 and len(last_6) >= 4:
-        if last6_runs >= 12:
-            context_score += 0.10
-        elif last6_runs <= 3:
-            context_score -= 0.08
-    context_score = max(0, min(1.0, context_score))
-
-    # ━━━━━━ Compose L (from BATTING team's perspective) ━━━━━━
-    L = (0.30 * score_vs_par
-         + 0.25 * wickets_in_hand
-         + 0.15 * recent_over_rate
-         + 0.15 * bowlers_remaining
-         + 0.10 * pre_match_base
-         + 0.05 * context_score)
-
-    # ━━━━━━ Normalize L to team1's perspective ━━━━━━
-    team1 = match_info.get("team1", "Team A")
-    batting_team = sm_data.get("batting_team", team1)
-
-    if batting_team.lower() in team1.lower() or team1.lower() in batting_team.lower():
-        L_team1 = L
-    else:
-        L_team1 = 1.0 - L
-
-    # ━━━━━━ Final: alpha × H + (1-alpha) × L ━━━━━━
-    # H is already from team1's perspective (Claude historical factors are team1-centric)
-    final_score = (alpha * H + (1 - alpha) * L_team1) * 100
+    # ━━━━━━ Final: historical-only score (team1 perspective) ━━━━━━
+    final_score = H * 100
     final_score = round(max(1, min(99, final_score)), 1)
 
     team1_pct = final_score
@@ -465,12 +296,9 @@ def compute_live_prediction(sm_data: dict, claude_prediction: dict,
     return {
         "team1_pct": team1_pct,
         "team2_pct": team2_pct,
-        "alpha": alpha,
         "H": round(H, 4),
-        "L": round(L, 4),
-        "L_team1": round(L_team1, 4),
         "final_score": final_score,
-        "model": "alpha-HL-v2",
+        "model": "historical-only-v1",
         "claude_t1_pct_used": round(claude_t1_pct, 1) if claude_t1_pct is not None else None,
         "venue_profile": {
             "venue": venue,
@@ -484,14 +312,6 @@ def compute_live_prediction(sm_data: dict, claude_prediction: dict,
             "venue_win_pct": round(venue_pct, 3),
             "recent_form_pct": round(form_pct, 3),
             "toss_advantage_pct": round(toss_pct, 3),
-        },
-        "L_breakdown": {
-            "score_vs_par": round(score_vs_par, 3),
-            "wickets_in_hand": round(wickets_in_hand, 3),
-            "recent_over_rate": round(recent_over_rate, 3),
-            "bowlers_remaining": round(bowlers_remaining, 3),
-            "pre_match_base": round(pre_match_base, 3),
-            "match_situation_context": round(context_score, 3),
         },
         "live_context": {
             "active_batsmen": active_bat_names,

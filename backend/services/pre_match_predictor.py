@@ -1,23 +1,14 @@
 """
 Pre-Match Prediction Engine — The Lucky 11 (IPL 2026)
-8-Category Model (Matchups & Injuries REMOVED per user request)
+16-Category Model — logit sum → sigmoid → team1 win %
 
-Category                                Weight
-1. Current Squad Strength and Balance    25%
-2. Current Season Form (SportMonks)      21%
-3. Venue and Pitch Profile + Home Adv    18%
-4. Head-to-Head (recency-weighted)       11%
-5. Toss Impact (venue-specific)           9%
-6. Bowling Attack Depth and Balance       8%
-7. Conditions (weather-based, dew)        5%
-8. Team Momentum (last 2 matches W/L)    3%
+Weights sum to 1.0. Categories combine structural squad data, SportMonks form,
+venue/pitch, toss/weather, and phase-specific proxies (PP/death) where data allows.
 
 Design Principles:
 - NO web scraping. All data from DB squads, SportMonks API, or weather API.
-- Squad data ONLY from ipl_squads collection (user-provided rosters).
-- Current form from SportMonks last 15 matches.
-- Conditions from real-time Open-Meteo weather data.
-- Momentum from last 2 match results (W/L).
+- Squad data from ipl_squads / Expected XI paths.
+- New factors use deterministic rules; missing data → neutral logit 0.
 """
 import math
 import re
@@ -27,16 +18,26 @@ from typing import Dict, Optional, Tuple, List
 
 logger = logging.getLogger(__name__)
 
-# ── Weights (8 categories, sum = 1.0) ──
+# ── Weights (16 categories, sum = 1.0) ──
+# Rationale: core strength+form remain largest; venue split into pitch vs home;
+# bowling split depth vs quality; PP/death/depth/consistency capture phase edges.
 WEIGHTS = {
-    "squad_strength": 0.25,
-    "current_form": 0.21,
-    "venue_pitch_home": 0.18,
-    "h2h": 0.11,
-    "toss_impact": 0.09,
-    "bowling_depth": 0.08,
-    "conditions": 0.05,
-    "momentum": 0.03,
+    "squad_strength": 0.11,
+    "current_form": 0.11,
+    "venue_pitch": 0.08,
+    "home_ground_advantage": 0.05,
+    "h2h": 0.07,
+    "toss_impact": 0.07,
+    "bowling_depth": 0.05,
+    "bowling_strength": 0.06,
+    "conditions": 0.04,
+    "momentum": 0.02,
+    "batting_depth": 0.08,
+    "powerplay_performance": 0.06,
+    "death_overs_performance": 0.06,
+    "key_players_availability": 0.06,
+    "allrounder_depth": 0.05,
+    "top_order_consistency": 0.03,
 }
 
 # ── Toss Lookup (from user-provided venue-specific data) ──
@@ -324,14 +325,22 @@ BAT_ROLES_DEW = frozenset({"Batsman", "Wicketkeeper", "WK-Batsman", "All-rounder
 
 # Short labels for overall favourite explanation (weighted driver)
 FACTOR_SUMMARY_PHRASES = {
-    "squad_strength": "squad depth and balance",
+    "squad_strength": "overall XI strength and balance",
     "current_form": "recent league form",
-    "venue_pitch_home": "venue, pitch fit, and home advantage",
+    "venue_pitch": "pitch/venue bowling mix fit",
+    "home_ground_advantage": "home ground familiarity",
     "h2h": "head-to-head record",
-    "toss_impact": "evening dew and chase dynamics at this ground",
-    "bowling_depth": "bowling depth matched to this venue",
-    "conditions": "match-day weather and conditions",
-    "momentum": "momentum from the last two games",
+    "toss_impact": "toss, dew, and chase dynamics",
+    "bowling_depth": "attack depth for this venue",
+    "bowling_strength": "top-end bowling quality",
+    "conditions": "match-day weather",
+    "momentum": "last-two-results momentum",
+    "batting_depth": "middle and lower-order batting depth",
+    "powerplay_performance": "powerplay batting/bowling profile",
+    "death_overs_performance": "death overs specialists",
+    "key_players_availability": "key player availability in the XI",
+    "allrounder_depth": "all-rounder count and quality",
+    "top_order_consistency": "top-order scoring consistency",
 }
 
 # Bowler type classification for conditions matching
@@ -378,6 +387,163 @@ def _match_venue(venue_str: str) -> Optional[str]:
 def _is_home(team_name: str, venue_key: str) -> bool:
     team_venues = HOME_GROUNDS.get(team_name.lower().strip(), [])
     return venue_key in team_venues if team_venues else False
+
+
+def _effective_player_rating(name: str) -> float:
+    return float(resolve_star_player_rating(name or ""))
+
+
+def _batting_depth_logit(remapped_squads: dict) -> float:
+    """7th–11th batting contributors by rating — middle/lower order depth."""
+
+    def tail_avg(players: list) -> float:
+        br = []
+        for p in players:
+            role = (p.get("role") or "").strip()
+            rw = ROLE_WEIGHTS.get(role, {"batting": 5, "bowling": 5})
+            if role == "All-rounder":
+                br.append(_effective_player_rating(p.get("name", "")))
+            elif rw["batting"] >= 6:
+                br.append(_effective_player_rating(p.get("name", "")))
+        br.sort(reverse=True)
+        tail = br[6:11] if len(br) > 6 else []
+        if not tail:
+            return 50.0
+        return sum(tail) / len(tail)
+
+    if not remapped_squads.get("team1") or not remapped_squads.get("team2"):
+        return 0.0
+    t1, t2 = tail_avg(remapped_squads["team1"]), tail_avg(remapped_squads["team2"])
+    return 2.5 * ((t1 - t2) / 100.0)
+
+
+def _bowling_strength_logit(remapped_squads: dict) -> float:
+    """Top-5 bowling rating average — quality separate from venue-weighted depth."""
+
+    def top5_bowl(players: list) -> float:
+        bowl_r = []
+        for p in players:
+            name = p.get("name", "")
+            role = (p.get("role") or "").strip()
+            rw = ROLE_WEIGHTS.get(role, {"batting": 5, "bowling": 5})
+            if rw["bowling"] >= 6 or _is_listed_primary_bowler(name):
+                bowl_r.append(_effective_player_rating(name))
+        bowl_r.sort(reverse=True)
+        top = bowl_r[:5]
+        if not top:
+            return 50.0
+        return sum(top) / len(top)
+
+    if not remapped_squads.get("team1") or not remapped_squads.get("team2"):
+        return 0.0
+    t1, t2 = top5_bowl(remapped_squads["team1"]), top5_bowl(remapped_squads["team2"])
+    return 3.0 * ((t1 - t2) / 100.0)
+
+
+def _allrounder_depth_logit(t1_rating: dict, t2_rating: dict) -> float:
+    a1 = float(t1_rating.get("allrounder_depth", 0))
+    a2 = float(t2_rating.get("allrounder_depth", 0))
+    tot = max(1.0, a1 + a2)
+    return 2.0 * ((a1 - a2) / tot)
+
+
+def _powerplay_performance_logit(remapped_squads: dict) -> float:
+    """Proxy: average rating of two strongest listed batters (PP batting profile)."""
+
+    def top2_bat(players: list) -> float:
+        bats = []
+        for p in players:
+            role = (p.get("role") or "").strip()
+            if role in BAT_ROLES_DEW:
+                bats.append(_effective_player_rating(p.get("name", "")))
+        bats.sort(reverse=True)
+        if not bats:
+            return 50.0
+        if len(bats) == 1:
+            return bats[0]
+        return (bats[0] + bats[1]) / 2
+
+    if not remapped_squads.get("team1") or not remapped_squads.get("team2"):
+        return 0.0
+    t1, t2 = top2_bat(remapped_squads["team1"]), top2_bat(remapped_squads["team2"])
+    return 2.0 * ((t1 - t2) / 100.0)
+
+
+def _death_overs_performance_logit(remapped_squads: dict) -> float:
+    """Proxy: blend top-3 bowler ratings with top-3 finisher batting ratings."""
+
+    def death_idx(players: list) -> float:
+        bowlers = []
+        for p in players:
+            nm = p.get("name", "")
+            role = (p.get("role") or "").strip()
+            rw = ROLE_WEIGHTS.get(role, {"batting": 5, "bowling": 5})
+            if rw["bowling"] >= 6 or nm in PACE_BOWLERS or nm in SPIN_BOWLERS:
+                bowlers.append(_effective_player_rating(nm))
+        bowlers.sort(reverse=True)
+        bavg = sum(bowlers[:3]) / min(3, max(len(bowlers), 1)) if bowlers else 50.0
+        bats = []
+        for p in players:
+            role = (p.get("role") or "").strip()
+            if role in BAT_ROLES_DEW:
+                bats.append(_effective_player_rating(p.get("name", "")))
+        bats.sort(reverse=True)
+        favg = sum(bats[:3]) / min(3, max(len(bats), 1)) if bats else 50.0
+        return 0.55 * bavg + 0.45 * favg
+
+    if not remapped_squads.get("team1") or not remapped_squads.get("team2"):
+        return 0.0
+    t1, t2 = death_idx(remapped_squads["team1"]), death_idx(remapped_squads["team2"])
+    return 2.2 * ((t1 - t2) / 100.0)
+
+
+def _key_players_availability_logit(remapped_squads: dict) -> float:
+    """XI rows may set available=False or injury_status out/doubtful — tilts toward healthier side."""
+
+    def issues(players: list) -> float:
+        n = 0.0
+        for pl in players:
+            if pl.get("available") is False:
+                n += 1.0
+            st = (pl.get("injury_status") or pl.get("status") or "").lower()
+            if st in ("out", "injured", "doubtful", "unavailable"):
+                n += 1.0
+        return n
+
+    if not remapped_squads.get("team1") or not remapped_squads.get("team2"):
+        return 0.0
+    diff = issues(remapped_squads["team2"]) - issues(remapped_squads["team1"])
+    return 0.35 * diff
+
+
+def _top_order_consistency_logit(form_data: dict) -> float:
+    """Lower spread in top-3 form_score among top_performers → higher consistency index."""
+
+    def consistency(team_key: str) -> float:
+        tp = (form_data.get(team_key) or {}).get("top_performers") or []
+        scores = []
+        for x in tp[:5]:
+            if not isinstance(x, dict):
+                continue
+            s = x.get("form_score")
+            if s is None:
+                continue
+            try:
+                scores.append(float(s))
+            except (TypeError, ValueError):
+                continue
+        if len(scores) < 2:
+            return 50.0
+        top3 = sorted(scores, reverse=True)[:3]
+        if len(top3) < 2:
+            return 50.0
+        mean = sum(top3) / len(top3)
+        var = sum((x - mean) ** 2 for x in top3) / len(top3)
+        return max(0.0, min(100.0, 100.0 - min(40.0, var * 2.0)))
+
+    t1c = consistency("team1")
+    t2c = consistency("team2")
+    return 1.8 * ((t1c - t2c) / 100.0)
 
 
 def _favours_from_logit(logit: float, eps: float = 0.015) -> str:
@@ -619,12 +785,12 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
     balance_bonus = 3.0 * balance_diff
     squad_logit = raw_squad_logit + balance_bonus
 
-    # Restore original STAR_PLAYERS ratings
-    for name, orig in original_ratings.items():
-        if orig is not None:
-            STAR_PLAYERS[name] = orig
-        else:
-            STAR_PLAYERS.pop(name, None)
+    batting_depth_logit = _batting_depth_logit(remapped_squads)
+    bowling_strength_logit = _bowling_strength_logit(remapped_squads)
+    allrounder_depth_logit = _allrounder_depth_logit(t1_rating, t2_rating)
+    powerplay_logit = _powerplay_performance_logit(remapped_squads)
+    death_overs_logit = _death_overs_performance_logit(remapped_squads)
+    key_avail_logit = _key_players_availability_logit(remapped_squads)
 
     # ━━━━━━ Category 2: Current Season Form — SportMonks API (21%) ━━━━━━
     t1_form = form_data.get("team1", {})
@@ -640,14 +806,14 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
     # ━━━━━━ Category 3: Venue + Pitch + Home Advantage (18%) ━━━━━━
     is_t1_home = _is_home(team1, venue_key) if venue_key else False
     is_t2_home = _is_home(team2, venue_key) if venue_key else False
-    home_logit = 0.0
+    home_ground_logit = 0.0
     if is_t1_home:
-        home_logit = 0.45
+        home_ground_logit = 0.45
     elif is_t2_home:
-        home_logit = -0.45
+        home_ground_logit = -0.45
 
     # Pitch-based advantage: compare team bowling strength vs venue pitch type
-    pitch_logit = 0.0
+    venue_pitch_logit = 0.0
     venue_info = TOSS_LOOKUP.get(venue_key, {}) if venue_key else {}
     pitch_type = venue_info.get("pitch_type", "balanced")
     avg_first_innings = venue_info.get("avg_first_innings", 170)
@@ -678,9 +844,7 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
         t1_pitch_fit = t1_pace * pace_assist + t1_spin * spin_assist
         t2_pitch_fit = t2_pace * pace_assist + t2_spin * spin_assist
         if t1_pitch_fit + t2_pitch_fit > 0:
-            pitch_logit = 2.0 * ((t1_pitch_fit - t2_pitch_fit) / max(t1_pitch_fit + t2_pitch_fit, 1))
-
-    venue_logit = home_logit + pitch_logit
+            venue_pitch_logit = 2.0 * ((t1_pitch_fit - t2_pitch_fit) / max(t1_pitch_fit + t2_pitch_fit, 1))
 
     # ━━━━━━ Category 4: Head-to-Head (11%) ━━━━━━
     h2h = form_data.get("h2h", {})
@@ -732,17 +896,33 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
     if abs(win_diff) == 2:
         momentum_logit *= 1.3  # 2-0 streak is more impactful than just additive
 
-    # ━━━━━━ Combined ━━━━━━
+    top_order_consistency_logit = _top_order_consistency_logit(form_data)
+
+    for name, orig in original_ratings.items():
+        if orig is not None:
+            STAR_PLAYERS[name] = orig
+        else:
+            STAR_PLAYERS.pop(name, None)
+
     combined_logit = (
-        WEIGHTS["squad_strength"]  * squad_logit +
-        WEIGHTS["current_form"]    * form_logit +
-        WEIGHTS["venue_pitch_home"] * venue_logit +
-        WEIGHTS["h2h"]            * h2h_logit +
-        WEIGHTS["toss_impact"]    * toss_logit +
-        WEIGHTS["bowling_depth"]  * bowl_depth_logit +
-        WEIGHTS["conditions"]     * conditions_logit +
-        WEIGHTS["momentum"]       * momentum_logit
+        WEIGHTS["squad_strength"] * squad_logit
+        + WEIGHTS["current_form"] * form_logit
+        + WEIGHTS["venue_pitch"] * venue_pitch_logit
+        + WEIGHTS["home_ground_advantage"] * home_ground_logit
+        + WEIGHTS["h2h"] * h2h_logit
+        + WEIGHTS["toss_impact"] * toss_logit
+        + WEIGHTS["bowling_depth"] * bowl_depth_logit
+        + WEIGHTS["bowling_strength"] * bowling_strength_logit
+        + WEIGHTS["conditions"] * conditions_logit
+        + WEIGHTS["momentum"] * momentum_logit
+        + WEIGHTS["batting_depth"] * batting_depth_logit
+        + WEIGHTS["powerplay_performance"] * powerplay_logit
+        + WEIGHTS["death_overs_performance"] * death_overs_logit
+        + WEIGHTS["key_players_availability"] * key_avail_logit
+        + WEIGHTS["allrounder_depth"] * allrounder_depth_logit
+        + WEIGHTS["top_order_consistency"] * top_order_consistency_logit
     )
+
 
     raw_probability = 1.0 / (1.0 + math.exp(-combined_logit))
     team1_win_prob = round(raw_probability * 100, 1)
@@ -760,12 +940,20 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
     raw_logits = {
         "squad_strength": squad_logit,
         "current_form": form_logit,
-        "venue_pitch_home": venue_logit,
+        "venue_pitch": venue_pitch_logit,
+        "home_ground_advantage": home_ground_logit,
         "h2h": h2h_logit,
         "toss_impact": toss_logit,
         "bowling_depth": bowl_depth_logit,
+        "bowling_strength": bowling_strength_logit,
         "conditions": conditions_logit,
         "momentum": momentum_logit,
+        "batting_depth": batting_depth_logit,
+        "powerplay_performance": powerplay_logit,
+        "death_overs_performance": death_overs_logit,
+        "key_players_availability": key_avail_logit,
+        "allrounder_depth": allrounder_depth_logit,
+        "top_order_consistency": top_order_consistency_logit,
     }
     weighted_contribs = {k: WEIGHTS[k] * raw_logits[k] for k in WEIGHTS}
     is_t1_fav = team1_win_prob >= 50.0
@@ -792,11 +980,17 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
     def _named(key: str) -> str:
         return _team_label(key, team1 or "Team 1", team2 or "Team 2")
 
-    vph_f = _favours_from_logit(venue_logit)
-    vph_line = (
-        f"{_named(vph_f)} — home/pitch fit at this venue."
-        if vph_f != "neutral"
-        else "Venue, pitch mix, and home advantage net out close to even."
+    vp_f = _favours_from_logit(venue_pitch_logit)
+    vp_line = (
+        f"{_named(vp_f)} — bowling mix fits this pitch profile."
+        if vp_f != "neutral"
+        else "Pitch/bowling mix is close to even between attacks."
+    )
+    hg_f = _favours_from_logit(home_ground_logit)
+    hg_line = (
+        f"{_named(hg_f)} — home-ground edge at this venue."
+        if hg_f != "neutral"
+        else "No single home-ground advantage in the schedule mapping."
     )
     h2h_f = _favours_from_logit(h2h_logit)
     if total_h2h > 0:
@@ -857,27 +1051,78 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
         else "Recent league form is neck-and-neck."
     )
 
+    bdepth_f = _favours_from_logit(batting_depth_logit)
+    bdepth_line = (
+        f"{_named(bdepth_f)} — stronger middle/lower order on paper."
+        if bdepth_f != "neutral"
+        else "Batting depth through the order is comparable."
+    )
+    bstr_f = _favours_from_logit(bowling_strength_logit)
+    bstr_line = (
+        f"{_named(bstr_f)} — higher top-end bowling quality."
+        if bstr_f != "neutral"
+        else "Top bowling quality is evenly matched."
+    )
+    pp_f = _favours_from_logit(powerplay_logit)
+    pp_line = (
+        f"{_named(pp_f)} — stronger powerplay batting profile."
+        if pp_f != "neutral"
+        else "Powerplay batting profiles are even."
+    )
+    death_f = _favours_from_logit(death_overs_logit)
+    death_line = (
+        f"{_named(death_f)} — better death-overs specialist mix."
+        if death_f != "neutral"
+        else "Death overs profiles are balanced."
+    )
+    ka_f = _favours_from_logit(key_avail_logit)
+    ka_line = (
+        f"{_named(ka_f)} — fewer flagged availability issues in the XI."
+        if ka_f != "neutral"
+        else "No meaningful availability flags on either XI."
+    )
+    ar_f = _favours_from_logit(allrounder_depth_logit)
+    ar_line = (
+        f"{_named(ar_f)} — more all-round options in the squad."
+        if ar_f != "neutral"
+        else "All-rounder depth is similar."
+    )
+    toc_f = _favours_from_logit(top_order_consistency_logit)
+    toc_line = (
+        f"{_named(toc_f)} — more consistent top-order form scores."
+        if toc_f != "neutral"
+        else "Top-order consistency is even from recent performer data."
+    )
+
     return {
         "team1_win_prob": team1_win_prob,
         "team2_win_prob": team2_win_prob,
         "confidence": confidence,
         "raw_probability": round(raw_probability, 4),
         "combined_logit": round(combined_logit, 4),
-        "model": "8-category-v2",
+        "model": "16-category-v1",
         "favourite_team": "team1" if is_t1_fav else "team2",
         "favourite_one_liner": favourite_one_liner,
-        "factor_one_liners": {
+               "factor_one_liners": {
             "squad_strength": {"favours": squad_f, "one_liner": squad_line},
             "current_form": {"favours": form_f, "one_liner": form_line},
-            "venue_pitch_home": {"favours": vph_f, "one_liner": vph_line},
+            "venue_pitch": {"favours": vp_f, "one_liner": vp_line},
+            "home_ground_advantage": {"favours": hg_f, "one_liner": hg_line},
             "h2h": {"favours": h2h_f, "one_liner": h2h_line},
             "toss_impact": {"favours": toss_f, "one_liner": toss_line},
             "bowling_depth": {"favours": bowl_f, "one_liner": bowl_line},
+            "bowling_strength": {"favours": bstr_f, "one_liner": bstr_line},
             "conditions": {
                 "favours": cond_key if cond_key in ("team1", "team2") else "neutral",
                 "one_liner": cond_line,
             },
             "momentum": {"favours": mom_f, "one_liner": momentum_line},
+            "batting_depth": {"favours": bdepth_f, "one_liner": bdepth_line},
+            "powerplay_performance": {"favours": pp_f, "one_liner": pp_line},
+            "death_overs_performance": {"favours": death_f, "one_liner": death_line},
+            "key_players_availability": {"favours": ka_f, "one_liner": ka_line},
+            "allrounder_depth": {"favours": ar_f, "one_liner": ar_line},
+            "top_order_consistency": {"favours": toc_f, "one_liner": toc_line},
         },
         "attribution": {
             "primary_driver_factor": driver_key,
@@ -921,9 +1166,9 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
                 "damping": round(form_damping, 2),
                 "has_player_stats": bool(player_performance),
             },
-            "venue_pitch_home": {
-                "weight": WEIGHTS["venue_pitch_home"],
-                "logit_contribution": round(WEIGHTS["venue_pitch_home"] * venue_logit, 4),
+            "venue_pitch": {
+                "weight": WEIGHTS["venue_pitch"],
+                "logit_contribution": round(WEIGHTS["venue_pitch"] * venue_pitch_logit, 4),
                 "venue": venue_str,
                 "venue_key": venue_key,
                 "pitch_type": pitch_type,
@@ -931,11 +1176,17 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
                 "batting_first_win_pct": round(batting_first_win_pct * 100, 1),
                 "pace_assist": pace_assist,
                 "spin_assist": spin_assist,
+                "pitch_logit": round(pitch_logit, 3),
+                "raw_logit": round(venue_pitch_logit, 3),
+            },
+            "home_ground_advantage": {
+                "weight": WEIGHTS["home_ground_advantage"],
+                "logit_contribution": round(WEIGHTS["home_ground_advantage"] * home_ground_logit, 4),
                 "team1_home": is_t1_home,
                 "team2_home": is_t2_home,
                 "home_team": "team1" if is_t1_home else ("team2" if is_t2_home else "neutral"),
                 "home_logit": round(home_logit, 3),
-                "pitch_logit": round(pitch_logit, 3),
+                "raw_logit": round(home_ground_logit, 3),
             },
             "h2h": {
                 "weight": WEIGHTS["h2h"],
@@ -955,6 +1206,13 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
                 "logit_contribution": round(WEIGHTS["bowling_depth"] * bowl_depth_logit, 4),
                 **bowl_detail,
             },
+            "bowling_strength": {
+                "weight": WEIGHTS["bowling_strength"],
+                "logit_contribution": round(WEIGHTS["bowling_strength"] * bowling_strength_logit, 4),
+                "raw_logit": round(bowling_strength_logit, 4),
+                "team1_bowling_rating": t1_rating.get("bowling", 50),
+                "team2_bowling_rating": t2_rating.get("bowling", 50),
+            },
             "conditions": {
                 "weight": WEIGHTS["conditions"],
                 "logit_contribution": round(WEIGHTS["conditions"] * conditions_logit, 4),
@@ -969,6 +1227,38 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
                 "team2_wins_last2": t2_wins_last2,
                 "raw_logit": round(momentum_logit, 4),
                 "momentum_text": momentum_line,
+            },
+            "batting_depth": {
+                "weight": WEIGHTS["batting_depth"],
+                "logit_contribution": round(WEIGHTS["batting_depth"] * batting_depth_logit, 4),
+                "raw_logit": round(batting_depth_logit, 4),
+            },
+            "powerplay_performance": {
+                "weight": WEIGHTS["powerplay_performance"],
+                "logit_contribution": round(WEIGHTS["powerplay_performance"] * powerplay_logit, 4),
+                "raw_logit": round(powerplay_logit, 4),
+            },
+            "death_overs_performance": {
+                "weight": WEIGHTS["death_overs_performance"],
+                "logit_contribution": round(WEIGHTS["death_overs_performance"] * death_overs_logit, 4),
+                "raw_logit": round(death_overs_logit, 4),
+            },
+            "key_players_availability": {
+                "weight": WEIGHTS["key_players_availability"],
+                "logit_contribution": round(WEIGHTS["key_players_availability"] * key_avail_logit, 4),
+                "raw_logit": round(key_avail_logit, 4),
+            },
+            "allrounder_depth": {
+                "weight": WEIGHTS["allrounder_depth"],
+                "logit_contribution": round(WEIGHTS["allrounder_depth"] * allrounder_depth_logit, 4),
+                "raw_logit": round(allrounder_depth_logit, 4),
+                "team1_allrounder_depth": t1_rating.get("allrounder_depth", 0),
+                "team2_allrounder_depth": t2_rating.get("allrounder_depth", 0),
+            },
+            "top_order_consistency": {
+                "weight": WEIGHTS["top_order_consistency"],
+                "logit_contribution": round(WEIGHTS["top_order_consistency"] * top_order_consistency_logit, 4),
+                "raw_logit": round(top_order_consistency_logit, 4),
             },
         },
     }
