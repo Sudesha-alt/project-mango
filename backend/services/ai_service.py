@@ -248,6 +248,106 @@ async def _claude_json(prompt: str, system_msg: str = "You are a precise data pa
     return _extract_json(response)
 
 
+async def validate_factor_reasons_with_claude(
+    team1: str,
+    team2: str,
+    prediction: dict,
+) -> Dict[str, dict]:
+    """
+    Validate factor one-liners against numeric factor values using Claude.
+    If Claude marks a factor false, re-check that factor once and return corrected reason.
+    """
+    if not ANTHROPIC_KEY:
+        return {}
+    if not prediction:
+        return {}
+    factors = prediction.get("factors") or {}
+    lines = prediction.get("factor_one_liners") or {}
+    if not factors or not lines:
+        return {}
+
+    items = []
+    for k, f in factors.items():
+        if not isinstance(f, dict):
+            continue
+        l = lines.get(k) if isinstance(lines.get(k), dict) else {}
+        items.append(
+            {
+                "factor": k,
+                "weight": f.get("weight"),
+                "logit_contribution": f.get("logit_contribution"),
+                "raw_logit": f.get("raw_logit"),
+                "one_liner": l.get("one_liner", ""),
+                "favours": l.get("favours", "neutral"),
+            }
+        )
+    if not items:
+        return {}
+
+    async def _validate_once(batch: List[dict]) -> Dict[str, dict]:
+        prompt = f"""You are validating pre-match factor explanations.
+Team1={team1}, Team2={team2}
+
+For each factor below, judge whether one_liner is supported by numeric signals.
+Rules:
+- verdict = true if reason aligns with weight/logit sign/magnitude.
+- verdict = false if reason contradicts numbers or overstates edge.
+- reason must be 1 concise sentence.
+- if verdict=false, corrected_reason must be 1 sentence that matches numbers.
+Return JSON only:
+{{
+  "factors": [
+    {{"factor":"...", "verdict":"true|false", "reason":"...", "corrected_reason":"... or empty"}}
+  ]
+}}
+
+DATA:
+{json.dumps(batch, ensure_ascii=True)}
+"""
+        data = await _claude_json(prompt)
+        out = {}
+        for row in (data.get("factors") or []):
+            if not isinstance(row, dict):
+                continue
+            fk = row.get("factor")
+            if not fk:
+                continue
+            verdict = str(row.get("verdict", "true")).lower()
+            out[fk] = {
+                "verdict": "false" if verdict == "false" else "true",
+                "reason": str(row.get("reason", "")).strip(),
+                "corrected_reason": str(row.get("corrected_reason", "")).strip(),
+            }
+        return out
+
+    try:
+        first = await _validate_once(items)
+        false_keys = [k for k, v in first.items() if v.get("verdict") == "false"]
+        if false_keys:
+            second_input = [x for x in items if x.get("factor") in false_keys]
+            second = await _validate_once(second_input)
+            for k in false_keys:
+                if k in second:
+                    first[k] = second[k]
+        result = {}
+        for item in items:
+            fk = item["factor"]
+            row = first.get(fk, {})
+            verdict = row.get("verdict", "true")
+            reason = (
+                row.get("corrected_reason")
+                if verdict == "false" and row.get("corrected_reason")
+                else row.get("reason")
+            )
+            if not reason:
+                reason = item.get("one_liner", "")
+            result[fk] = {"verdict": verdict, "reason": reason}
+        return result
+    except Exception as e:
+        logger.warning(f"Claude factor validation skipped: {e}")
+        return {}
+
+
 # ─── Schedule & Squads ────────────────────────────────────────
 
 async def fetch_ipl_schedule():

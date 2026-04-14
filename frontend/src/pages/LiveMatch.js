@@ -230,6 +230,7 @@ export default function LiveMatch() {
   const livePred = matchState?.live_prediction;
   const weightedPred = matchState?.weightedPrediction ?? matchState?.weighted_prediction;
   const combinedPred = matchState?.combinedPrediction ?? matchState?.combined_prediction;
+  const historicalPred = matchState?.historicalPrediction ?? matchState?.historical_prediction;
 
   const rightTabs = [
     { key: "consult", label: "Consult" },
@@ -648,7 +649,7 @@ export default function LiveMatch() {
                         <div className="bg-[#141414] border border-[#007AFF]/30 rounded-md p-4 space-y-3" data-testid="weighted-prediction">
                           <div className="flex items-center justify-between">
                             <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-[#007AFF]" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>
-                              Decay combined prediction
+                              Historical Prediction (Constant)
                             </h4>
                             <button onClick={() => setShowFormula(!showFormula)} data-testid="formula-info-btn"
                               className="w-5 h-5 rounded-full border border-[#007AFF]/40 text-[#007AFF] text-[10px] font-bold flex items-center justify-center hover:bg-[#007AFF]/10 transition-colors">
@@ -660,77 +661,32 @@ export default function LiveMatch() {
                           <div className="grid grid-cols-2 gap-2">
                             <div className="bg-[#007AFF]/5 border border-[#007AFF]/20 rounded px-3 py-2.5 text-center">
                               <p className="text-[9px] text-[#007AFF]/70 uppercase">{t1Short}</p>
-                              <p className="text-2xl font-black font-mono text-[#007AFF]" style={{ fontFamily: "'Barlow Condensed'" }}>{weightedPred.team1_pct}%</p>
+                              <p className="text-2xl font-black font-mono text-[#007AFF]" style={{ fontFamily: "'Barlow Condensed'" }}>
+                                {(historicalPred?.team1_win_prob ?? weightedPred.team1_pct ?? 50)}%
+                              </p>
                             </div>
                             <div className="bg-[#007AFF]/5 border border-[#007AFF]/20 rounded px-3 py-2.5 text-center">
                               <p className="text-[9px] text-[#007AFF]/70 uppercase">{t2Short}</p>
-                              <p className="text-2xl font-black font-mono text-[#007AFF]" style={{ fontFamily: "'Barlow Condensed'" }}>{weightedPred.team2_pct}%</p>
+                              <p className="text-2xl font-black font-mono text-[#007AFF]" style={{ fontFamily: "'Barlow Condensed'" }}>
+                                {(historicalPred?.team2_win_prob ?? weightedPred.team2_pct ?? 50)}%
+                              </p>
                             </div>
                           </div>
 
-                          {/* Alpha × H + (1-alpha) × L Breakdown */}
-                          <div className="space-y-2">
-                            {/* Alpha / H / L summary */}
-                            <div className="grid grid-cols-3 gap-2 text-center">
-                              <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2">
-                                <p className="text-[8px] text-[#525252] uppercase">Alpha</p>
-                                <p className="text-sm font-black font-mono text-[#FFCC00]">{weightedPred.alpha}</p>
-                              </div>
-                              <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2">
-                                <p className="text-[8px] text-[#525252] uppercase">H (Historical)</p>
-                                <p className="text-sm font-black font-mono text-[#FFCC00]">{((weightedPred.H || 0) * 100).toFixed(1)}%</p>
-                              </div>
-                              <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2">
-                                <p className="text-[8px] text-[#525252] uppercase">L (Live)</p>
-                                <p className="text-sm font-black font-mono text-[#34C759]">{((weightedPred.L || 0) * 100).toFixed(1)}%</p>
-                              </div>
-                            </div>
-
-                            {/* H Breakdown */}
+                          {/* Constant 16-factor historical snapshot */}
+                          {historicalPred?.factors && (
                             <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2.5 space-y-1">
-                              <p className="text-[9px] text-[#FFCC00] uppercase mb-1">Historical Factors (H) — weight: {weightedPred.alpha}</p>
-                              {[
-                                { label: "Squad Strength", val: weightedPred.H_breakdown?.squad_strength, w: "0.22", color: "#007AFF" },
-                                { label: "Venue Win %", val: weightedPred.H_breakdown?.venue_win_pct, w: "0.28", color: "#34C759" },
-                                { label: "Recent Form", val: weightedPred.H_breakdown?.recent_form_pct, w: "0.25", color: "#34C759" },
-                                { label: "Toss Adv.", val: weightedPred.H_breakdown?.toss_advantage_pct, w: "0.15", color: "#A855F7" },
-                                { label: "H2H", val: weightedPred.H_breakdown?.h2h_win_pct, w: "0.10", color: "#FF9500" },
-                              ].map(f => (
-                                <div key={f.label} className="flex items-center justify-between text-[10px]">
-                                  <span className="text-[#737373]">{f.label} <span className="text-[#525252]">({f.w})</span></span>
-                                  <div className="flex items-center gap-2">
-                                    <div className="w-16 h-1 bg-[#1E1E1E] rounded-full overflow-hidden">
-                                      <div className="h-full rounded-full" style={{ width: `${(f.val || 0) * 100}%`, backgroundColor: f.color }} />
-                                    </div>
-                                    <span className="font-mono text-[#A3A3A3] w-10 text-right">{((f.val || 0) * 100).toFixed(0)}%</span>
-                                  </div>
+                              <p className="text-[9px] text-[#FFCC00] uppercase mb-1">Historical 16 Factors (constant during live)</p>
+                              {Object.entries(historicalPred.factors).map(([k, v]) => (
+                                <div key={k} className="flex items-center justify-between text-[10px]">
+                                  <span className="text-[#737373]">{k.replace(/_/g, " ")}</span>
+                                  <span className="font-mono text-[#A3A3A3]">
+                                    w {(Number(v?.weight || 0) * 100).toFixed(1)}% | c {Number(v?.logit_contribution || 0).toFixed(3)}
+                                  </span>
                                 </div>
                               ))}
                             </div>
-
-                            {/* L Breakdown */}
-                            <div className="bg-[#0A0A0A] border border-[#262626] rounded p-2.5 space-y-1" data-testid="live-factors-breakdown">
-                              <p className="text-[9px] text-[#34C759] uppercase mb-1">Live Factors (L) — weight: {(1 - (weightedPred.alpha || 0)).toFixed(3)}</p>
-                              {[
-                                { label: "Score vs Par", val: weightedPred.L_breakdown?.score_vs_par, w: "0.30", color: (weightedPred.L_breakdown?.score_vs_par || 0) < 0.3 ? "#FF3B30" : (weightedPred.L_breakdown?.score_vs_par || 0) < 0.6 ? "#FF9500" : "#34C759" },
-                                { label: "Wickets in Hand", val: weightedPred.L_breakdown?.wickets_in_hand, w: "0.25", color: (weightedPred.L_breakdown?.wickets_in_hand || 0) < 0.4 ? "#FF3B30" : "#34C759" },
-                                { label: "Recent Over Rate", val: weightedPred.L_breakdown?.recent_over_rate, w: "0.15", color: (weightedPred.L_breakdown?.recent_over_rate || 0) < 0.3 ? "#FF3B30" : "#34C759" },
-                                { label: "Bowlers Remaining", val: weightedPred.L_breakdown?.bowlers_remaining, w: "0.15", color: "#FFCC00" },
-                                { label: "Pre-match Base", val: weightedPred.L_breakdown?.pre_match_base, w: "0.10", color: "#007AFF" },
-                                { label: "Situation Context", val: weightedPred.L_breakdown?.match_situation_context, w: "0.05", color: "#A855F7" },
-                              ].map(f => (
-                                <div key={f.label} className="flex items-center justify-between text-[10px]">
-                                  <span className="text-[#737373]">{f.label} <span className="text-[#525252]">({f.w})</span></span>
-                                  <div className="flex items-center gap-2">
-                                    <div className="w-16 h-1 bg-[#1E1E1E] rounded-full overflow-hidden">
-                                      <div className="h-full rounded-full" style={{ width: `${(f.val || 0) * 100}%`, backgroundColor: f.color }} />
-                                    </div>
-                                    <span className="font-mono text-[#A3A3A3] w-10 text-right">{((f.val || 0) * 100).toFixed(0)}%</span>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
+                          )}
 
                           {/* Venue Profile */}
                           {weightedPred.venue_profile && (
@@ -791,11 +747,9 @@ export default function LiveMatch() {
                               <p className="text-xl font-black font-mono text-[#34C759]" style={{ fontFamily: "'Barlow Condensed'" }}>~{livePred.projected_score}</p>
                             </div>
                           )}
-                          {weightedPred?.claude_t1_pct_used != null && (
-                            <div className="text-[9px] text-[#525252] italic mt-1">
-                              Claude {t1Short} {weightedPred.claude_t1_pct_used}% fed as base anchor
-                            </div>
-                          )}
+                          <div className="text-[9px] text-[#525252] italic mt-1">
+                            Historical prediction remains fixed during the match; live adaptation is shown in phase-weighted and Claude blocks.
+                          </div>
                         </div>
                       )}
 
