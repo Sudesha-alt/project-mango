@@ -1607,6 +1607,8 @@ async def fetch_live_data(match_id: str, body: FetchLiveRequest = None):
 
 class RefreshClaudeRequest(BaseModel):
     dls_info: Optional[str] = None
+    gut_feeling: Optional[str] = None
+    current_betting_odds: Optional[float] = None
 
 @api_router.post("/matches/{match_id}/refresh-claude-prediction")
 async def refresh_claude_prediction(match_id: str, body: RefreshClaudeRequest = RefreshClaudeRequest()):
@@ -1703,9 +1705,13 @@ async def refresh_claude_prediction(match_id: str, body: RefreshClaudeRequest = 
     except Exception as e:
         logger.error(f"Refresh enrichment failed: {e}")
 
+    user_inputs = cached.get("userInputs", {}) if isinstance(cached, dict) else {}
     claude_prediction = await claude_sportmonks_prediction(
         sm_data, old_probs, match_info, squads=live_squads, weather=refresh_weather, news=refresh_news,
-        dls_info=body.dls_info, enrichment=enrichment_data
+        dls_info=body.dls_info,
+        gut_feeling=body.gut_feeling if body.gut_feeling is not None else user_inputs.get("gut_feeling"),
+        betting_odds_pct=body.current_betting_odds if body.current_betting_odds is not None else user_inputs.get("current_betting_odds"),
+        enrichment=enrichment_data
     )
 
     if claude_prediction and not claude_prediction.get("error"):
@@ -1895,7 +1901,13 @@ async def check_match_status(match_id: str):
         fetch_payload = await fetch_live_data(match_id, body)
         if isinstance(fetch_payload, dict) and not fetch_payload.get("error") and not fetch_payload.get("noLiveMatch"):
             try:
-                predictions_refreshed = await refresh_claude_prediction(match_id, RefreshClaudeRequest())
+                predictions_refreshed = await refresh_claude_prediction(
+                    match_id,
+                    RefreshClaudeRequest(
+                        gut_feeling=body.gut_feeling,
+                        current_betting_odds=body.current_betting_odds,
+                    ),
+                )
             except HTTPException as he:
                 predictions_refreshed = {"error": he.detail}
         else:

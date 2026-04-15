@@ -130,7 +130,11 @@ export default function LiveMatch() {
     }
     setClaudeAnalysisError(null);
     setRefreshingClaude(true);
-    const res = await refreshClaudePrediction(matchId, { dls_info: dlsInfo || null });
+    const res = await refreshClaudePrediction(matchId, {
+      dls_info: dlsInfo || null,
+      gut_feeling: gutFeeling || null,
+      current_betting_odds: currentBettingOdds ? parseFloat(currentBettingOdds) : null,
+    });
     setRefreshingClaude(false);
     if (applyClaudeRefreshResult(res)) {
       setClaudeAnalysisError(null);
@@ -144,7 +148,11 @@ export default function LiveMatch() {
   const handleRefreshClaude = async () => {
     setClaudeAnalysisError(null);
     setRefreshingClaude(true);
-    const res = await refreshClaudePrediction(matchId, { dls_info: dlsInfo || null });
+    const res = await refreshClaudePrediction(matchId, {
+      dls_info: dlsInfo || null,
+      gut_feeling: gutFeeling || null,
+      current_betting_odds: currentBettingOdds ? parseFloat(currentBettingOdds) : null,
+    });
     setRefreshingClaude(false);
     if (applyClaudeRefreshResult(res)) {
       setClaudeAnalysisError(null);
@@ -159,7 +167,11 @@ export default function LiveMatch() {
     await handleFetchLive();
 
     setRefreshingClaude(true);
-    const res = await refreshClaudePrediction(matchId, { dls_info: dlsInfo || null });
+    const res = await refreshClaudePrediction(matchId, {
+      dls_info: dlsInfo || null,
+      gut_feeling: gutFeeling || null,
+      current_betting_odds: currentBettingOdds ? parseFloat(currentBettingOdds) : null,
+    });
     setRefreshingClaude(false);
 
     if (applyClaudeRefreshResult(res)) {
