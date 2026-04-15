@@ -40,6 +40,7 @@ export default function LiveMatch() {
   const [currentBettingOdds, setCurrentBettingOdds] = useState("");
   const [dlsInfo, setDlsInfo] = useState("");
   const [claudeAnalysisError, setClaudeAnalysisError] = useState(null);
+  const [submittingInputs, setSubmittingInputs] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -129,7 +130,11 @@ export default function LiveMatch() {
     }
     setClaudeAnalysisError(null);
     setRefreshingClaude(true);
-    const res = await refreshClaudePrediction(matchId, { dls_info: dlsInfo || null });
+    const res = await refreshClaudePrediction(matchId, {
+      dls_info: dlsInfo || null,
+      gut_feeling: gutFeeling || null,
+      current_betting_odds: currentBettingOdds ? parseFloat(currentBettingOdds) : null,
+    });
     setRefreshingClaude(false);
     if (applyClaudeRefreshResult(res)) {
       setClaudeAnalysisError(null);
@@ -143,13 +148,38 @@ export default function LiveMatch() {
   const handleRefreshClaude = async () => {
     setClaudeAnalysisError(null);
     setRefreshingClaude(true);
-    const res = await refreshClaudePrediction(matchId, { dls_info: dlsInfo || null });
+    const res = await refreshClaudePrediction(matchId, {
+      dls_info: dlsInfo || null,
+      gut_feeling: gutFeeling || null,
+      current_betting_odds: currentBettingOdds ? parseFloat(currentBettingOdds) : null,
+    });
     setRefreshingClaude(false);
     if (applyClaudeRefreshResult(res)) {
       setClaudeAnalysisError(null);
     } else {
       setClaudeAnalysisError(res?.error || "Refresh failed.");
     }
+  };
+
+  const handleEnterInputs = async () => {
+    setClaudeAnalysisError(null);
+    setSubmittingInputs(true);
+    await handleFetchLive();
+
+    setRefreshingClaude(true);
+    const res = await refreshClaudePrediction(matchId, {
+      dls_info: dlsInfo || null,
+      gut_feeling: gutFeeling || null,
+      current_betting_odds: currentBettingOdds ? parseFloat(currentBettingOdds) : null,
+    });
+    setRefreshingClaude(false);
+
+    if (applyClaudeRefreshResult(res)) {
+      setClaudeAnalysisError(null);
+    } else {
+      setClaudeAnalysisError(res?.error || "Could not apply your input to Claude yet. Fetch scores and try Enter again.");
+    }
+    setSubmittingInputs(false);
   };
 
   const handleCheckStatus = async () => {
@@ -370,6 +400,15 @@ export default function LiveMatch() {
                         className="w-full bg-[#0A0A0A] border border-white/10 rounded px-3 py-2 text-xs text-white placeholder-[#525252] focus:border-[#007AFF]/50 focus:outline-none font-mono"
                       />
                     </div>
+                    <button
+                      type="button"
+                      onClick={handleEnterInputs}
+                      disabled={submittingInputs || fetchingLive || refreshingClaude}
+                      data-testid="enter-user-inputs-btn-prelive"
+                      className="w-full mt-1 bg-[#22C55E] text-black px-3 py-2 rounded-md text-xs font-bold uppercase tracking-wider hover:bg-[#16A34A] transition-colors disabled:opacity-50"
+                    >
+                      {(submittingInputs || fetchingLive || refreshingClaude) ? "Applying..." : "Enter"}
+                    </button>
                   </div>
                 </div>
               )}
@@ -599,7 +638,16 @@ export default function LiveMatch() {
                           className="w-full bg-[#0A0A0A] border border-white/10 rounded px-3 py-2 text-xs text-white placeholder-[#525252] focus:border-[#007AFF]/50 focus:outline-none font-mono"
                         />
                       </div>
-                      <p className="text-[9px] text-[#525252]">These inputs are passed to Claude and the phase-weighted blend. After editing, use Check status or Refresh Both.</p>
+                      <button
+                        type="button"
+                        onClick={handleEnterInputs}
+                        disabled={submittingInputs || fetchingLive || refreshingClaude}
+                        data-testid="enter-user-inputs-btn-live"
+                        className="w-full mt-1 bg-[#22C55E] text-black px-3 py-2 rounded-md text-xs font-bold uppercase tracking-wider hover:bg-[#16A34A] transition-colors disabled:opacity-50"
+                      >
+                        {(submittingInputs || fetchingLive || refreshingClaude) ? "Applying..." : "Enter"}
+                      </button>
+                      <p className="text-[9px] text-[#525252]">Enter saves your gut feeling + odds + DLS, then runs Claude with these user inputs.</p>
                     </div>
                   </div>
                 )}

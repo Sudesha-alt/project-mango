@@ -284,7 +284,14 @@ def compute_live_prediction(sm_data: dict, claude_prediction: dict,
             claude_t1_pct = float(claude_t1_pct)
 
     # ━━━━━━ Final: historical-only score (team1 perspective) ━━━━━━
-    final_score = H * 100
+    # Freeze historical baseline to stored pre-match value when available.
+    if pre_match_prob is not None:
+        try:
+            final_score = float(pre_match_prob)
+        except (TypeError, ValueError):
+            final_score = H * 100
+    else:
+        final_score = H * 100
     final_score = round(max(1, min(99, final_score)), 1)
 
     team1_pct = final_score
@@ -297,6 +304,7 @@ def compute_live_prediction(sm_data: dict, claude_prediction: dict,
         "team1_pct": team1_pct,
         "team2_pct": team2_pct,
         "H": round(H, 4),
+        "historical_base_t1_pct": round(float(pre_match_prob), 1) if pre_match_prob is not None else None,
         "final_score": final_score,
         "model": "historical-only-v1",
         "claude_t1_pct_used": round(claude_t1_pct, 1) if claude_t1_pct is not None else None,
@@ -393,6 +401,19 @@ def compute_combined_prediction(
     # Claude now provides adjusted team1_win_pct (algo baseline + contextual adjustment)
     claude_t1_pct = float(claude_pred.get("team1_win_pct", 50)) if claude_pred and not claude_pred.get("error") else 50.0
 
+    # Guardrail: prevent large narrative-only swings away from statistical anchor.
+    phase_max_delta = {
+        "pre_game": 12.0,
+        "mid_1st_inn": 15.0,
+        "end_1st_inn": 18.0,
+        "mid_2nd_inn": 22.0,
+        "late_game": 30.0,
+    }
+    max_delta = phase_max_delta.get(phase, 15.0)
+    claude_delta = claude_t1_pct - algo_t1_pct
+    if abs(claude_delta) > max_delta:
+        claude_t1_pct = algo_t1_pct + (max_delta if claude_delta > 0 else -max_delta)
+
     # Gut feeling and betting odds adjustments
     gut_weight = 0.0
     odds_weight = 0.0
@@ -439,6 +460,7 @@ def compute_combined_prediction(
 
     combined_t1 = round(max(1, min(99, combined_t1)), 1)
     combined_t2 = round(100 - combined_t1, 1)
+    uncertainty_band = round(max(3.0, 18.0 - (algo_w + claude_w) * 10.0), 1)
 
     # Extract Section 10 data for transparency
     s10 = claude_pred.get("section_10_final_prediction", {}) if claude_pred else {}
@@ -455,6 +477,7 @@ def compute_combined_prediction(
         "odds_weight": round(odds_weight, 3),
         "algo_t1_pct": round(algo_t1_pct, 1),
         "claude_t1_pct": round(claude_t1_pct, 1),
+        "claude_anchor_max_delta": max_delta,
         "claude_source": claude_pred.get("source", "unknown") if claude_pred else "none",
         "claude_section10_t1": s10.get("team1_win_pct") if s10 else None,
         "claude_confidence": s10.get("sentence_4_confidence", "") if s10 else "",
@@ -462,6 +485,7 @@ def compute_combined_prediction(
         "gut_feeling": gut_feeling or None,
         "gut_t1_adj": round(gut_t1_adj, 1),
         "betting_odds_t1_pct": round(odds_t1_pct, 1) if betting_odds_pct else None,
+        "uncertainty_band_pct": uncertainty_band,
         "model": "phase-weighted-v2",
     }
 

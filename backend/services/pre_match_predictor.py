@@ -13,10 +13,12 @@ Design Principles:
 import math
 import re
 import logging
+import contextvars
 from difflib import SequenceMatcher
 from typing import Dict, Optional, Tuple, List
 
 logger = logging.getLogger(__name__)
+_RATINGS_OVERRIDE: contextvars.ContextVar = contextvars.ContextVar("ratings_override", default=None)
 
 # ── Weights (16 categories, sum = 1.0) ──
 # User-directed split:
@@ -699,9 +701,15 @@ def resolve_star_player_rating(name: str) -> int:
     if not name or not str(name).strip():
         return 65
     name = str(name).strip()
+    overrides = _RATINGS_OVERRIDE.get() or {}
+    if name in overrides:
+        return int(overrides[name])
     if name in STAR_PLAYERS:
         return STAR_PLAYERS[name]
     nl = name.lower()
+    for k, v in overrides.items():
+        if k.lower() == nl:
+            return int(v)
     for k, v in STAR_PLAYERS.items():
         if k.lower() == nl:
             return v
@@ -886,11 +894,8 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
             adj = max(-12, min(12, adj))
             perf_overrides[name] = round(max(50, min(99, base + adj)))
 
-    # Temporarily override STAR_PLAYERS for this prediction
-    original_ratings = {}
-    for name, rating in perf_overrides.items():
-        original_ratings[name] = STAR_PLAYERS.get(name)
-        STAR_PLAYERS[name] = rating
+    # Per-request ratings override (context-local, avoids global mutable races).
+    rtok = _RATINGS_OVERRIDE.set(perf_overrides)
 
     # ━━━━━━ Core team composition ratings (bat/bowl/all-round) ━━━━━━
     if remapped_squads.get("team1") and remapped_squads.get("team2"):
@@ -1062,11 +1067,7 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
 
     top_order_consistency_logit = _top_order_consistency_logit(form_data)
 
-    for name, orig in original_ratings.items():
-        if orig is not None:
-            STAR_PLAYERS[name] = orig
-        else:
-            STAR_PLAYERS.pop(name, None)
+    _RATINGS_OVERRIDE.reset(rtok)
 
     combined_logit = (
         WEIGHTS["batting_strength"] * batting_strength_logit
@@ -1088,7 +1089,20 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
     )
 
 
-    raw_probability = 1.0 / (1.0 + math.exp(-combined_logit))
+    # Data-quality shrinkage: if many factors are fallback/neutral, pull confidence toward 50%.
+    quality_sources = {
+        "squads_ready": bool(remapped_squads.get("team1") and remapped_squads.get("team2")),
+        "form_ready": bool(form_data),
+        "weather_ready": bool(weather and weather.get("available")),
+        "h2h_ready": bool(total_h2h > 0),
+        "web_pp_ready": _powerplay_performance_logit_from_web(web_context) is not None,
+        "web_death_ready": _death_overs_performance_logit_from_web(web_context) is not None,
+        "web_inj_ready": _key_players_availability_logit_from_web(web_context) is not None,
+    }
+    quality_ratio = sum(1 for v in quality_sources.values() if v) / max(1, len(quality_sources))
+    quality_shrink = 0.55 + 0.45 * quality_ratio
+    adjusted_logit = combined_logit * quality_shrink
+    raw_probability = 1.0 / (1.0 + math.exp(-adjusted_logit))
     team1_win_prob = round(raw_probability * 100, 1)
     team2_win_prob = round(100 - team1_win_prob, 1)
 
@@ -1262,7 +1276,13 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
         "team2_win_prob": team2_win_prob,
         "confidence": confidence,
         "raw_probability": round(raw_probability, 4),
-        "combined_logit": round(combined_logit, 4),
+        "combined_logit": round(adjusted_logit, 4),
+        "raw_combined_logit": round(combined_logit, 4),
+        "data_quality": {
+            "score": round(quality_ratio, 3),
+            "shrink_applied": round(quality_shrink, 3),
+            "signals": quality_sources,
+        },
         "model": "16-category-v2",
         "favourite_team": "team1" if is_t1_fav else "team2",
         "favourite_one_liner": favourite_one_liner,
@@ -1389,16 +1409,19 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
                 "weight": WEIGHTS["powerplay_performance"],
                 "logit_contribution": round(WEIGHTS["powerplay_performance"] * powerplay_logit, 4),
                 "raw_logit": round(powerplay_logit, 4),
+                "source": "openai_web" if _powerplay_performance_logit_from_web(web_context) is not None else "fallback_xi_proxy",
             },
             "death_overs_performance": {
                 "weight": WEIGHTS["death_overs_performance"],
                 "logit_contribution": round(WEIGHTS["death_overs_performance"] * death_overs_logit, 4),
                 "raw_logit": round(death_overs_logit, 4),
+                "source": "openai_web" if _death_overs_performance_logit_from_web(web_context) is not None else "fallback_xi_proxy",
             },
             "key_players_availability": {
                 "weight": WEIGHTS["key_players_availability"],
                 "logit_contribution": round(WEIGHTS["key_players_availability"] * key_avail_logit, 4),
                 "raw_logit": round(key_avail_logit, 4),
+                "source": "openai_web" if _key_players_availability_logit_from_web(web_context) is not None else "fallback_xi_proxy",
             },
             "allrounder_depth": {
                 "weight": WEIGHTS["allrounder_depth"],
