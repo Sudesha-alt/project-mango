@@ -286,6 +286,16 @@ export function useMatchData() {
     }
   }, []);
 
+  const getModelEvaluation = useCallback(async () => {
+    try {
+      const res = await axios.get(`${API}/model-evaluation`, { timeout: 20000 });
+      return res.data;
+    } catch (e) {
+      console.error("Model evaluation fetch error:", e);
+      return null;
+    }
+  }, []);
+
   return {
     schedule, squads, loading, apiStatus, scheduleError,
     fetchStatus, loadSchedule, loadSquads, getTeamSquad,
@@ -293,6 +303,6 @@ export function useMatchData() {
     fetchPreMatchPrediction,
     fetchBetaPrediction, fetchConsultation, sendChat,
     fetchClaudeAnalysis, clearClaudeAnalysis, fetchClaudeLive, refreshClaudePrediction,
-    checkMatchStatus, getCurrentLiveMatch,
+    checkMatchStatus, getCurrentLiveMatch, getModelEvaluation,
   };
 }
