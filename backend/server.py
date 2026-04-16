@@ -3314,7 +3314,7 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
     form_data = await fetch_team_form(db, team1, team2, player_performance=player_performance)
     form_data = _filter_form_data_to_playing_xi(form_data, prediction_squads, team1, team2)
 
-    # Fetch momentum (last 2 results)
+    # Fetch momentum (last 4 completed results per team)
     momentum_data = await fetch_momentum(db, team1, team2)
 
     # Enrich Playing XI with last-N stats + impact before the 8-factor model consumes context

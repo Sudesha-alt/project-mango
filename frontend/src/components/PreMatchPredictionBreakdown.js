@@ -16,6 +16,29 @@ function xiRoleColor(role) {
   return "#737373";
 }
 
+/** Last 4 completed results for momentum: W/L per game, newest first; pad with —; append record. */
+function formatMomentumLastFour(momentum, teamSide) {
+  const key4 = teamSide === "team1" ? "team1_last4" : "team2_last4";
+  const key2 = teamSide === "team1" ? "team1_last2" : "team2_last2";
+  const raw = momentum?.[key4] ?? momentum?.[key2] ?? [];
+  const arr = Array.isArray(raw) ? raw : [];
+  const normalized = arr.map((r) => {
+    const u = String(r ?? "").toUpperCase().trim();
+    if (u === "W" || u === "WIN") return "W";
+    if (u === "L" || u === "LOSS") return "L";
+    return null;
+  });
+  const slots = [];
+  for (let i = 0; i < 4; i += 1) {
+    slots.push(normalized[i] ?? "—");
+  }
+  const wins = normalized.filter((x) => x === "W").length;
+  const losses = normalized.filter((x) => x === "L").length;
+  const played = wins + losses;
+  const record = played > 0 ? ` (${wins}W-${losses}L)` : "";
+  return `Last 4 (new→old): ${slots.join(" · ")}${record}`;
+}
+
 function FactorBar({ label, weight, logit, icon: Icon, tooltip, team1, team2, team1Detail, team2Detail, reasonLine, favours, claudeVerdict }) {
   // logit > 0 favors team1, logit < 0 favors team2
   const safeLogit = Number.isFinite(logit) ? logit : 0;
@@ -370,11 +393,11 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
           favours={factorOneLiners.conditions?.favours}
           claudeVerdict={factorVerdict("conditions")}
         />
-        <FactorBar label="Momentum (Last 2)" weight={factors.momentum?.weight || 0.035} logit={factorLogit("momentum")} icon={Lightning}
-          tooltip="Last-2 results momentum."
+        <FactorBar label="Momentum (Last 4)" weight={factors.momentum?.weight || 0.035} logit={factorLogit("momentum")} icon={Lightning}
+          tooltip="Last 4 completed-match results: W = win, L = loss, left slot = most recent. — = fewer than 4 games in sample."
           team1={t1} team2={t2}
-          team1Detail={`Last 2: ${(factors.momentum?.team1_last2 || []).join(", ") || "N/A"}`}
-          team2Detail={`Last 2: ${(factors.momentum?.team2_last2 || []).join(", ") || "N/A"}`}
+          team1Detail={formatMomentumLastFour(factors.momentum, "team1")}
+          team2Detail={formatMomentumLastFour(factors.momentum, "team2")}
           reasonLine={factorReason("momentum")}
           favours={factorOneLiners.momentum?.favours}
           claudeVerdict={factorVerdict("momentum")}

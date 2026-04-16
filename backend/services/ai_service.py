@@ -1249,7 +1249,7 @@ Category Breakdown:
 - All-rounder Depth (5%): Multi-skill bench/XI flexibility | Logit: {factors.get('allrounder_depth',{}).get('logit_contribution',0)}
 - Top Order Consistency (3%): Recent top-order stability edge | Logit: {factors.get('top_order_consistency',{}).get('logit_contribution',0)}
 - Conditions (4%): {factors.get('conditions',{}).get('conditions_edge_text','Neutral')} | Logit: {factors.get('conditions',{}).get('logit_contribution',0)}
-- Momentum (2%): {t1_short} last 2: {factors.get('momentum',{}).get('team1_last2',[])} | {t2_short} last 2: {factors.get('momentum',{}).get('team2_last2',[])} | Logit: {factors.get('momentum',{}).get('logit_contribution',0)}
+- Momentum: {t1_short} last 4: {factors.get('momentum',{}).get('team1_last4') or factors.get('momentum',{}).get('team1_last2',[])} | {t2_short} last 4: {factors.get('momentum',{}).get('team2_last4') or factors.get('momentum',{}).get('team2_last2',[])} | Logit: {factors.get('momentum',{}).get('logit_contribution',0)}
 
 Top Performers (from form data):
 {t1_short}: {_format_top_performers(factors.get('current_form',{}).get('team1_top_performers',[]))}
