@@ -283,10 +283,14 @@ async def fetch_team_form(db, team1: str, team2: str, player_performance: Dict =
     return form
 
 
+MOMENTUM_RECENT_GAMES = 4
+
+
 async def fetch_momentum(db, team1: str, team2: str) -> Dict:
     """
-    Fetch last 2 match results for momentum calculation.
-    Uses DB schedule completed matches.
+    Fetch last N completed match results per team for momentum (default 4).
+    Uses DB schedule completed matches, most recent first.
+    Also exposes team*_last2 as the two most recent games for backward compatibility.
     """
     completed = []
     async for m in db.ipl_schedule.find(
@@ -295,9 +299,18 @@ async def fetch_momentum(db, team1: str, team2: str) -> Dict:
     ).sort("match_number", -1):
         completed.append(m)
 
-    momentum = {"team1_last2": [], "team2_last2": []}
+    momentum = {
+        "team1_last4": [],
+        "team2_last4": [],
+        "team1_last2": [],
+        "team2_last2": [],
+        "momentum_window": MOMENTUM_RECENT_GAMES,
+    }
 
-    for team, key in [(team1, "team1_last2"), (team2, "team2_last2")]:
+    for team, key4, key2 in [
+        (team1, "team1_last4", "team1_last2"),
+        (team2, "team2_last4", "team2_last2"),
+    ]:
         team_lower = team.lower()
         results = []
         for m in completed:
@@ -311,9 +324,11 @@ async def fetch_momentum(db, team1: str, team2: str) -> Dict:
                     results.append("W")
                 elif winner:
                     results.append("L")
-            if len(results) >= 2:
+            if len(results) >= MOMENTUM_RECENT_GAMES:
                 break
-        momentum[key] = results[:2]
+        slice4 = results[:MOMENTUM_RECENT_GAMES]
+        momentum[key4] = slice4
+        momentum[key2] = slice4[:2]
 
     return momentum
 

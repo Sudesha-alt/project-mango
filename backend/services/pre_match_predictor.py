@@ -616,7 +616,7 @@ FACTOR_SUMMARY_PHRASES = {
     "home_ground_advantage": "home ground familiarity",
     "h2h": "head-to-head record",
     "conditions": "wet/dry weather-to-skill correlation",
-    "momentum": "last-two-results momentum",
+    "momentum": "last-four-results momentum",
     "powerplay_performance": "powerplay batting/bowling profile",
     "death_overs_performance": "death overs specialists",
     "key_players_availability": "key player availability in the XI",
@@ -1333,20 +1333,21 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
         venue_key, match_time, weather, remapped_squads, team1=team1, team2=team2
     )
 
-    # ━━━━━━ Category 7: Team Momentum — Last 2 Matches ━━━━━━
-    # Momentum should meaningfully favour a team on a winning streak.
-    # With 3% weight, the logit needs to be strong enough to create visible impact.
-    # 2-0 streak diff → ~1.5% swing, 1-0 diff → ~0.7% swing
-    t1_last2 = momentum_data.get("team1_last2", [])
-    t2_last2 = momentum_data.get("team2_last2", [])
-    t1_wins_last2 = sum(1 for r in t1_last2 if r == "W")
-    t2_wins_last2 = sum(1 for r in t2_last2 if r == "W")
-    win_diff = t1_wins_last2 - t2_wins_last2  # +2, +1, 0, -1, -2
-    # Scale: +2 diff → logit +1.8, +1 diff → logit +0.9
-    momentum_logit = min(2.0, max(-2.0, 0.9 * win_diff))
-    # Add extra boost for dominant streak (2W-0L vs 0W-2L)
-    if abs(win_diff) == 2:
-        momentum_logit *= 1.3  # 2-0 streak is more impactful than just additive
+    # ━━━━━━ Category 7: Team Momentum — Last 4 Matches ━━━━━━
+    # Recent completed-match W/L (most recent first). Logit scaled so 4-game form matters without dominating.
+    _mw = int(momentum_data.get("momentum_window", 4) or 4)
+    _mw = max(1, min(8, _mw))
+    t1_recent = list(momentum_data.get("team1_last4") or momentum_data.get("team1_last2", []))[:_mw]
+    t2_recent = list(momentum_data.get("team2_last4") or momentum_data.get("team2_last2", []))[:_mw]
+    t1_wins_recent = sum(1 for r in t1_recent if r == "W")
+    t2_wins_recent = sum(1 for r in t2_recent if r == "W")
+    win_diff = t1_wins_recent - t2_wins_recent
+    # Comparable max linear signal to old 2-game rule: 4 * 0.45 ~= 2 * 0.9
+    momentum_logit = min(2.0, max(-2.0, 0.45 * win_diff))
+    if abs(win_diff) >= 4:
+        momentum_logit = min(2.0, max(-2.0, momentum_logit * 1.25))
+    elif abs(win_diff) >= 3:
+        momentum_logit = min(2.0, max(-2.0, momentum_logit * 1.15))
 
     top_order_consistency_logit = _top_order_consistency_logit(form_data)
 
@@ -1485,12 +1486,17 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
     )
 
     mom_f = _favours_from_logit(momentum_logit)
+    _n1, _n2 = len(t1_recent), len(t2_recent)
     if win_diff > 0:
-        momentum_line = f"{t1n} carry momentum ({t1_wins_last2} wins in last 2 vs {t2n}'s {t2_wins_last2})."
+        momentum_line = (
+            f"{t1n} carry momentum ({t1_wins_recent}W in last {_n1} vs {t2n}'s {t2_wins_recent}W in last {_n2})."
+        )
     elif win_diff < 0:
-        momentum_line = f"{t2n} carry momentum ({t2_wins_last2} wins in last 2 vs {t1n}'s {t1_wins_last2})."
+        momentum_line = (
+            f"{t2n} carry momentum ({t2_wins_recent}W in last {_n2} vs {t1n}'s {t1_wins_recent}W in last {_n1})."
+        )
     else:
-        momentum_line = f"Even momentum — {t1n} and {t2n} similar over the last two results."
+        momentum_line = f"Even momentum — {t1n} and {t2n} similar over recent completed results."
 
     batstr_f = _favours_from_logit(batting_strength_logit)
     batstr_line = (
@@ -1710,10 +1716,15 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
             "momentum": {
                 "weight": WEIGHTS["momentum"],
                 "logit_contribution": round(WEIGHTS["momentum"] * momentum_logit, 4),
-                "team1_last2": t1_last2,
-                "team2_last2": t2_last2,
-                "team1_wins_last2": t1_wins_last2,
-                "team2_wins_last2": t2_wins_last2,
+                "momentum_window": _mw,
+                "team1_last4": t1_recent,
+                "team2_last4": t2_recent,
+                "team1_wins_last4": t1_wins_recent,
+                "team2_wins_last4": t2_wins_recent,
+                "team1_last2": t1_recent[:2],
+                "team2_last2": t2_recent[:2],
+                "team1_wins_last2": sum(1 for r in t1_recent[:2] if r == "W"),
+                "team2_wins_last2": sum(1 for r in t2_recent[:2] if r == "W"),
                 "raw_logit": round(momentum_logit, 4),
                 "momentum_text": momentum_line,
             },
