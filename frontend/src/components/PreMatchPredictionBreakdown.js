@@ -6,6 +6,16 @@ import { API_BASE } from "@/lib/apiBase";
 
 const API = API_BASE;
 
+function xiRoleColor(role) {
+  if (!role) return "#737373";
+  const r = String(role).toLowerCase();
+  if (r.includes("wicket") || r.includes("keeper")) return "#FFCC00";
+  if (r.includes("all")) return "#34C759";
+  if (r.includes("bowl")) return "#FF3B30";
+  if (r.includes("bat")) return "#007AFF";
+  return "#737373";
+}
+
 function FactorBar({ label, weight, logit, icon: Icon, tooltip, team1, team2, team1Detail, team2Detail, reasonLine, favours, claudeVerdict }) {
   // logit > 0 favors team1, logit < 0 favors team2
   const safeLogit = Number.isFinite(logit) ? logit : 0;
@@ -91,6 +101,8 @@ function FactorBar({ label, weight, logit, icon: Icon, tooltip, team1, team2, te
 export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onDataUpdate }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [xiRolesLoading, setXiRolesLoading] = useState(false);
+  const [xiRolesError, setXiRolesError] = useState(null);
 
   useEffect(() => {
     const load = async () => {
@@ -137,6 +149,30 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
       }
     } catch (e) { console.error(e); }
     setLoading(false);
+  };
+
+  const handleFetchRolesAndRepredict = async () => {
+    setXiRolesError(null);
+    setXiRolesLoading(true);
+    try {
+      const res = await axios.post(
+        `${API}/matches/${matchId}/fetch-playing-xi-roles-and-predict`,
+        {},
+        { timeout: 180000 }
+      );
+      if (res.data && !res.data.error) {
+        setData(res.data);
+        if (onDataUpdate) onDataUpdate(res.data);
+      }
+    } catch (e) {
+      const d = e.response?.data?.detail;
+      let msg = "Could not fetch roles and re-predict.";
+      if (typeof d === "string") msg = d;
+      else if (d && typeof d === "object") msg = d.message || d.error || JSON.stringify(d);
+      setXiRolesError(msg);
+      console.error(e);
+    }
+    setXiRolesLoading(false);
   };
 
   if (!data) {
@@ -231,55 +267,55 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
         </div>
 
         <FactorBar label="Batting Strength" weight={factors.batting_strength?.weight || 0.08} logit={factorLogit("batting_strength")} icon={UsersThree}
-          tooltip="Top-order/core batting quality from expected XI ratings."
+          tooltip="Share of combined core batting index (sums to 100%). Higher % = stronger top-6 batting pool on paper."
           team1={t1} team2={t2}
-          team1Detail={`Bat rating: ${factors.batting_strength?.team1_batting || "?"}`}
-          team2Detail={`Bat rating: ${factors.batting_strength?.team2_batting || "?"}`}
+          team1Detail={`${factors.batting_strength?.team1_share_pct ?? 50}% · idx ${factors.batting_strength?.team1_batting ?? "?"}`}
+          team2Detail={`${factors.batting_strength?.team2_share_pct ?? 50}% · idx ${factors.batting_strength?.team2_batting ?? "?"}`}
           reasonLine={factorReason("batting_strength")}
           favours={factorOneLiners.batting_strength?.favours}
           claudeVerdict={factorVerdict("batting_strength")}
         />
         <FactorBar label="Batting Depth" weight={factors.batting_depth?.weight || 0.08} logit={factorLogit("batting_depth")} icon={UsersThree}
-          tooltip="Middle/lower-order depth from batting contributors."
+          tooltip="Share of combined tail (7th–11th batting-slot) index. Higher % = deeper middle/lower order."
           team1={t1} team2={t2}
-          team1Detail={`Raw logit: ${factors.batting_depth?.raw_logit ?? "0.000"}`}
-          team2Detail="Compared with opposition depth"
+          team1Detail={`${factors.batting_depth?.team1_share_pct ?? 50}% · tail ${factors.batting_depth?.team1_tail_batting_index ?? "—"}`}
+          team2Detail={`${factors.batting_depth?.team2_share_pct ?? 50}% · tail ${factors.batting_depth?.team2_tail_batting_index ?? "—"}`}
           reasonLine={factorReason("batting_depth")}
           favours={factorOneLiners.batting_depth?.favours}
           claudeVerdict={factorVerdict("batting_depth")}
         />
         <FactorBar label="Bowling Strength" weight={factors.bowling_strength?.weight || 0.08} logit={factorLogit("bowling_strength")} icon={Target}
-          tooltip="Top-5 bowling quality from expected XI ratings."
+          tooltip="Share of combined top-5 bowling pool index. Higher % = stronger front-line attack on paper."
           team1={t1} team2={t2}
-          team1Detail={`Bowl rating: ${factors.bowling_strength?.team1_bowling_rating || "?"}`}
-          team2Detail={`Bowl rating: ${factors.bowling_strength?.team2_bowling_rating || "?"}`}
+          team1Detail={`${factors.bowling_strength?.team1_share_pct ?? 50}% · idx ${factors.bowling_strength?.team1_bowling_rating ?? "?"}`}
+          team2Detail={`${factors.bowling_strength?.team2_share_pct ?? 50}% · idx ${factors.bowling_strength?.team2_bowling_rating ?? "?"}`}
           reasonLine={factorReason("bowling_strength")}
           favours={factorOneLiners.bowling_strength?.favours}
           claudeVerdict={factorVerdict("bowling_strength")}
         />
         <FactorBar label="Bowling Depth" weight={factors.bowling_depth?.weight ?? 0.08} logit={factorLogit("bowling_depth")} icon={Target}
-          tooltip={`Venue-weighted bowling quality. Pace assist: ${factors.bowling_depth?.venue_pace_assist ?? "?"}, Spin assist: ${factors.bowling_depth?.venue_spin_assist ?? "?"}`}
+          tooltip={`Share of venue-weighted top-5 attack score (sums to 100%). Pace assist: ${factors.bowling_depth?.venue_pace_assist ?? "?"}, Spin: ${factors.bowling_depth?.venue_spin_assist ?? "?"}`}
           team1={t1} team2={t2}
-          team1Detail={`${factors.bowling_depth?.team1_bowler_count ?? "?"} bowlers (P${factors.bowling_depth?.team1_pace_count ?? 0} S${factors.bowling_depth?.team1_spin_count ?? 0})`}
-          team2Detail={`${factors.bowling_depth?.team2_bowler_count ?? "?"} bowlers (P${factors.bowling_depth?.team2_pace_count ?? 0} S${factors.bowling_depth?.team2_spin_count ?? 0})`}
+          team1Detail={`${factors.bowling_depth?.team1_share_pct ?? factors.bowling_depth?.team1_depth_share_pct ?? 50}% · ${factors.bowling_depth?.team1_bowler_count ?? "?"} bowlers (P${factors.bowling_depth?.team1_pace_count ?? 0} S${factors.bowling_depth?.team1_spin_count ?? 0})`}
+          team2Detail={`${factors.bowling_depth?.team2_share_pct ?? factors.bowling_depth?.team2_depth_share_pct ?? 50}% · ${factors.bowling_depth?.team2_bowler_count ?? "?"} bowlers (P${factors.bowling_depth?.team2_pace_count ?? 0} S${factors.bowling_depth?.team2_spin_count ?? 0})`}
           reasonLine={factorReason("bowling_depth")}
           favours={factorOneLiners.bowling_depth?.favours}
           claudeVerdict={factorVerdict("bowling_depth")}
         />
         <FactorBar label="All-rounder Strength" weight={factors.allrounder_strength?.weight || 0.08} logit={factorLogit("allrounder_strength")} icon={Scales}
-          tooltip="Quality ceiling of all-rounders in XI."
+          tooltip="Share of combined all-rounder quality (top-3 mean). Higher % = better AR ceiling."
           team1={t1} team2={t2}
-          team1Detail={`AR strength: ${factors.allrounder_strength?.team1_allrounder_strength || "?"}`}
-          team2Detail={`AR strength: ${factors.allrounder_strength?.team2_allrounder_strength || "?"}`}
+          team1Detail={`${factors.allrounder_strength?.team1_share_pct ?? 50}% · AR idx ${factors.allrounder_strength?.team1_allrounder_strength ?? "?"}`}
+          team2Detail={`${factors.allrounder_strength?.team2_share_pct ?? 50}% · AR idx ${factors.allrounder_strength?.team2_allrounder_strength ?? "?"}`}
           reasonLine={factorReason("allrounder_strength")}
           favours={factorOneLiners.allrounder_strength?.favours}
           claudeVerdict={factorVerdict("allrounder_strength")}
         />
         <FactorBar label="All-rounder Depth" weight={factors.allrounder_depth?.weight || 0.08} logit={factorLogit("allrounder_depth")} icon={Scales}
-          tooltip="Count/flexibility of all-rounders in expected XI."
+          tooltip="Share of combined all-rounder depth (count/activity). Higher % = more AR flexibility."
           team1={t1} team2={t2}
-          team1Detail={`AR count: ${factors.allrounder_depth?.team1_allrounder_depth ?? "?"}`}
-          team2Detail={`AR count: ${factors.allrounder_depth?.team2_allrounder_depth ?? "?"}`}
+          team1Detail={`${factors.allrounder_depth?.team1_share_pct ?? 50}% · AR units ${factors.allrounder_depth?.team1_allrounder_depth ?? "?"}`}
+          team2Detail={`${factors.allrounder_depth?.team2_share_pct ?? 50}% · AR units ${factors.allrounder_depth?.team2_allrounder_depth ?? "?"}`}
           reasonLine={factorReason("allrounder_depth")}
           favours={factorOneLiners.allrounder_depth?.favours}
           claudeVerdict={factorVerdict("allrounder_depth")}
@@ -392,25 +428,57 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
       {/* Expected Playing XI — SportMonks last match + impact points */}
       {data.playing_xi?.team1_xi?.length > 0 && (
         <div className="border border-[#262626] rounded-md p-3 space-y-2" data-testid="prematch-playing-xi">
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-[10px] text-[#737373] uppercase tracking-[0.15em] font-semibold flex items-center gap-1">
               <UsersThree weight="fill" className="w-3.5 h-3.5 text-[#7C3AED]" />
               Expected Playing XI
-              <InfoTooltip text={data.playing_xi.xi_lineup_note || "XI from SportMonks when available; impact_points match the Lucky 11 model card rating."} />
+              <InfoTooltip text={data.playing_xi.xi_lineup_note || "XI from SportMonks when available; roles may be inferred by Claude (tagged) and feed all-rounder depth/strength. impact_points = Lucky 11 card rating."} />
             </p>
-            <span className="text-[9px] font-mono text-[#525252]">
-              {data.playing_xi.source === "last_match" ? "Last IPL match" : data.playing_xi.source === "squad_estimate" ? "Squad estimate" : data.playing_xi.source || "—"}
-              {data.playing_xi.stats_lookback_matches ? ` · last ${data.playing_xi.stats_lookback_matches} stats` : ""}
-            </span>
+            <div className="flex flex-wrap items-center gap-2 justify-end">
+              <button
+                type="button"
+                onClick={handleFetchRolesAndRepredict}
+                disabled={xiRolesLoading || loading}
+                data-testid="fetch-xi-roles-and-predict-btn"
+                title="Calls Claude for each XI player’s role, then re-runs the full pre-match model."
+                className="text-[10px] font-bold uppercase tracking-wide px-2.5 py-1 rounded-md bg-[#7C3AED]/25 text-[#C4B5FD] border border-[#7C3AED]/40 hover:bg-[#7C3AED]/35 transition-colors disabled:opacity-50 shrink-0"
+              >
+                {xiRolesLoading ? (
+                  <span className="flex items-center gap-1.5">
+                    <Spinner className="w-3 h-3 animate-spin" />
+                    Roles + predict…
+                  </span>
+                ) : (
+                  "Fetch respective roles"
+                )}
+              </button>
+              <span className="text-[9px] font-mono text-[#525252]">
+                {data.playing_xi.source === "last_match" ? "Last IPL match" : data.playing_xi.source === "squad_estimate" ? "Squad estimate" : data.playing_xi.source || "—"}
+                {data.playing_xi.stats_lookback_matches ? ` · last ${data.playing_xi.stats_lookback_matches} stats` : ""}
+              </span>
+            </div>
           </div>
+          {xiRolesError && (
+            <p className="text-[10px] text-[#FF3B30]" data-testid="fetch-xi-roles-error">{xiRolesError}</p>
+          )}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
               <p className="text-[9px] font-bold uppercase tracking-wider text-[#007AFF] mb-1">{t1}</p>
               <ul className="space-y-1 max-h-48 overflow-y-auto pr-1">
                 {(data.playing_xi.team1_xi || []).map((p, i) => (
-                  <li key={i} className="flex items-center justify-between text-[10px] gap-2 border-b border-[#1E1E1E] pb-1 last:border-0">
-                    <span className="text-[#E5E5E5] truncate">{p.name}</span>
-                    <span className="text-[#A1A1AA] font-mono flex-shrink-0">
+                  <li key={i} className="flex items-start justify-between text-[10px] gap-2 border-b border-[#1E1E1E] pb-1 last:border-0">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[#E5E5E5] truncate">{p.name}</div>
+                      <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                        <span className="text-[8px] font-bold uppercase tracking-wider" style={{ color: xiRoleColor(p.role) }}>
+                          {p.role || "—"}
+                        </span>
+                        {p.role_source === "claude" && (
+                          <span className="text-[7px] px-1 py-0 rounded bg-[#7C3AED]/25 text-[#C4B5FD] font-mono uppercase">Claude</span>
+                        )}
+                      </div>
+                    </div>
+                    <span className="text-[#A1A1AA] font-mono flex-shrink-0 self-center">
                       {p.impact_points != null ? <span className="text-[#FFCC00] font-bold">{p.impact_points}</span> : "—"}
                       {p.recent_form_impact != null && (
                         <span className="text-[#525252] ml-1">frm {Math.round(p.recent_form_impact)}</span>
@@ -424,9 +492,19 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
               <p className="text-[9px] font-bold uppercase tracking-wider text-[#FF3B30] mb-1">{t2}</p>
               <ul className="space-y-1 max-h-48 overflow-y-auto pr-1">
                 {(data.playing_xi.team2_xi || []).map((p, i) => (
-                  <li key={i} className="flex items-center justify-between text-[10px] gap-2 border-b border-[#1E1E1E] pb-1 last:border-0">
-                    <span className="text-[#E5E5E5] truncate">{p.name}</span>
-                    <span className="text-[#A1A1AA] font-mono flex-shrink-0">
+                  <li key={i} className="flex items-start justify-between text-[10px] gap-2 border-b border-[#1E1E1E] pb-1 last:border-0">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[#E5E5E5] truncate">{p.name}</div>
+                      <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                        <span className="text-[8px] font-bold uppercase tracking-wider" style={{ color: xiRoleColor(p.role) }}>
+                          {p.role || "—"}
+                        </span>
+                        {p.role_source === "claude" && (
+                          <span className="text-[7px] px-1 py-0 rounded bg-[#7C3AED]/25 text-[#C4B5FD] font-mono uppercase">Claude</span>
+                        )}
+                      </div>
+                    </div>
+                    <span className="text-[#A1A1AA] font-mono flex-shrink-0 self-center">
                       {p.impact_points != null ? <span className="text-[#FFCC00] font-bold">{p.impact_points}</span> : "—"}
                       {p.recent_form_impact != null && (
                         <span className="text-[#525252] ml-1">frm {Math.round(p.recent_form_impact)}</span>

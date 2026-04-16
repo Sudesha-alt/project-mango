@@ -19,7 +19,7 @@ import { WifiHigh, WifiSlash, Lightning, Spinner, UserCircle, ArrowsClockwise, C
 export default function LiveMatch() {
   const { matchId } = useParams();
   const navigate = useNavigate();
-  const { fetchLiveData, getMatchState, getTeamSquad, fetchPlayerPredictions, fetchBetaPrediction, fetchConsultation, sendChat, refreshClaudePrediction, checkMatchStatus, getCurrentLiveMatch } = useMatchData();
+  const { fetchLiveData, getMatchState, getTeamSquad, fetchPlayerPredictions, fetchBetaPrediction, fetchConsultation, sendChat, refreshClaudePrediction, checkMatchStatus, getCurrentLiveMatch, getModelEvaluation } = useMatchData();
   const { data: wsData, connected } = useWebSocket(matchId);
 
   const [matchState, setMatchState] = useState(null);
@@ -41,6 +41,7 @@ export default function LiveMatch() {
   const [dlsInfo, setDlsInfo] = useState("");
   const [claudeAnalysisError, setClaudeAnalysisError] = useState(null);
   const [submittingInputs, setSubmittingInputs] = useState(false);
+  const [modelEval, setModelEval] = useState(null);
 
   useEffect(() => {
     const load = async () => {
@@ -68,6 +69,14 @@ export default function LiveMatch() {
       setProbHistory(prev => [...prev, wsData.probabilities].slice(-50));
     }
   }, [wsData]);
+
+  useEffect(() => {
+    const loadEval = async () => {
+      const data = await getModelEvaluation();
+      if (data && !data.error) setModelEval(data);
+    };
+    loadEval();
+  }, [getModelEvaluation]);
 
   const handleFetchLive = useCallback(async () => {
     setFetchingLive(true);
@@ -1130,6 +1139,37 @@ export default function LiveMatch() {
                 )}
                 {activeTab === "models" && (
                   <>
+                    {modelEval && (
+                      <div className="bg-[#141414] border border-white/10 rounded-md p-3" data-testid="model-eval-card">
+                        <div className="flex items-center justify-between mb-2">
+                          <h4 className="text-[10px] uppercase tracking-[0.15em] font-bold text-[#A1A1AA]">Model Evaluation</h4>
+                          <span className={`text-[9px] px-2 py-0.5 rounded font-bold uppercase ${
+                            modelEval?.gate?.passed ? "bg-[#22C55E]/15 text-[#22C55E]" : "bg-[#FF3B30]/15 text-[#FF3B30]"
+                          }`}>
+                            {modelEval?.gate?.passed ? "PASS" : "FAIL"}
+                          </span>
+                        </div>
+                        <div className="space-y-1.5 text-[10px]">
+                          {["algo_only", "claude_only", "hybrid"].map((k) => {
+                            const m = modelEval?.tracks?.[k];
+                            if (!m) return null;
+                            return (
+                              <div key={k} className="bg-[#0A0A0A] border border-white/5 rounded px-2 py-1.5">
+                                <p className="text-[#A1A1AA] uppercase text-[9px] mb-0.5">{k.replace("_", " ")}</p>
+                                <p className="font-mono text-[#D4D4D4]">
+                                  n {m.sample_size} | brier {m.brier} | logloss {m.logloss} | ece {m.ece_10bin}
+                                </p>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        {Array.isArray(modelEval?.gate?.reasons) && modelEval.gate.reasons.length > 0 && (
+                          <div className="mt-2 text-[9px] text-[#FCA5A5] space-y-0.5">
+                            {modelEval.gate.reasons.slice(0, 3).map((r, i) => <p key={i}>- {r}</p>)}
+                          </div>
+                        )}
+                      </div>
+                    )}
                     <AlgorithmComparisonChart probabilities={probs} team1={t1Short} team2={t2Short} />
                     <AlgorithmRadarChart probabilities={probs} />
                   </>

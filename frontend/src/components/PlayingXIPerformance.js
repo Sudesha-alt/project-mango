@@ -145,10 +145,13 @@ export default function PlayingXIPerformance({ matchId, team1, team2 }) {
               {player.is_captain && <span className="text-[8px] px-1 py-0 bg-[#FFCC00]/20 text-[#FFCC00] rounded font-bold">C</span>}
               {player.is_overseas && <span className="text-[8px] px-1 py-0 bg-[#007AFF]/20 text-[#007AFF] rounded">OS</span>}
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="text-[9px] font-bold uppercase tracking-wider" style={{ color: roleColor(player.role) }}>
                 {player.role}
               </span>
+              {player.role_source === "claude" && (
+                <span className="text-[7px] px-1 py-0 rounded bg-[#7C3AED]/25 text-[#C4B5FD] font-mono uppercase">Claude</span>
+              )}
               {venueStats && venueStats.matches_at_venue > 0 && (
                 <span className="text-[8px] text-[#525252] font-mono">
                   @venue: {venueStats.runs_at_venue}r/{venueStats.wickets_at_venue}w in {venueStats.matches_at_venue}m

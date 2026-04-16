@@ -7,7 +7,10 @@ import logging
 import json
 import asyncio
 import copy
+import hashlib
+import math
 import re
+from collections import defaultdict
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -43,7 +46,9 @@ from services.ai_service import (
     gpt_consultation,
     resolve_tbd_venues,
     claude_deep_match_analysis, claude_live_analysis,
-    claude_sportmonks_prediction, fetch_pre_match_stats, validate_factor_reasons_with_claude
+    claude_sportmonks_prediction, fetch_pre_match_stats, validate_factor_reasons_with_claude,
+    claude_infer_playing_xi_roles, normalize_primary_cricket_role,
+    claude_generate_player_impact_points,
 )
 from services.sportmonks_service import (
     fetch_live_match,
@@ -72,7 +77,11 @@ from services.sportmonks_service import (
 from services.beta_prediction_engine import run_beta_prediction
 from services.consultant_engine import run_consultation, build_features
 from services.cricdata_service import fetch_live_ipl_details, fetch_venue_stats_from_cricapi
-from services.pre_match_predictor import compute_prediction, resolve_star_player_rating
+from services.pre_match_predictor import (
+    compute_prediction,
+    resolve_star_player_rating,
+    compute_strength_metrics_for_match,
+)
 from services.live_predictor import (
     compute_live_prediction,
     compute_combined_prediction,
@@ -361,6 +370,347 @@ def _playing_xi_squads_from_doc(
     return {team1: t1_final, team2: t2_final}
 
 
+def _xi_roles_fingerprint(prediction_squads: dict, team1: str, team2: str) -> str:
+    t1 = prediction_squads.get(team1) or []
+    t2 = prediction_squads.get(team2) or []
+    n1 = tuple(_normalize_player_name(p.get("name", "")) for p in t1[:MIN_PLAYING_XI])
+    n2 = tuple(_normalize_player_name(p.get("name", "")) for p in t2[:MIN_PLAYING_XI])
+    raw = json.dumps({"t1": n1, "t2": n2}, sort_keys=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _ingest_name_role_mapping(m: dict, mapping: dict) -> None:
+    if not isinstance(mapping, dict):
+        return
+    for nm, r in mapping.items():
+        k = str(nm).strip()
+        if k:
+            m[_normalize_player_name(k)] = normalize_primary_cricket_role(r)
+
+
+def _role_map_from_claude_xi_cache(cached: dict) -> dict:
+    """normalized_player_name -> canonical role"""
+    m: dict = {}
+    _ingest_name_role_mapping(m, cached.get("team_a") or {})
+    _ingest_name_role_mapping(m, cached.get("team_b") or {})
+    _ingest_name_role_mapping(m, cached.get("teamA") or {})
+    _ingest_name_role_mapping(m, cached.get("teamB") or {})
+    for side in ("team1", "team2"):
+        block = cached.get(side)
+        if isinstance(block, dict):
+            _ingest_name_role_mapping(m, block)
+            continue
+        for row in block or []:
+            if not isinstance(row, dict):
+                continue
+            nm = (row.get("name") or "").strip()
+            if not nm:
+                continue
+            m[_normalize_player_name(nm)] = normalize_primary_cricket_role(row.get("role"))
+    return m
+
+
+def _role_map_from_claude_infer_payload(payload: dict) -> dict:
+    m: dict = {}
+    _ingest_name_role_mapping(m, payload.get("team_a") or {})
+    _ingest_name_role_mapping(m, payload.get("team_b") or {})
+    _ingest_name_role_mapping(m, payload.get("teamA") or {})
+    _ingest_name_role_mapping(m, payload.get("teamB") or {})
+    for side in ("team1", "team2"):
+        block = payload.get(side)
+        if isinstance(block, dict):
+            _ingest_name_role_mapping(m, block)
+        elif isinstance(block, list):
+            for row in block:
+                if not isinstance(row, dict):
+                    continue
+                nm = (row.get("name") or "").strip()
+                if nm:
+                    m[_normalize_player_name(nm)] = normalize_primary_cricket_role(row.get("role"))
+    return m
+
+
+def _apply_role_map_to_prediction_squads(prediction_squads: dict, team1: str, team2: str, role_map: dict) -> None:
+    for tkey in (team1, team2):
+        for p in prediction_squads.get(tkey) or []:
+            if not isinstance(p, dict):
+                continue
+            nm = _normalize_player_name(p.get("name", ""))
+            if nm in role_map:
+                p["role"] = role_map[nm]
+                p["role_source"] = "claude"
+
+
+def _role_map_from_claude_infer_payload_fuzzy(
+    payload: dict,
+    prediction_squads: dict,
+    team1: str,
+    team2: str,
+) -> dict:
+    """Normalize Claude name→role maps, then fuzzy-match any XI names Claude keyed slightly differently."""
+    m = _role_map_from_claude_infer_payload(payload)
+    pairs: list = []
+    for block in (
+        payload.get("team_a"),
+        payload.get("team_b"),
+        payload.get("teamA"),
+        payload.get("teamB"),
+    ):
+        if not isinstance(block, dict):
+            continue
+        for k, v in block.items():
+            nk = str(k).strip()
+            if nk:
+                pairs.append((nk, normalize_primary_cricket_role(v)))
+    for tk in (team1, team2):
+        for p in prediction_squads.get(tk) or []:
+            nm = (p.get("name") or "").strip()
+            if not nm:
+                continue
+            nn = _normalize_player_name(nm)
+            if nn in m:
+                continue
+            best_role = None
+            best_sc = 0.0
+            for ck, cr in pairs:
+                sc = SequenceMatcher(None, nn, _normalize_player_name(ck)).ratio()
+                if sc > best_sc:
+                    best_sc = sc
+                    best_role = cr
+            if best_sc >= 0.80 and best_role is not None:
+                m[nn] = best_role
+                logger.info("Claude XI roles: fuzzy matched %r (score %.2f)", nm, best_sc)
+    return m
+
+
+def _playing_xi_needs_claude_roles(cached_doc: dict) -> bool:
+    """True if cached playing_xi is missing roles or was not assigned by Claude (re-run full predict)."""
+    if not cached_doc or not isinstance(cached_doc, dict):
+        return False
+    px = cached_doc.get("playing_xi") or {}
+    for key in ("team1_xi", "team2_xi"):
+        rows = px.get(key) or []
+        if len(rows) < MIN_PLAYING_XI:
+            return True
+        for p in rows:
+            if not isinstance(p, dict):
+                return True
+            if not (p.get("role") or "").strip():
+                return True
+            if p.get("role_source") != "claude":
+                return True
+    return False
+
+
+def _sanitize_playing_xi_payload(xi_data: Optional[dict]) -> None:
+    """Ensure every XI row has a non-empty canonical role for API/frontend (mutates)."""
+    if not xi_data:
+        return
+    for key in ("team1_xi", "team2_xi"):
+        rows = xi_data.get(key) or []
+        out = []
+        for p in rows:
+            if not isinstance(p, dict):
+                continue
+            d = dict(p)
+            d["role"] = normalize_primary_cricket_role(d.get("role"))
+            out.append(d)
+        xi_data[key] = out
+
+
+def _merge_playing_xi_roles_from_storage(pred_doc: dict, xi_doc: dict) -> None:
+    """Copy role / role_source from playing_xi DB doc onto prediction.playing_xi rows (same names)."""
+    px = pred_doc.get("playing_xi")
+    if not isinstance(px, dict) or not xi_doc:
+        return
+    for pk in ("team1_xi", "team2_xi"):
+        prow = px.get(pk) or []
+        xrow = xi_doc.get(pk) or []
+        if not xrow:
+            continue
+        x_by = {
+            _normalize_player_name(
+                (r.get("name") or r.get("fullname") or "")
+            ): r
+            for r in xrow
+            if isinstance(r, dict)
+        }
+        for r in prow:
+            if not isinstance(r, dict):
+                continue
+            nn = _normalize_player_name(r.get("name", ""))
+            src = x_by.get(nn)
+            if not src:
+                continue
+            role = (src.get("role") or "").strip()
+            if role:
+                r["role"] = normalize_primary_cricket_role(role)
+                r["role_source"] = src.get("role_source") or "claude"
+
+
+def _merge_roles_into_stored_xi_rows(rows: list, role_map: dict) -> list:
+    out: list = []
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        d = dict(r)
+        nm = _normalize_player_name((d.get("name") or d.get("fullname") or ""))
+        if nm in role_map:
+            d["role"] = role_map[nm]
+            d["role_source"] = "claude"
+        out.append(d)
+    return out
+
+
+def _claude_xi_roles_cache_blob(
+    fingerprint: str,
+    prediction_squads: dict,
+    team1: str,
+    team2: str,
+) -> dict:
+    t1 = (prediction_squads.get(team1) or [])[:MIN_PLAYING_XI]
+    t2 = (prediction_squads.get(team2) or [])[:MIN_PLAYING_XI]
+    team_a = {
+        (p.get("name") or "").strip(): normalize_primary_cricket_role(p.get("role"))
+        for p in t1
+        if (p.get("name") or "").strip()
+    }
+    team_b = {
+        (p.get("name") or "").strip(): normalize_primary_cricket_role(p.get("role"))
+        for p in t2
+        if (p.get("name") or "").strip()
+    }
+    return {
+        "fingerprint": fingerprint,
+        "team_a": team_a,
+        "team_b": team_b,
+        "inferred_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+async def _ensure_claude_playing_xi_roles(
+    match_id: str,
+    team1: str,
+    team2: str,
+    prediction_squads: dict,
+    xi_doc: dict,
+    *,
+    mandatory: bool = False,
+) -> None:
+    """
+    Merge Claude-inferred primary roles into prediction_squads (mutates) and persist to playing_xi.
+
+    If mandatory=True (pre-match predict): always calls Claude, validates full coverage, raises on failure.
+    If mandatory=False (background): may use fingerprint cache; failures are logged only.
+    """
+    if not prediction_squads or not xi_doc:
+        if mandatory:
+            raise HTTPException(
+                status_code=500,
+                detail={"error": "xi_roles_internal", "message": "Missing squads or XI document for role inference."},
+            )
+        return
+
+    fp = _xi_roles_fingerprint(prediction_squads, team1, team2)
+    cached = (xi_doc or {}).get("claude_xi_roles") or {}
+
+    def _cache_has_both_sides(c: dict) -> bool:
+        ta = c.get("team_a") or c.get("teamA") or {}
+        tb = c.get("team_b") or c.get("teamB") or {}
+        if isinstance(ta, dict) and isinstance(tb, dict):
+            return len(ta) >= MIN_PLAYING_XI and len(tb) >= MIN_PLAYING_XI
+        return (
+            len(c.get("team1") or []) >= MIN_PLAYING_XI
+            and len(c.get("team2") or []) >= MIN_PLAYING_XI
+        )
+
+    if not mandatory and cached.get("fingerprint") == fp and _cache_has_both_sides(cached):
+        role_map = _role_map_from_claude_xi_cache(cached)
+        _apply_role_map_to_prediction_squads(prediction_squads, team1, team2, role_map)
+        return
+
+    try:
+        payload = await claude_infer_playing_xi_roles(team1, team2, prediction_squads)
+    except Exception as e:
+        msg = str(e)
+        logger.warning("Claude XI role inference failed for %s: %s", match_id, msg)
+        if mandatory:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "claude_xi_roles_failed",
+                    "message": (
+                        "Could not infer Playing XI roles from Claude. "
+                        "Set ANTHROPIC_API_KEY and try again. "
+                        f"Detail: {msg}"
+                    ),
+                },
+            ) from e
+        return
+
+    role_map = _role_map_from_claude_infer_payload_fuzzy(payload, prediction_squads, team1, team2)
+    missing: list = []
+    for tk in (team1, team2):
+        for p in prediction_squads.get(tk) or []:
+            if not isinstance(p, dict):
+                continue
+            nn = _normalize_player_name(p.get("name", ""))
+            if nn and nn not in role_map:
+                missing.append(p.get("name", ""))
+
+    if missing:
+        logger.warning("Claude XI roles incomplete for %s: %s", match_id, missing[:6])
+        if mandatory:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "claude_xi_roles_incomplete",
+                    "message": "Claude did not return a role for every Expected XI player.",
+                    "missing_names": [m for m in missing if m],
+                },
+            )
+
+    _apply_role_map_to_prediction_squads(prediction_squads, team1, team2, role_map)
+
+    t1_rows = _merge_roles_into_stored_xi_rows(xi_doc.get("team1_xi"), role_map)
+    t2_rows = _merge_roles_into_stored_xi_rows(xi_doc.get("team2_xi"), role_map)
+    blob = _claude_xi_roles_cache_blob(fp, prediction_squads, team1, team2)
+    try:
+        await db.playing_xi.update_one(
+            {"matchId": match_id},
+            {"$set": {
+                "claude_xi_roles": blob,
+                "team1_xi": t1_rows,
+                "team2_xi": t2_rows,
+            }},
+        )
+    except Exception as e:
+        logger.warning(f"Could not persist Claude XI roles for {match_id}: {e}")
+        if mandatory:
+            raise HTTPException(
+                status_code=500,
+                detail={"error": "xi_roles_persist_failed", "message": str(e)},
+            ) from e
+
+
+async def _bg_infer_claude_xi_roles(match_id: str, team1: str, team2: str) -> None:
+    """After Playing XI is cached, infer roles in background (non-blocking for poll UX)."""
+    await asyncio.sleep(0.5)
+    try:
+        xi_doc = await db.playing_xi.find_one({"matchId": match_id}, {"_id": 0})
+        if not xi_doc or not _prematch_xi_complete(xi_doc):
+            return
+        match_squads = await _get_squads_for_match(team1, team2)
+        prediction_squads = _playing_xi_squads_from_doc(xi_doc, match_squads, team1, team2)
+        if not prediction_squads:
+            return
+        await _ensure_claude_playing_xi_roles(
+            match_id, team1, team2, prediction_squads, xi_doc, mandatory=False,
+        )
+    except Exception as e:
+        logger.warning(f"Background Claude XI roles failed for {match_id}: {e}")
+
+
 def _filter_player_performance_to_playing_xi(
     player_performance: Optional[dict],
     playing_xi_squads: dict,
@@ -401,6 +751,173 @@ def _filter_player_performance_to_playing_xi(
             if filtered:
                 out[side] = filtered
     return out
+
+
+def _impact_role_code(role_label: str) -> str:
+    role = normalize_primary_cricket_role(role_label or "")
+    if role == "All-rounder":
+        return "AR"
+    if role == "Bowler":
+        return "BOWL"
+    return "BAT"
+
+
+def _impact_points_from_perf_row(perf_row: dict, role_code: str, base_rating: float) -> tuple:
+    """
+    Convert SportMonks aggregate stats to BatIP/BowlIP in [0,100].
+    Falls back to role-aware split around base rating when data is sparse.
+    """
+    bat = (perf_row or {}).get("batting", {}) if isinstance(perf_row, dict) else {}
+    bowl = (perf_row or {}).get("bowling", {}) if isinstance(perf_row, dict) else {}
+    has_bat = bool(bat.get("innings", 0))
+    has_bowl = bool(bowl.get("innings", 0))
+
+    if has_bat:
+        bavg = float(bat.get("avg", 0) or 0)
+        bsr = float(bat.get("sr", 0) or 0)
+        runs = float(bat.get("runs", 0) or 0)
+        bat_ip = 0.55 * min(100.0, (bavg / 55.0) * 100.0) + 0.30 * min(100.0, (bsr / 180.0) * 100.0) + 0.15 * min(
+            100.0, (runs / 300.0) * 100.0
+        )
+    else:
+        bat_ip = max(15.0, min(95.0, base_rating - (22.0 if role_code == "BOWL" else 8.0)))
+
+    if has_bowl:
+        eco = float(bowl.get("economy", 12.0) or 12.0)
+        inns = max(1.0, float(bowl.get("innings", 0) or 0))
+        wickets = float(bowl.get("wickets", 0) or 0)
+        wpi = wickets / inns
+        eco_score = min(100.0, max(0.0, (12.0 - eco) / 6.0 * 100.0))
+        wpi_score = min(100.0, (wpi / 2.0) * 100.0)
+        bowl_ip = 0.60 * wpi_score + 0.40 * eco_score
+    else:
+        bowl_ip = max(10.0, min(95.0, base_rating - (24.0 if role_code == "BAT" else 10.0)))
+
+    if role_code == "BAT":
+        bowl_ip *= 0.55
+    elif role_code == "BOWL":
+        bat_ip *= 0.60
+
+    return max(0.0, min(100.0, bat_ip)), max(0.0, min(100.0, bowl_ip))
+
+
+async def _build_team_strength_inputs(
+    team1: str,
+    team2: str,
+    prediction_squads: dict,
+    player_performance: dict,
+) -> dict:
+    """
+    Build per-player required values with source priority:
+    DB cache -> SportMonks-derived -> Claude-generated fallback.
+    """
+    team_rows: Dict[str, list] = {"team1": [], "team2": []}
+    missing_for_claude: list = []
+
+    cached_docs = {}
+    try:
+        d1 = await db.player_impact_points.find_one({"team": team1}, {"_id": 0})
+        d2 = await db.player_impact_points.find_one({"team": team2}, {"_id": 0})
+        cached_docs = {"team1": d1 or {}, "team2": d2 or {}}
+    except Exception:
+        cached_docs = {"team1": {}, "team2": {}}
+
+    for side, team_label in (("team1", team1), ("team2", team2)):
+        xi = prediction_squads.get(team_label, []) or []
+        perf_side = player_performance.get(side, {}) if isinstance(player_performance, dict) else {}
+        cached_players = cached_docs.get(side, {}).get("players", {}) if isinstance(cached_docs.get(side), dict) else {}
+        for idx, p in enumerate(xi[:11], start=1):
+            name = (p.get("name") or "").strip()
+            if not name:
+                continue
+            role_code = _impact_role_code(p.get("role"))
+            base_rating = float(resolve_star_player_rating(name))
+
+            cached_match = next(
+                (
+                    v
+                    for _, v in (cached_players.items() if isinstance(cached_players, dict) else [])
+                    if isinstance(v, dict) and _player_name_matches(v.get("name", ""), name)
+                ),
+                None,
+            )
+            bat_ip = bowl_ip = None
+            source = "db"
+            if isinstance(cached_match, dict):
+                for k in ("BatIP", "bat_ip", "batting_impact", "battingImpact"):
+                    if cached_match.get(k) is not None:
+                        bat_ip = float(cached_match.get(k))
+                        break
+                for k in ("BowlIP", "bowl_ip", "bowling_impact", "bowlingImpact"):
+                    if cached_match.get(k) is not None:
+                        bowl_ip = float(cached_match.get(k))
+                        break
+
+            perf_match = next(
+                (
+                    v
+                    for _, v in (perf_side.items() if isinstance(perf_side, dict) else [])
+                    if isinstance(v, dict) and _player_name_matches(v.get("name", ""), name)
+                ),
+                None,
+            )
+            if bat_ip is None or bowl_ip is None:
+                source = "sportmonks" if perf_match is not None else "default_fallback"
+                b_est, bo_est = _impact_points_from_perf_row(perf_match or {}, role_code, base_rating)
+                bat_ip = b_est if bat_ip is None else bat_ip
+                bowl_ip = bo_est if bowl_ip is None else bowl_ip
+
+            if perf_match is None and not isinstance(cached_match, dict):
+                missing_for_claude.append(
+                    {
+                        "name": name,
+                        "player_role": role_code,
+                        "batting_style": p.get("batting_style") or "",
+                        "bowling_style": p.get("bowling_style") or "",
+                    }
+                )
+
+            team_rows[side].append(
+                {
+                    "player_id": p.get("id") or p.get("player_id") or name,
+                    "name": name,
+                    "player_role": role_code,
+                    "BatIP": round(float(max(0.0, min(100.0, bat_ip if bat_ip is not None else base_rating))), 4),
+                    "BowlIP": round(float(max(0.0, min(100.0, bowl_ip if bowl_ip is not None else base_rating))), 4),
+                    "batting_position": idx,
+                    "bowling_order": 0,
+                    "_source": source,
+                }
+            )
+
+        # assign bowling_order by descending BowlIP among active bowl roles
+        bowl_candidates = [
+            r for r in team_rows[side] if r["player_role"] in {"BOWL", "AR"} or r.get("BowlIP", 0.0) >= 40.0
+        ]
+        bowl_candidates.sort(key=lambda r: r.get("BowlIP", 0.0), reverse=True)
+        for ord_idx, row in enumerate(bowl_candidates[:5], start=1):
+            row["bowling_order"] = ord_idx
+
+    if missing_for_claude:
+        claude_rows = await claude_generate_player_impact_points(team1, team2, missing_for_claude)
+        if claude_rows:
+            for side in ("team1", "team2"):
+                for row in team_rows[side]:
+                    if row.get("_source") == "sportmonks":
+                        continue
+                    nm = row.get("name", "")
+                    est = next(
+                        (v for k, v in claude_rows.items() if _player_name_matches(k, nm)),
+                        None,
+                    )
+                    if isinstance(est, dict):
+                        row["BatIP"] = round(float(est.get("BatIP", row["BatIP"])), 4)
+                        row["BowlIP"] = round(float(est.get("BowlIP", row["BowlIP"])), 4)
+                        row["_source"] = "claude"
+
+    metrics = compute_strength_metrics_for_match(team_rows, n_bat=5, m_bowl=4, alpha=0.5)
+    metrics["team_inputs"] = team_rows
+    return metrics
 
 
 def _xi_flat_names(playing_xi_squads: dict) -> list:
@@ -591,6 +1108,7 @@ async def _enrich_playing_xi_with_impact(
                 d["recent_form_impact"] = rf
             d["is_captain"] = bool(d.get("isCaptain") or d.get("is_captain"))
             d["is_overseas"] = bool(d.get("isOverseas") or d.get("is_overseas"))
+            d["role"] = normalize_primary_cricket_role(d.get("role"))
             out.append(d)
         return out
 
@@ -600,6 +1118,7 @@ async def _enrich_playing_xi_with_impact(
     merged["stats_lookback_matches"] = 5
     merged["xi_lineup_note"] = (
         "XI from SportMonks (live fixture if in progress, otherwise each side's last completed IPL match). "
+        "Player roles: roster merge + Claude (pre-match) as Batsman, Bowler, All-rounder, or Wicketkeeper. "
         "impact_points = Lucky 11 card rating (same scale as the 8-factor model). "
         "season_stats / recent_form_impact = last-5-match aggregates from SportMonks."
     )
@@ -796,6 +1315,163 @@ async def health_db():
         return {"ok": True, "mongodb": "connected", "ipl_schedule_documents": n}
     except Exception as e:
         return {"ok": False, "mongodb": "error", "error": str(e)[:500]}
+
+
+def _eval_winner_label(schedule_doc: dict) -> str:
+    w = (schedule_doc.get("winner") or "").lower().strip()
+    t1 = (schedule_doc.get("team1") or "").lower().strip()
+    t2 = (schedule_doc.get("team2") or "").lower().strip()
+    if not w:
+        return ""
+    if t1 and (t1 in w or w in t1):
+        return "team1"
+    if t2 and (t2 in w or w in t2):
+        return "team2"
+    return ""
+
+
+def _eval_clamp_prob(p: float) -> float:
+    return min(1.0 - 1e-8, max(1e-8, float(p)))
+
+
+def _eval_logloss(p: float, y: int) -> float:
+    p = _eval_clamp_prob(p)
+    return -(y * math.log(p) + (1 - y) * math.log(1 - p))
+
+
+def _eval_ece(rows: List[tuple], bins: int = 10) -> tuple[float, List[dict]]:
+    bucket = defaultdict(list)
+    for p, y in rows:
+        idx = min(bins - 1, int(p * bins))
+        bucket[idx].append((p, y))
+    total = len(rows) or 1
+    ece = 0.0
+    details = []
+    for i in range(bins):
+        pts = bucket.get(i, [])
+        if not pts:
+            continue
+        conf = sum(p for p, _ in pts) / len(pts)
+        acc = sum(y for _, y in pts) / len(pts)
+        w = len(pts) / total
+        gap = abs(acc - conf)
+        ece += w * gap
+        details.append(
+            {
+                "bin": i,
+                "count": len(pts),
+                "avg_confidence": round(conf, 4),
+                "empirical_accuracy": round(acc, 4),
+                "gap": round(gap, 4),
+            }
+        )
+    return ece, details
+
+
+def _eval_metrics(rows: List[tuple]) -> Optional[dict]:
+    if not rows:
+        return None
+    n = len(rows)
+    brier = sum((p - y) ** 2 for p, y in rows) / n
+    logloss = sum(_eval_logloss(p, y) for p, y in rows) / n
+    ece, bins = _eval_ece(rows, bins=10)
+    return {
+        "sample_size": n,
+        "brier": round(brier, 6),
+        "logloss": round(logloss, 6),
+        "ece_10bin": round(ece, 6),
+        "calibration_bins": bins,
+    }
+
+
+def _eval_track_prob(track: str, pre_doc: Optional[dict], live_doc: Optional[dict]) -> Optional[float]:
+    if track == "algo_only":
+        p = ((pre_doc or {}).get("prediction") or {}).get("team1_win_prob")
+    elif track == "claude_only":
+        cp = (live_doc or {}).get("claudePrediction") or (live_doc or {}).get("claude_prediction") or {}
+        p = cp.get("team1_win_pct")
+    elif track == "hybrid":
+        hp = (live_doc or {}).get("combinedPrediction") or (live_doc or {}).get("combined_prediction") or {}
+        p = hp.get("team1_pct")
+    else:
+        return None
+    if p is None:
+        return None
+    try:
+        return _eval_clamp_prob(float(p) / 100.0)
+    except (TypeError, ValueError):
+        return None
+
+
+def _eval_gate(metrics: dict, min_samples: int = 10, ece_threshold: float = 0.08) -> dict:
+    reasons = []
+    passed = True
+    algo = metrics.get("algo_only")
+    claude = metrics.get("claude_only")
+    hybrid = metrics.get("hybrid")
+
+    if not hybrid or hybrid["sample_size"] < min_samples:
+        passed = False
+        reasons.append(
+            f"hybrid sample size too low ({0 if not hybrid else hybrid['sample_size']}, min {min_samples})"
+        )
+    if algo and hybrid:
+        if hybrid["brier"] > algo["brier"]:
+            passed = False
+            reasons.append(f"hybrid brier {hybrid['brier']} > algo {algo['brier']}")
+        if hybrid["logloss"] > algo["logloss"]:
+            passed = False
+            reasons.append(f"hybrid logloss {hybrid['logloss']} > algo {algo['logloss']}")
+    if claude and hybrid:
+        if hybrid["brier"] > claude["brier"]:
+            passed = False
+            reasons.append(f"hybrid brier {hybrid['brier']} > claude {claude['brier']}")
+        if hybrid["logloss"] > claude["logloss"]:
+            passed = False
+            reasons.append(f"hybrid logloss {hybrid['logloss']} > claude {claude['logloss']}")
+    if hybrid and hybrid["ece_10bin"] > ece_threshold:
+        passed = False
+        reasons.append(f"hybrid ece {hybrid['ece_10bin']} exceeds threshold {ece_threshold}")
+    return {
+        "passed": passed,
+        "reasons": reasons,
+        "min_samples": min_samples,
+        "ece_threshold": ece_threshold,
+    }
+
+
+@api_router.get("/model-evaluation")
+async def get_model_evaluation(min_samples: int = 10, ece_threshold: float = 0.08):
+    schedule_docs = await db.ipl_schedule.find(
+        {"status": {"$in": ["completed", "Completed"]}},
+        {"_id": 0, "matchId": 1, "winner": 1, "team1": 1, "team2": 1},
+    ).to_list(2000)
+    schedule = {d["matchId"]: d for d in schedule_docs if d.get("matchId")}
+    pre_docs = await db.pre_match_predictions.find({}, {"_id": 0}).to_list(4000)
+    live_docs = await db.live_snapshots.find({}, {"_id": 0}).to_list(4000)
+    pre_by_mid = {d["matchId"]: d for d in pre_docs if d.get("matchId")}
+    live_by_mid = {d["matchId"]: d for d in live_docs if d.get("matchId")}
+
+    rows_by_track = {"algo_only": [], "claude_only": [], "hybrid": []}
+    for mid, sched_doc in schedule.items():
+        wlab = _eval_winner_label(sched_doc)
+        if not wlab:
+            continue
+        y = 1 if wlab == "team1" else 0
+        pre_doc = pre_by_mid.get(mid)
+        live_doc = live_by_mid.get(mid)
+        for track in rows_by_track:
+            p = _eval_track_prob(track, pre_doc, live_doc)
+            if p is not None:
+                rows_by_track[track].append((p, y))
+
+    metrics = {k: _eval_metrics(v) for k, v in rows_by_track.items()}
+    gate = _eval_gate(metrics, min_samples=min_samples, ece_threshold=ece_threshold)
+    return {
+        "evaluated_at": datetime.now(timezone.utc).isoformat(),
+        "tracks": metrics,
+        "gate": gate,
+    }
 
 
 @api_router.post("/scheduler/promote-now")
@@ -2467,7 +3143,14 @@ async def get_pre_match_prediction(match_id: str):
     """Get cached pre-match prediction (does not trigger new prediction)."""
     cached = await db.pre_match_predictions.find_one({"matchId": match_id}, {"_id": 0})
     if cached:
-        return cached
+        d = dict(cached)
+        if _playing_xi_needs_claude_roles(d):
+            xi = await db.playing_xi.find_one({"matchId": match_id}, {"_id": 0})
+            if xi:
+                _merge_playing_xi_roles_from_storage(d, xi)
+        if d.get("playing_xi"):
+            _sanitize_playing_xi_payload(d["playing_xi"])
+        return d
     return {"matchId": match_id, "prediction": None}
 
 
@@ -2480,7 +3163,11 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
     (11 named players per side from “Fetch Playing XI”). Inline SportMonks lineup
     fetch is not used here — only the generated cache drives the XI.
 
-    Auto-refreshes stale predictions (>6 hours old) to keep data fresh.
+    Playing XI primary roles (Batsman/Bowler/All-rounder/Wicketkeeper) are always
+    inferred via Claude on this path (ANTHROPIC_API_KEY required); prediction fails if that step fails.
+
+    Auto-refreshes stale predictions (>6 hours old) to keep data fresh, or sooner if
+    cached playing_xi rows lack Claude-assigned roles.
     """
     cached = await db.pre_match_predictions.find_one({"matchId": match_id}, {"_id": 0})
     if cached and not force:
@@ -2496,8 +3183,13 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
                     logger.info(f"Prediction for {match_id} is {age_hours:.1f}h old — auto-refreshing")
             except (ValueError, TypeError):
                 pass
-        if not is_stale:
+        if not is_stale and not _playing_xi_needs_claude_roles(cached):
             return cached
+        if not is_stale and _playing_xi_needs_claude_roles(cached):
+            logger.info(
+                "Prediction cache for %s is fresh but Playing XI lacks Claude roles — recomputing",
+                match_id,
+            )
 
     match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
     if not match_info:
@@ -2562,20 +3254,28 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
             },
         )
 
+    await _ensure_claude_playing_xi_roles(
+        match_id, team1, team2, prediction_squads, xi_doc, mandatory=True,
+    )
+
     xi_data = {
         "team1_xi": [
             {
                 "name": p.get("name"),
-                "role": p.get("role", ""),
+                "role": normalize_primary_cricket_role(p.get("role")),
                 "isCaptain": p.get("isCaptain", False),
+                "isOverseas": p.get("isOverseas", False),
+                "role_source": p.get("role_source") or "claude",
             }
             for p in prediction_squads.get(team1, [])
         ],
         "team2_xi": [
             {
                 "name": p.get("name"),
-                "role": p.get("role", ""),
+                "role": normalize_primary_cricket_role(p.get("role")),
                 "isCaptain": p.get("isCaptain", False),
+                "isOverseas": p.get("isOverseas", False),
+                "role_source": p.get("role_source") or "claude",
             }
             for p in prediction_squads.get(team2, [])
         ],
@@ -2608,6 +3308,7 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
         logger.warning(f"Failed to fetch player performance: {e}")
 
     player_performance = _filter_player_performance_to_playing_xi(player_performance, prediction_squads)
+    strength_metrics = await _build_team_strength_inputs(team1, team2, prediction_squads, player_performance)
 
     # Fetch form data from DB completed matches + player performance
     form_data = await fetch_team_form(db, team1, team2, player_performance=player_performance)
@@ -2625,6 +3326,8 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
         except Exception as e:
             logger.warning(f"Playing XI impact enrichment skipped: {e}")
 
+    _sanitize_playing_xi_payload(xi_data)
+
     # Web-search enrichment is consumed ONLY for PP/death/key-availability factors.
     web_context = {}
     try:
@@ -2641,6 +3344,7 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
         momentum_data=momentum_data,
         player_performance=player_performance,
         web_context=web_context,
+        team_strength_metrics=strength_metrics,
     )
     try:
         prediction["factor_claude_validation"] = await validate_factor_reasons_with_claude(
@@ -2702,6 +3406,12 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
             "source": "sportmonks_recent_matches",
             "has_data": bool(player_performance.get("team1") or player_performance.get("team2")),
         },
+        "team_strength_metrics": {
+            "config": strength_metrics.get("config", {}),
+            "team1": strength_metrics.get("team1", {}),
+            "team2": strength_metrics.get("team2", {}),
+            "source_priority": ["db", "sportmonks", "claude"],
+        },
         "computed_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -2715,6 +3425,14 @@ async def api_pre_match_predict(match_id: str, force: bool = False):
 
     return result
 
+
+@api_router.post("/matches/{match_id}/fetch-playing-xi-roles-and-predict")
+async def api_fetch_playing_xi_roles_and_predict(match_id: str):
+    """
+    One click: infer Expected XI roles via Claude (mandatory), then run a full pre-match
+    prediction refresh (same as pre-match-predict?force=true).
+    """
+    return await api_pre_match_predict(match_id, force=True)
 
 
 @api_router.post("/matches/{match_id}/injury-override")
@@ -2812,7 +3530,15 @@ async def api_get_upcoming_predictions():
     """Get all stored pre-match predictions for upcoming matches."""
     predictions = []
     async for doc in db.pre_match_predictions.find({}, {"_id": 0}).sort("match_number", 1):
-        predictions.append(doc)
+        d = dict(doc)
+        mid = d.get("matchId")
+        if mid and _playing_xi_needs_claude_roles(d):
+            xi = await db.playing_xi.find_one({"matchId": mid}, {"_id": 0})
+            if xi:
+                _merge_playing_xi_roles_from_storage(d, xi)
+        if d.get("playing_xi"):
+            _sanitize_playing_xi_payload(d["playing_xi"])
+        predictions.append(d)
     return {"predictions": predictions, "count": len(predictions)}
 
 
@@ -3353,6 +4079,7 @@ async def _bg_fetch_playing_xi(match_id: str, team1: str, team2: str, venue: str
 
         playing_xi_tasks[match_id] = {"status": "done", "data": xi_data}
         logger.info(f"Playing XI refreshed for {match_id}: {len(xi_data.get('team1_xi', []))}+{len(xi_data.get('team2_xi', []))} players ({source})")
+        asyncio.create_task(_bg_infer_claude_xi_roles(match_id, team1, team2))
     except Exception as e:
         logger.error(f"Playing XI fetch error for {match_id}: {e}")
         playing_xi_tasks[match_id] = {"status": "error", "error": str(e)}

@@ -325,6 +325,281 @@ ROLE_WEIGHTS = {
 
 ALLROUNDER_IMPACT_MULTIPLIER = 1.35
 
+
+def _canonical_xi_role(raw: Optional[str]) -> str:
+    """Normalize XI role strings (Claude / DB / APIs) to ROLE_WEIGHTS keys."""
+    if raw is None or not str(raw).strip():
+        return "Batsman"
+    r = str(raw).strip()
+    if r in ROLE_WEIGHTS:
+        return r
+    s = r.lower().replace("-", " ").replace("_", " ")
+    s = re.sub(r"\s+", " ", s)
+    if "wicket" in s or s in ("wk", "keeper", "wk batsman") or s.startswith("wk "):
+        return "Wicketkeeper"
+    if "all" in s and "round" in s:
+        return "All-rounder"
+    if "bowl" in s:
+        return "Bowler"
+    if "bat" in s:
+        return "Batsman"
+    return "Batsman"
+
+
+def _normalize_remapped_squad_roles(remapped_squads: dict) -> None:
+    for side in ("team1", "team2"):
+        for p in remapped_squads.get(side) or []:
+            if isinstance(p, dict):
+                p["role"] = _canonical_xi_role(p.get("role"))
+
+
+def _player_effective_rating(p: dict) -> float:
+    name = p.get("name", "")
+    base = float(resolve_star_player_rating(name))
+    overseas_bonus = 4 if p.get("isOverseas") and base >= 78 else 0
+    captain_bonus = 3 if p.get("isCaptain") else 0
+    return float(min(99, base + overseas_bonus + captain_bonus))
+
+
+def _team_batting_strength_index(players: list) -> float:
+    """Top-6 batting pool by XI role (Batsman / WK / AR per ROLE_WEIGHTS)."""
+    bat_ratings: List[float] = []
+    for p in players:
+        if not isinstance(p, dict):
+            continue
+        role = _canonical_xi_role(p.get("role"))
+        pr = _player_effective_rating(p)
+        if role == "All-rounder":
+            bat_ratings.append(pr * ALLROUNDER_IMPACT_MULTIPLIER)
+        else:
+            weights = ROLE_WEIGHTS.get(role, {"batting": 5, "bowling": 5})
+            if weights["batting"] >= 6:
+                bat_ratings.append(pr)
+    if not bat_ratings:
+        return 50.0
+    top6 = sorted(bat_ratings, reverse=True)[:6]
+    return sum(top6) / len(top6)
+
+
+def _team_bowling_strength_index(players: list) -> float:
+    """Top-5 bowling pool by XI role (Bowler / AR / listed specialist)."""
+    bowl_ratings: List[float] = []
+    for p in players:
+        if not isinstance(p, dict):
+            continue
+        role = _canonical_xi_role(p.get("role"))
+        name = p.get("name", "")
+        pr = _player_effective_rating(p)
+        if role == "All-rounder":
+            bowl_ratings.append(pr * ALLROUNDER_IMPACT_MULTIPLIER)
+        else:
+            weights = ROLE_WEIGHTS.get(role, {"batting": 5, "bowling": 5})
+            if weights["bowling"] >= 6:
+                bowl_ratings.append(pr)
+            elif weights["bowling"] < 6 and _is_listed_primary_bowler(name):
+                bowl_ratings.append(pr)
+    if not bowl_ratings:
+        return 50.0
+    top5 = sorted(bowl_ratings, reverse=True)[:5]
+    return sum(top5) / len(top5)
+
+
+def _team_batting_depth_tail_index(players: list) -> float:
+    """Avg rating of 7th–11th batting-role contributors (middle/lower order depth)."""
+    br: List[float] = []
+    for p in players:
+        if not isinstance(p, dict):
+            continue
+        role = _canonical_xi_role(p.get("role"))
+        rw = ROLE_WEIGHTS.get(role, {"batting": 5, "bowling": 5})
+        pr = _player_effective_rating(p)
+        if role == "All-rounder":
+            br.append(pr)
+        elif rw["batting"] >= 6:
+            br.append(pr)
+    br.sort(reverse=True)
+    tail = br[6:11] if len(br) > 6 else []
+    if not tail:
+        return 50.0
+    return sum(tail) / len(tail)
+
+
+def _team_allrounder_ratings(players: list) -> List[float]:
+    out: List[float] = []
+    for p in players:
+        if not isinstance(p, dict):
+            continue
+        if _canonical_xi_role(p.get("role")) == "All-rounder":
+            out.append(_player_effective_rating(p))
+    return out
+
+
+def _duel_share_pct(a: float, b: float) -> Tuple[int, int]:
+    """Split two non-negative scores into whole percentages (sum100) — who leads on this axis."""
+    a = max(0.0, float(a))
+    b = max(0.0, float(b))
+    tot = a + b
+    if tot <= 0:
+        return 50, 50
+    p1 = int(round(100.0 * a / tot))
+    p1 = max(0, min(100, p1))
+    return p1, 100 - p1
+
+
+def _safe_mean(vals: List[float], default: float = 0.0) -> float:
+    return float(sum(vals) / len(vals)) if vals else float(default)
+
+
+def _safe_std(vals: List[float]) -> float:
+    """Population std-dev with 0 fallback for <2 samples."""
+    if len(vals) < 2:
+        return 0.0
+    mu = _safe_mean(vals, 0.0)
+    var = sum((x - mu) ** 2 for x in vals) / len(vals)
+    return math.sqrt(max(0.0, var))
+
+
+def _percentile(values: List[float], q: float, default: float = 50.0) -> float:
+    """Simple linear-interpolated percentile for q in [0,1]."""
+    if not values:
+        return float(default)
+    xs = sorted(float(v) for v in values)
+    if len(xs) == 1:
+        return xs[0]
+    pos = max(0.0, min(1.0, q)) * (len(xs) - 1)
+    lo = int(math.floor(pos))
+    hi = int(math.ceil(pos))
+    if lo == hi:
+        return xs[lo]
+    frac = pos - lo
+    return xs[lo] * (1.0 - frac) + xs[hi] * frac
+
+
+def compute_team_strength_metrics_from_impact(
+    players: List[dict],
+    *,
+    n_bat: int = 5,
+    m_bowl: int = 4,
+    alpha: float = 0.5,
+    theta_bowl: float = 50.0,
+    theta_ar: float = 50.0,
+    arip_max: float = 100.0,
+) -> dict:
+    """
+    Compute 6 team metrics from per-player impact points.
+
+    Required per player: player_role (BAT/BOWL/AR), BatIP, BowlIP.
+    Optional: batting_position, bowling_order (informational/traceability).
+    """
+    rows = [p for p in (players or []) if isinstance(p, dict)]
+    bat_ips = [max(0.0, min(100.0, float(p.get("BatIP", 0.0)))) for p in rows]
+    bowl_ips = [max(0.0, min(100.0, float(p.get("BowlIP", 0.0)))) for p in rows]
+
+    top_bat = sorted(bat_ips, reverse=True)[: max(1, n_bat)]
+    while len(top_bat) < max(1, n_bat):
+        top_bat.append(0.0)
+    bat_weights = [(n_bat + 1 - i) / max(1, n_bat) for i in range(1, n_bat + 1)]
+    bat_w_sum = sum(bat_weights) or 1.0
+    batting_strength = sum(w * x for w, x in zip(bat_weights, top_bat)) / bat_w_sum
+    bat_mean = _safe_mean(top_bat, 0.0)
+    batting_depth = 1.0 - (_safe_std(top_bat) / bat_mean) if bat_mean > 0 else 0.0
+    batting_depth = max(0.0, min(1.0, batting_depth))
+
+    top_bowl = sorted(bowl_ips, reverse=True)[: max(1, m_bowl)]
+    while len(top_bowl) < max(1, m_bowl):
+        top_bowl.append(0.0)
+    bowl_weights = [(m_bowl + 1 - j) / max(1, m_bowl) for j in range(1, m_bowl + 1)]
+    bowl_w_sum = sum(bowl_weights) or 1.0
+    bowling_strength = sum(v * x for v, x in zip(bowl_weights, top_bowl)) / bowl_w_sum
+    bowling_depth = sum(1 for x in top_bowl if x >= float(theta_bowl)) / float(max(1, m_bowl))
+
+    ar_rows = [p for p in rows if str(p.get("player_role", "")).upper() == "AR"]
+    ar_ips = [
+        max(0.0, min(100.0, alpha * float(p.get("BatIP", 0.0)) + (1.0 - alpha) * float(p.get("BowlIP", 0.0))))
+        for p in ar_rows
+    ]
+    allrounder_strength = _safe_mean(ar_ips, 0.0) if ar_ips else 0.0
+    if ar_ips:
+        ar_count_ratio = sum(1 for x in ar_ips if x >= float(theta_ar)) / float(len(ar_ips))
+        arip_cap = max(1e-6, float(arip_max))
+        allrounder_depth = ar_count_ratio * (allrounder_strength / arip_cap)
+    else:
+        allrounder_depth = 0.0
+    allrounder_depth = max(0.0, min(1.0, allrounder_depth))
+
+    return {
+        "batting_strength": round(float(batting_strength), 4),
+        "batting_depth": round(float(batting_depth), 4),
+        "bowling_strength": round(float(bowling_strength), 4),
+        "bowling_depth": round(float(bowling_depth), 4),
+        "allrounder_strength": round(float(allrounder_strength), 4),
+        "allrounder_depth": round(float(allrounder_depth), 4),
+    }
+
+
+def compute_strength_metrics_for_match(
+    team_players: Dict[str, List[dict]],
+    *,
+    n_bat: int = 5,
+    m_bowl: int = 4,
+    alpha: float = 0.5,
+) -> dict:
+    """
+    Compute all 6 required metrics for team1/team2 with dataset thresholds.
+
+    Thresholds are derived from the union of both teams' current player rows:
+    - theta_bat: P50 of BatIP
+    - theta_bowl: P50 of BowlIP
+    - theta_AR: P50 of ARIP
+    - ARIP_max: max ARIP
+    """
+    t1_rows = list(team_players.get("team1") or [])
+    t2_rows = list(team_players.get("team2") or [])
+    all_rows = [*t1_rows, *t2_rows]
+    bat_all = [float(p.get("BatIP", 0.0)) for p in all_rows if isinstance(p, dict)]
+    bowl_all = [float(p.get("BowlIP", 0.0)) for p in all_rows if isinstance(p, dict)]
+    ar_all = [
+        alpha * float(p.get("BatIP", 0.0)) + (1.0 - alpha) * float(p.get("BowlIP", 0.0))
+        for p in all_rows
+        if isinstance(p, dict) and str(p.get("player_role", "")).upper() == "AR"
+    ]
+    theta_bat = _percentile(bat_all, 0.5, default=50.0)
+    theta_bowl = _percentile(bowl_all, 0.5, default=50.0)
+    theta_ar = _percentile(ar_all, 0.5, default=50.0)
+    arip_max = max(ar_all) if ar_all else 100.0
+
+    config = {
+        "N": int(n_bat),
+        "M": int(m_bowl),
+        "alpha": float(alpha),
+        "theta_bat": round(theta_bat, 4),
+        "theta_bowl": round(theta_bowl, 4),
+        "theta_AR": round(theta_ar, 4),
+        "ARIP_max": round(float(arip_max), 4),
+    }
+    return {
+        "config": config,
+        "team1": compute_team_strength_metrics_from_impact(
+            t1_rows,
+            n_bat=n_bat,
+            m_bowl=m_bowl,
+            alpha=alpha,
+            theta_bowl=theta_bowl,
+            theta_ar=theta_ar,
+            arip_max=arip_max,
+        ),
+        "team2": compute_team_strength_metrics_from_impact(
+            t2_rows,
+            n_bat=n_bat,
+            m_bowl=m_bowl,
+            alpha=alpha,
+            theta_bowl=theta_bowl,
+            theta_ar=theta_ar,
+            arip_max=arip_max,
+        ),
+    }
+
+
 # Roles counted as batting contributors for dew/chase heuristics (must match DB seed labels)
 BAT_ROLES_DEW = frozenset({"Batsman", "Wicketkeeper", "WK-Batsman", "All-rounder"})
 
@@ -399,55 +674,27 @@ def _effective_player_rating(name: str) -> float:
 
 
 def _batting_strength_logit(t1_rating: dict, t2_rating: dict) -> float:
+    """Uses squad batting indices (role-based top-6 batting pool)."""
     t1 = float(t1_rating.get("batting", 50))
     t2 = float(t2_rating.get("batting", 50))
     return 3.2 * ((t1 - t2) / 100.0)
 
 
 def _batting_depth_logit(remapped_squads: dict) -> float:
-    """7th–11th batting contributors by rating — middle/lower order depth."""
-
-    def tail_avg(players: list) -> float:
-        br = []
-        for p in players:
-            role = (p.get("role") or "").strip()
-            rw = ROLE_WEIGHTS.get(role, {"batting": 5, "bowling": 5})
-            if role == "All-rounder":
-                br.append(_effective_player_rating(p.get("name", "")))
-            elif rw["batting"] >= 6:
-                br.append(_effective_player_rating(p.get("name", "")))
-        br.sort(reverse=True)
-        tail = br[6:11] if len(br) > 6 else []
-        if not tail:
-            return 50.0
-        return sum(tail) / len(tail)
-
+    """7th–11th batting-role contributors — middle/lower order depth (XI roles)."""
     if not remapped_squads.get("team1") or not remapped_squads.get("team2"):
         return 0.0
-    t1, t2 = tail_avg(remapped_squads["team1"]), tail_avg(remapped_squads["team2"])
+    t1 = _team_batting_depth_tail_index(remapped_squads["team1"])
+    t2 = _team_batting_depth_tail_index(remapped_squads["team2"])
     return 2.5 * ((t1 - t2) / 100.0)
 
 
 def _bowling_strength_logit(remapped_squads: dict) -> float:
-    """Top-5 bowling rating average — quality separate from venue-weighted depth."""
-
-    def top5_bowl(players: list) -> float:
-        bowl_r = []
-        for p in players:
-            name = p.get("name", "")
-            role = (p.get("role") or "").strip()
-            rw = ROLE_WEIGHTS.get(role, {"batting": 5, "bowling": 5})
-            if rw["bowling"] >= 6 or _is_listed_primary_bowler(name):
-                bowl_r.append(_effective_player_rating(name))
-        bowl_r.sort(reverse=True)
-        top = bowl_r[:5]
-        if not top:
-            return 50.0
-        return sum(top) / len(top)
-
+    """Top-5 bowling pool by XI role (Bowler / All-rounder / listed specialist)."""
     if not remapped_squads.get("team1") or not remapped_squads.get("team2"):
         return 0.0
-    t1, t2 = top5_bowl(remapped_squads["team1"]), top5_bowl(remapped_squads["team2"])
+    t1 = _team_bowling_strength_index(remapped_squads["team1"])
+    t2 = _team_bowling_strength_index(remapped_squads["team2"])
     return 3.0 * ((t1 - t2) / 100.0)
 
 
@@ -470,9 +717,8 @@ def _powerplay_performance_logit(remapped_squads: dict) -> float:
     def top2_bat(players: list) -> float:
         bats = []
         for p in players:
-            role = (p.get("role") or "").strip()
-            if role in BAT_ROLES_DEW:
-                bats.append(_effective_player_rating(p.get("name", "")))
+            if _canonical_xi_role(p.get("role")) in BAT_ROLES_DEW:
+                bats.append(_player_effective_rating(p))
         bats.sort(reverse=True)
         if not bats:
             return 50.0
@@ -493,17 +739,16 @@ def _death_overs_performance_logit(remapped_squads: dict) -> float:
         bowlers = []
         for p in players:
             nm = p.get("name", "")
-            role = (p.get("role") or "").strip()
+            role = _canonical_xi_role(p.get("role"))
             rw = ROLE_WEIGHTS.get(role, {"batting": 5, "bowling": 5})
             if rw["bowling"] >= 6 or nm in PACE_BOWLERS or nm in SPIN_BOWLERS:
-                bowlers.append(_effective_player_rating(nm))
+                bowlers.append(_player_effective_rating(p))
         bowlers.sort(reverse=True)
         bavg = sum(bowlers[:3]) / min(3, max(len(bowlers), 1)) if bowlers else 50.0
         bats = []
         for p in players:
-            role = (p.get("role") or "").strip()
-            if role in BAT_ROLES_DEW:
-                bats.append(_effective_player_rating(p.get("name", "")))
+            if _canonical_xi_role(p.get("role")) in BAT_ROLES_DEW:
+                bats.append(_player_effective_rating(p))
         bats.sort(reverse=True)
         favg = sum(bats[:3]) / min(3, max(len(bats), 1)) if bats else 50.0
         return 0.55 * bavg + 0.45 * favg
@@ -586,10 +831,10 @@ def _allrounder_activity_indices(remapped_squads: dict, player_performance: dict
         ars = []
         depth = 0.0
         for p in players:
-            if (p.get("role") or "").strip() != "All-rounder":
+            if _canonical_xi_role(p.get("role")) != "All-rounder":
                 continue
             depth += 1.0
-            rt = _effective_player_rating(p.get("name", ""))
+            rt = _player_effective_rating(p)
             prow = _player_perf_row_for_name(perf, p.get("name", ""))
             ap = _activity_points_from_perf(prow)
             ars.append(0.65 * rt + 0.35 * min(100.0, ap))
@@ -790,7 +1035,7 @@ def _is_listed_primary_bowler(name: str) -> bool:
 
 def _is_bowling_contributor(p: dict) -> bool:
     """True if this XI player should count in bowling depth / pace-spin tallies."""
-    role = (p.get("role") or "Batsman").strip()
+    role = _canonical_xi_role(p.get("role"))
     if role in ("Bowler", "All-rounder"):
         return True
     return _is_listed_primary_bowler(p.get("name", ""))
@@ -800,7 +1045,7 @@ def _chase_strength_index(players: List[dict]) -> float:
     """0–1 index: stronger top-order chasing depth → higher. Neutral 0.5 if no data."""
     ratings = []
     for p in players:
-        if p.get("role") not in BAT_ROLES_DEW:
+        if _canonical_xi_role(p.get("role")) not in BAT_ROLES_DEW:
             continue
         ratings.append(resolve_star_player_rating(p.get("name", "")))
     if not ratings:
@@ -817,7 +1062,7 @@ def _team_label(team_key: str, team1: str, team2: str) -> str:
 def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
                         weather: Dict = None, form_data: Dict = None,
                         momentum_data: Dict = None, player_performance: Dict = None,
-                        web_context: Dict = None) -> Dict:
+                        web_context: Dict = None, team_strength_metrics: Dict = None) -> Dict:
     """
     16-Category Pre-Match Prediction Engine (The Lucky 11, IPL 2026).
     NO web scraping. All data from DB squads, SportMonks API, or weather API.
@@ -831,6 +1076,7 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
     momentum_data = momentum_data or {}
     player_performance = player_performance or {}
     web_context = web_context or {}
+    team_strength_metrics = team_strength_metrics or {}
 
     team1 = match_info.get("team1", "")
     team2 = match_info.get("team2", "")
@@ -856,6 +1102,8 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
             "team1": _squad_list_for_team(team1),
             "team2": _squad_list_for_team(team2),
         }
+    if remapped_squads.get("team1") and remapped_squads.get("team2"):
+        _normalize_remapped_squad_roles(remapped_squads)
 
     # ── Enhance squad ratings with actual player performance stats ──
     # Override STAR_PLAYERS ratings with real form data where available
@@ -905,16 +1153,43 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
         t2_rating = {"batting": 75, "bowling": 75, "allrounder_depth": 0, "allrounder_strength": 50}
         t1_squad_detail = t2_squad_detail = {}
 
-    batting_strength_logit = _batting_strength_logit(t1_rating, t2_rating)
-    batting_depth_logit = _batting_depth_logit(remapped_squads)
-    bowling_strength_logit = _bowling_strength_logit(remapped_squads)
+    t1_strength = team_strength_metrics.get("team1") if isinstance(team_strength_metrics, dict) else None
+    t2_strength = team_strength_metrics.get("team2") if isinstance(team_strength_metrics, dict) else None
+    has_impact_strength = isinstance(t1_strength, dict) and isinstance(t2_strength, dict)
+
+    if has_impact_strength:
+        t1_rating["batting"] = float(t1_strength.get("batting_strength", t1_rating.get("batting", 50)))
+        t2_rating["batting"] = float(t2_strength.get("batting_strength", t2_rating.get("batting", 50)))
+        t1_rating["bowling"] = float(t1_strength.get("bowling_strength", t1_rating.get("bowling", 50)))
+        t2_rating["bowling"] = float(t2_strength.get("bowling_strength", t2_rating.get("bowling", 50)))
+        t1_rating["allrounder_strength"] = float(
+            t1_strength.get("allrounder_strength", t1_rating.get("allrounder_strength", 50))
+        )
+        t2_rating["allrounder_strength"] = float(
+            t2_strength.get("allrounder_strength", t2_rating.get("allrounder_strength", 50))
+        )
+        t1_rating["allrounder_depth"] = float(
+            t1_strength.get("allrounder_depth", t1_rating.get("allrounder_depth", 0))
+        )
+        t2_rating["allrounder_depth"] = float(
+            t2_strength.get("allrounder_depth", t2_rating.get("allrounder_depth", 0))
+        )
+
+        batting_strength_logit = 3.2 * ((t1_rating["batting"] - t2_rating["batting"]) / 100.0)
+        batting_depth_logit = 2.5 * (float(t1_strength.get("batting_depth", 0.0)) - float(t2_strength.get("batting_depth", 0.0)))
+        bowling_strength_logit = 3.0 * ((t1_rating["bowling"] - t2_rating["bowling"]) / 100.0)
+    else:
+        batting_strength_logit = _batting_strength_logit(t1_rating, t2_rating)
+        batting_depth_logit = _batting_depth_logit(remapped_squads)
+        bowling_strength_logit = _bowling_strength_logit(remapped_squads)
     t1_ar_strength_act, t2_ar_strength_act, t1_ar_depth_act, t2_ar_depth_act = _allrounder_activity_indices(
         remapped_squads, player_performance
     )
-    t1_rating["allrounder_strength"] = round(t1_ar_strength_act, 1)
-    t2_rating["allrounder_strength"] = round(t2_ar_strength_act, 1)
-    t1_rating["allrounder_depth"] = round(max(float(t1_rating.get("allrounder_depth", 0)), t1_ar_depth_act), 2)
-    t2_rating["allrounder_depth"] = round(max(float(t2_rating.get("allrounder_depth", 0)), t2_ar_depth_act), 2)
+    if not has_impact_strength:
+        t1_rating["allrounder_strength"] = round(t1_ar_strength_act, 1)
+        t2_rating["allrounder_strength"] = round(t2_ar_strength_act, 1)
+        t1_rating["allrounder_depth"] = round(max(float(t1_rating.get("allrounder_depth", 0)), t1_ar_depth_act), 2)
+        t2_rating["allrounder_depth"] = round(max(float(t2_rating.get("allrounder_depth", 0)), t2_ar_depth_act), 2)
     allrounder_depth_logit = _allrounder_depth_logit(t1_rating, t2_rating)
     allrounder_strength_logit = _allrounder_strength_logit(t1_rating, t2_rating)
 
@@ -1044,6 +1319,14 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
 
     # ━━━━━━ Category 5: Bowling Attack Depth ━━━━━━
     bowl_depth_logit, bowl_detail = _compute_bowling_depth(remapped_squads, t1_rating, t2_rating, venue_key=venue_key)
+    if has_impact_strength:
+        t1_bdepth = max(0.0, min(1.0, float(t1_strength.get("bowling_depth", 0.0))))
+        t2_bdepth = max(0.0, min(1.0, float(t2_strength.get("bowling_depth", 0.0))))
+        bowl_depth_logit = 2.6 * (t1_bdepth - t2_bdepth)
+        b1, b2 = _duel_share_pct(t1_bdepth, t2_bdepth)
+        bowl_detail["team1_depth_share_pct"] = b1
+        bowl_detail["team2_depth_share_pct"] = b2
+        bowl_detail["source"] = "impact_points"
 
     # ━━━━━━ Category 6: Conditions — Real Weather Data ━━━━━━
     conditions_logit, conditions_detail = _compute_conditions_from_weather(
@@ -1271,6 +1554,28 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
         else "Top-order consistency is even from recent performer data."
     )
 
+    xi_t1 = remapped_squads.get("team1") or []
+    xi_t2 = remapped_squads.get("team2") or []
+    if has_impact_strength:
+        t1_tail_f = 100.0 * max(0.0, min(1.0, float(t1_strength.get("batting_depth", 0.0))))
+        t2_tail_f = 100.0 * max(0.0, min(1.0, float(t2_strength.get("batting_depth", 0.0))))
+    else:
+        t1_tail_f = _team_batting_depth_tail_index(xi_t1) if xi_t1 else 50.0
+        t2_tail_f = _team_batting_depth_tail_index(xi_t2) if xi_t2 else 50.0
+    t1_tail_bat_idx = round(t1_tail_f, 1) if xi_t1 else None
+    t2_tail_bat_idx = round(t2_tail_f, 1) if xi_t2 else None
+    bat_st_share1, bat_st_share2 = _duel_share_pct(t1_rating.get("batting", 50), t2_rating.get("batting", 50))
+    bat_dp_share1, bat_dp_share2 = _duel_share_pct(t1_tail_f, t2_tail_f)
+    bowl_st_share1, bowl_st_share2 = _duel_share_pct(t1_rating.get("bowling", 50), t2_rating.get("bowling", 50))
+    ar_st_share1, ar_st_share2 = _duel_share_pct(
+        t1_rating.get("allrounder_strength", 50), t2_rating.get("allrounder_strength", 50)
+    )
+    ar_dp_share1, ar_dp_share2 = _duel_share_pct(
+        t1_rating.get("allrounder_depth", 0), t2_rating.get("allrounder_depth", 0)
+    )
+    bowl_dp_share1 = int(bowl_detail.get("team1_depth_share_pct", 50))
+    bowl_dp_share2 = int(bowl_detail.get("team2_depth_share_pct", 50))
+
     return {
         "team1_win_prob": team1_win_prob,
         "team2_win_prob": team2_win_prob,
@@ -1286,7 +1591,7 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
         "model": "16-category-v2",
         "favourite_team": "team1" if is_t1_fav else "team2",
         "favourite_one_liner": favourite_one_liner,
-               "factor_one_liners": {
+        "factor_one_liners": {
             "batting_strength": {"favours": batstr_f, "one_liner": batstr_line},
             "current_form": {"favours": form_f, "one_liner": form_line},
             "venue_pitch": {"favours": vp_f, "one_liner": vp_line},
@@ -1318,7 +1623,11 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
                 "logit_contribution": round(WEIGHTS["batting_strength"] * batting_strength_logit, 4),
                 "team1_batting": t1_rating["batting"],
                 "team2_batting": t2_rating["batting"],
+                "team1_share_pct": bat_st_share1,
+                "team2_share_pct": bat_st_share2,
                 "raw_logit": round(batting_strength_logit, 4),
+                "source": "impact_points" if has_impact_strength else "xi_roles",
+                "basis": "xi_roles_top6_batting_pool",
                 **t1_squad_detail, **t2_squad_detail,
             },
             "current_form": {
@@ -1376,6 +1685,10 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
             "bowling_depth": {
                 "weight": WEIGHTS["bowling_depth"],
                 "logit_contribution": round(WEIGHTS["bowling_depth"] * bowl_depth_logit, 4),
+                "team1_share_pct": bowl_dp_share1,
+                "team2_share_pct": bowl_dp_share2,
+                "source": "impact_points" if has_impact_strength else "xi_roles",
+                "basis": "xi_bowling_contributors_venue_weighted_top5",
                 **bowl_detail,
             },
             "bowling_strength": {
@@ -1384,6 +1697,10 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
                 "raw_logit": round(bowling_strength_logit, 4),
                 "team1_bowling_rating": t1_rating.get("bowling", 50),
                 "team2_bowling_rating": t2_rating.get("bowling", 50),
+                "team1_share_pct": bowl_st_share1,
+                "team2_share_pct": bowl_st_share2,
+                "source": "impact_points" if has_impact_strength else "xi_roles",
+                "basis": "xi_roles_top5_bowling_pool",
             },
             "conditions": {
                 "weight": WEIGHTS["conditions"],
@@ -1404,6 +1721,12 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
                 "weight": WEIGHTS["batting_depth"],
                 "logit_contribution": round(WEIGHTS["batting_depth"] * batting_depth_logit, 4),
                 "raw_logit": round(batting_depth_logit, 4),
+                "team1_share_pct": bat_dp_share1,
+                "team2_share_pct": bat_dp_share2,
+                "team1_tail_batting_index": t1_tail_bat_idx,
+                "team2_tail_batting_index": t2_tail_bat_idx,
+                "source": "impact_points" if has_impact_strength else "xi_roles",
+                "basis": "xi_roles_positions_7_11_batting_tail",
             },
             "powerplay_performance": {
                 "weight": WEIGHTS["powerplay_performance"],
@@ -1429,6 +1752,10 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
                 "raw_logit": round(allrounder_depth_logit, 4),
                 "team1_allrounder_depth": t1_rating.get("allrounder_depth", 0),
                 "team2_allrounder_depth": t2_rating.get("allrounder_depth", 0),
+                "team1_share_pct": ar_dp_share1,
+                "team2_share_pct": ar_dp_share2,
+                "source": "impact_points" if has_impact_strength else "xi_roles",
+                "basis": "xi_allrounder_role_max_form_activity",
             },
             "allrounder_strength": {
                 "weight": WEIGHTS["allrounder_strength"],
@@ -1436,6 +1763,10 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
                 "raw_logit": round(allrounder_strength_logit, 4),
                 "team1_allrounder_strength": t1_rating.get("allrounder_strength", 50),
                 "team2_allrounder_strength": t2_rating.get("allrounder_strength", 50),
+                "team1_share_pct": ar_st_share1,
+                "team2_share_pct": ar_st_share2,
+                "source": "impact_points" if has_impact_strength else "xi_roles",
+                "basis": "xi_allrounder_role_top3_mean_effective_rating",
             },
             "top_order_consistency": {
                 "weight": WEIGHTS["top_order_consistency"],
@@ -1449,7 +1780,7 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
 # ── Helper Functions ──
 
 def _compute_squad_ratings(squad_data: dict) -> Tuple:
-    """Compute squad ratings from DB roster data ONLY."""
+    """Compute squad ratings from Expected XI using canonical roles (bat/bowl/AR pools)."""
     results = {}
     details = {}
     for team_key in ["team1", "team2"]:
@@ -1459,35 +1790,10 @@ def _compute_squad_ratings(squad_data: dict) -> Tuple:
             details[team_key] = {}
             continue
 
-        bat_ratings = []
-        bowl_ratings = []
-        allrounder_ratings = []
-        for p in players:
-            name = p.get("name", "")
-            role = p.get("role", "Batsman")
-            base_rating = resolve_star_player_rating(name)
-            overseas_bonus = 4 if p.get("isOverseas") and base_rating >= 78 else 0
-            captain_bonus = 3 if p.get("isCaptain") else 0
-            player_rating = min(99, base_rating + overseas_bonus + captain_bonus)
-
-            if role == "All-rounder":
-                bat_ratings.append(player_rating * ALLROUNDER_IMPACT_MULTIPLIER)
-                bowl_ratings.append(player_rating * ALLROUNDER_IMPACT_MULTIPLIER)
-                allrounder_ratings.append(player_rating)
-            else:
-                weights = ROLE_WEIGHTS.get(role, {"batting": 5, "bowling": 5})
-                if weights["batting"] >= 6:
-                    bat_ratings.append(player_rating)
-                if weights["bowling"] >= 6:
-                    bowl_ratings.append(player_rating)
-                elif weights["bowling"] < 6 and _is_listed_primary_bowler(name):
-                    # SportMonks / fallback XI often marks specialist bowlers as "Batsman"
-                    bowl_ratings.append(player_rating)
-
-        bat_avg = sum(sorted(bat_ratings, reverse=True)[:6]) / min(6, max(len(bat_ratings), 1)) if bat_ratings else 50
-        bowl_avg = sum(sorted(bowl_ratings, reverse=True)[:5]) / min(5, max(len(bowl_ratings), 1)) if bowl_ratings else 50
+        bat_avg = _team_batting_strength_index(players)
+        bowl_avg = _team_bowling_strength_index(players)
+        allrounder_ratings = _team_allrounder_ratings(players)
         ar_depth = len(allrounder_ratings)
-
         ar_strength = (
             sum(sorted(allrounder_ratings, reverse=True)[:3]) / min(3, len(allrounder_ratings))
             if allrounder_ratings else 50.0
@@ -1693,7 +1999,7 @@ def _compute_bowling_depth(squad_data: dict, t1_rating: dict, t2_rating: dict,
 
         for p in players:
             name = p.get("name", "")
-            role = (p.get("role") or "Batsman").strip()
+            role = _canonical_xi_role(p.get("role"))
             base_rating = resolve_star_player_rating(name)
 
             if role in ("Bowler", "All-rounder") or _is_listed_primary_bowler(name):
@@ -1862,7 +2168,7 @@ def _compute_conditions_from_weather(
         bowl_vals = []
         for p in players:
             nm = p.get("name", "")
-            role = (p.get("role") or "").strip()
+            role = _canonical_xi_role(p.get("role"))
             rt = resolve_star_player_rating(nm)
             rw = ROLE_WEIGHTS.get(role, {"batting": 5, "bowling": 5})
             if role in BAT_ROLES_DEW or rw["batting"] >= 6:
@@ -1884,8 +2190,8 @@ def _compute_conditions_from_weather(
     if dew_factor == "heavy" and is_evening:
         t1_players = squads.get("team1", [])
         t2_players = squads.get("team2", [])
-        t1_batters = [p for p in t1_players if p.get("role") in BAT_ROLES_DEW]
-        t2_batters = [p for p in t2_players if p.get("role") in BAT_ROLES_DEW]
+        t1_batters = [p for p in t1_players if _canonical_xi_role(p.get("role")) in BAT_ROLES_DEW]
+        t2_batters = [p for p in t2_players if _canonical_xi_role(p.get("role")) in BAT_ROLES_DEW]
         t1_bat_avg = sum(resolve_star_player_rating(p.get("name", "")) for p in t1_batters) / max(len(t1_batters), 1)
         t2_bat_avg = sum(resolve_star_player_rating(p.get("name", "")) for p in t2_batters) / max(len(t2_batters), 1)
         bat_diff = (t1_bat_avg - t2_bat_avg) / 100
@@ -1903,8 +2209,8 @@ def _compute_conditions_from_weather(
     elif dew_factor == "moderate" and is_evening:
         t1_players = squads.get("team1", [])
         t2_players = squads.get("team2", [])
-        t1_batters = [p for p in t1_players if p.get("role") in BAT_ROLES_DEW]
-        t2_batters = [p for p in t2_players if p.get("role") in BAT_ROLES_DEW]
+        t1_batters = [p for p in t1_players if _canonical_xi_role(p.get("role")) in BAT_ROLES_DEW]
+        t2_batters = [p for p in t2_players if _canonical_xi_role(p.get("role")) in BAT_ROLES_DEW]
         t1_bat_avg = sum(resolve_star_player_rating(p.get("name", "")) for p in t1_batters) / max(len(t1_batters), 1)
         t2_bat_avg = sum(resolve_star_player_rating(p.get("name", "")) for p in t2_batters) / max(len(t2_batters), 1)
         bat_diff = (t1_bat_avg - t2_bat_avg) / 100
@@ -2039,5 +2345,5 @@ def _is_night_match(match_time: str) -> bool:
 def _guess_role(name: str, squad: list) -> str:
     for p in squad:
         if p.get("name", "").lower() == name.lower():
-            return p.get("role", "Batsman")
+            return _canonical_xi_role(p.get("role"))
     return "Batsman"

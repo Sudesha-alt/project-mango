@@ -248,6 +248,211 @@ async def _claude_json(prompt: str, system_msg: str = "You are a precise data pa
     return _extract_json(response)
 
 
+def normalize_primary_cricket_role(raw: Optional[str]) -> str:
+    """Map free-text role labels to Batsman | Bowler | All-rounder | Wicketkeeper (predictor + UI)."""
+    if not raw:
+        return "Batsman"
+    s = raw.strip().lower().replace("-", " ").replace("_", " ")
+    s = re.sub(r"\s+", " ", s)
+    if "wicket" in s or s in ("wk", "keeper", "wk batsman") or s.startswith("wk "):
+        return "Wicketkeeper"
+    if "all" in s and "round" in s:
+        return "All-rounder"
+    if "bowl" in s or s in ("spin", "pace"):
+        return "Bowler"
+    if "bat" in s and "bowl" not in s:
+        return "Batsman"
+    if s in ("ar",):
+        return "All-rounder"
+    return "Batsman"
+
+
+def _normalize_claude_team_role_map(raw_block) -> Dict[str, str]:
+    """Player name -> canonical role (keys trimmed)."""
+    out: Dict[str, str] = {}
+    if not isinstance(raw_block, dict):
+        return out
+    for k, v in raw_block.items():
+        name = str(k).strip()
+        if name:
+            out[name] = normalize_primary_cricket_role(v)
+    return out
+
+
+async def claude_infer_playing_xi_roles(team1: str, team2: str, squads: dict) -> dict:
+    """
+    One batched Claude call: primary T20 role per Expected XI player.
+
+    Input style (in prompt): team_a={{ name, name2, ... }}  team_b={{ ... }}
+    Expected response JSON:
+      {{ "team_a": {{ "Full Name": "Batsman", ... }}, "team_b": {{ ... }} }}
+
+    squads: {{ team1_full_name: [ player dicts ], team2_full_name: [...] }}
+    Returns dict with team_a and team_b as name->role maps (canonical roles).
+    """
+    if not ANTHROPIC_KEY:
+        raise ValueError("ANTHROPIC_API_KEY not configured in .env")
+    t1_rows = list(squads.get(team1) or [])[:11]
+    t2_rows = list(squads.get(team2) or [])[:11]
+    if len(t1_rows) < 11 or len(t2_rows) < 11:
+        raise ValueError("Need 11 players per side for role inference")
+
+    lines_a = []
+    for p in t1_rows:
+        nm = (p.get("name") or "").strip()
+        if nm:
+            lines_a.append(nm)
+    lines_b = []
+    for p in t2_rows:
+        nm = (p.get("name") or "").strip()
+        if nm:
+            lines_b.append(nm)
+    if len(lines_a) < 11 or len(lines_b) < 11:
+        raise ValueError("Need 11 named players per side for role inference")
+
+    block_a = ",\n".join(lines_a)
+    block_b = ",\n".join(lines_b)
+
+    prompt = f"""You assign each IPL T20 player exactly ONE primary role for a typical XI.
+
+Allowed roles ONLY (exact spelling): Batsman, Bowler, All-rounder, Wicketkeeper.
+
+Rules:
+- Batsman: batting is the main job; little or no bowling expected.
+- Bowler: bowling is the main job.
+- All-rounder: regularly bowls meaningful overs AND bats in T20 (not a one-over part-timer only).
+- Wicketkeeper: the player who keeps wickets for this XI when applicable.
+
+INPUT — use these exact full names as JSON object keys in your answer (same spelling and spacing):
+
+team_a={{
+{block_a}
+}}
+
+team_b={{
+{block_b}
+}}
+
+Meaning: team_a is "{team1}". team_b is "{team2}".
+
+OUTPUT — JSON ONLY, no markdown, no commentary. Shape:
+
+{{
+  "team_a": {{ "<exact name from team_a input>": "Batsman"|"Bowler"|"All-rounder"|"Wicketkeeper", ... }},
+  "team_b": {{ "<exact name from team_b input>": "Batsman"|"Bowler"|"All-rounder"|"Wicketkeeper", ... }}
+}}
+
+You MUST include every name from the team_a input block under "team_a" and every name from the team_b input block under "team_b" (11 keys each). Keys must match the INPUT name strings exactly.
+"""
+    raw = await _claude_json(
+        prompt,
+        system_msg=(
+            "You output ONLY one valid JSON object. Keys: team_a and team_b only. "
+            "Each value is an object mapping player name strings to role strings. "
+            "No markdown, no arrays, no extra keys."
+        ),
+    )
+    if not isinstance(raw, dict):
+        raise ValueError("Claude roles: expected JSON object")
+
+    ta = raw.get("team_a") or raw.get("teamA")
+    tb = raw.get("team_b") or raw.get("teamB")
+    if isinstance(ta, list) or isinstance(tb, list):
+        raise ValueError("Claude roles: expected team_a and team_b to be objects (name -> role), not arrays")
+
+    map_a = _normalize_claude_team_role_map(ta if isinstance(ta, dict) else {})
+    map_b = _normalize_claude_team_role_map(tb if isinstance(tb, dict) else {})
+
+    if len(map_a) < 9 or len(map_b) < 9:
+        logger.warning(
+            "Claude XI roles: thin maps (team_a=%s team_b=%s keys); check name matching",
+            len(map_a),
+            len(map_b),
+        )
+
+    return {"team_a": map_a, "team_b": map_b}
+
+
+async def claude_generate_player_impact_points(team1: str, team2: str, players: List[dict]) -> Dict[str, dict]:
+    """
+    Generate missing BatIP/BowlIP estimates with Claude for a small player set.
+
+    Returns:
+      {
+        "Player Name": {"BatIP": float, "BowlIP": float, "player_role": "BAT|BOWL|AR"}
+      }
+    """
+    if not players:
+        return {}
+    if not ANTHROPIC_KEY:
+        return {}
+
+    rows = []
+    for p in players:
+        name = (p.get("name") or "").strip()
+        if not name:
+            continue
+        role = (p.get("player_role") or "").strip().upper() or "BAT"
+        batting_style = (p.get("batting_style") or "").strip()
+        bowling_style = (p.get("bowling_style") or "").strip()
+        rows.append(
+            f'- name: "{name}", role_hint: "{role}", batting_style: "{batting_style}", bowling_style: "{bowling_style}"'
+        )
+    if not rows:
+        return {}
+
+    prompt = f"""Estimate T20 player impact points for an IPL match context.
+Output JSON ONLY.
+
+Teams: {team1} vs {team2}
+Players:
+{chr(10).join(rows)}
+
+Return exact shape:
+{{
+  "players": [
+    {{"name":"...", "player_role":"BAT|BOWL|AR", "BatIP": 0-100 float, "BowlIP": 0-100 float}}
+  ]
+}}
+
+Rules:
+- BatIP and BowlIP must be floats in [0,100].
+- BAT: BowlIP can be low but non-negative.
+- BOWL: BatIP can be low but non-negative.
+- AR: both should be meaningful.
+- Keep names exactly as provided.
+"""
+    try:
+        data = await _claude_json(prompt)
+        out: Dict[str, dict] = {}
+        for row in (data.get("players") or []):
+            if not isinstance(row, dict):
+                continue
+            nm = (row.get("name") or "").strip()
+            if not nm:
+                continue
+            try:
+                bat_ip = float(row.get("BatIP", 0.0))
+            except (TypeError, ValueError):
+                bat_ip = 0.0
+            try:
+                bowl_ip = float(row.get("BowlIP", 0.0))
+            except (TypeError, ValueError):
+                bowl_ip = 0.0
+            role = (row.get("player_role") or "").strip().upper()
+            if role not in {"BAT", "BOWL", "AR"}:
+                role = "BAT"
+            out[nm] = {
+                "BatIP": max(0.0, min(100.0, bat_ip)),
+                "BowlIP": max(0.0, min(100.0, bowl_ip)),
+                "player_role": role,
+            }
+        return out
+    except Exception as e:
+        logger.warning(f"claude_generate_player_impact_points failed: {e}")
+        return {}
+
+
 async def validate_factor_reasons_with_claude(
     team1: str,
     team2: str,
