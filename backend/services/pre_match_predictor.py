@@ -17,6 +17,8 @@ import contextvars
 from difflib import SequenceMatcher
 from typing import Dict, Optional, Tuple, List
 
+from services.cricket_phase_utils import team_phase_quality
+
 logger = logging.getLogger(__name__)
 _RATINGS_OVERRIDE: contextvars.ContextVar = contextvars.ContextVar("ratings_override", default=None)
 
@@ -475,6 +477,49 @@ def _percentile(values: List[float], q: float, default: float = 50.0) -> float:
     return xs[lo] * (1.0 - frac) + xs[hi] * frac
 
 
+# Option C: position-weighted team assembly (confirmed XI order).
+BAT_ORDER_WEIGHTS = (0.25, 0.22, 0.20, 0.18, 0.15)
+
+
+def _top5_bat_ips_by_slot(players: List[dict], n_bat: int = 5) -> List[float]:
+    """First n batters in batting_position order with roles BAT or AR."""
+    rows = sorted(
+        [p for p in (players or []) if isinstance(p, dict)],
+        key=lambda x: int(x.get("batting_position", 99) or 99),
+    )
+    out: List[float] = []
+    for r in rows:
+        role = str(r.get("player_role", "")).upper()
+        if role in ("BAT", "AR"):
+            out.append(max(0.0, min(100.0, float(r.get("BatIP", 0.0)))))
+        if len(out) >= n_bat:
+            break
+    while len(out) < n_bat:
+        out.append(0.0)
+    return out[:n_bat]
+
+
+def _top_m_bowl_ips_by_order(players: List[dict], m_bowl: int = 4) -> List[float]:
+    """BowlIPs in bowling_order (XI bowling sequence), not sorted by raw BowlIP."""
+    rows = [p for p in (players or []) if isinstance(p, dict)]
+    ordered: List[Tuple[int, float]] = []
+    for r in rows:
+        bo = int(r.get("bowling_order") or 0)
+        if bo >= 1:
+            ordered.append((bo, max(0.0, min(100.0, float(r.get("BowlIP", 0.0))))))
+    ordered.sort(key=lambda t: t[0])
+    out = [t[1] for t in ordered[:m_bowl]]
+    while len(out) < m_bowl:
+        out.append(0.0)
+    return out[:m_bowl]
+
+
+def _bowl_slot_weights(m_bowl: int) -> List[float]:
+    base = list(BAT_ORDER_WEIGHTS[: max(1, m_bowl)])
+    s = sum(base) or 1.0
+    return [w / s for w in base]
+
+
 def compute_team_strength_metrics_from_impact(
     players: List[dict],
     *,
@@ -488,27 +533,21 @@ def compute_team_strength_metrics_from_impact(
     """
     Compute 6 team metrics from per-player impact points.
 
-    Required per player: player_role (BAT/BOWL/AR), BatIP, BowlIP.
-    Optional: batting_position, bowling_order (informational/traceability).
+    Batting: Option C weights [0.25..0.15] on first n_bat BAT/AR slots by batting_position.
+    Bowling: first m_bowl players by bowling_order with renormalized slice of the same weight pattern.
     """
     rows = [p for p in (players or []) if isinstance(p, dict)]
-    bat_ips = [max(0.0, min(100.0, float(p.get("BatIP", 0.0)))) for p in rows]
-    bowl_ips = [max(0.0, min(100.0, float(p.get("BowlIP", 0.0)))) for p in rows]
 
-    top_bat = sorted(bat_ips, reverse=True)[: max(1, n_bat)]
-    while len(top_bat) < max(1, n_bat):
-        top_bat.append(0.0)
-    bat_weights = [(n_bat + 1 - i) / max(1, n_bat) for i in range(1, n_bat + 1)]
+    top_bat = _top5_bat_ips_by_slot(rows, n_bat=n_bat)
+    bat_weights = list(BAT_ORDER_WEIGHTS[: max(1, n_bat)])
     bat_w_sum = sum(bat_weights) or 1.0
     batting_strength = sum(w * x for w, x in zip(bat_weights, top_bat)) / bat_w_sum
     bat_mean = _safe_mean(top_bat, 0.0)
     batting_depth = 1.0 - (_safe_std(top_bat) / bat_mean) if bat_mean > 0 else 0.0
     batting_depth = max(0.0, min(1.0, batting_depth))
 
-    top_bowl = sorted(bowl_ips, reverse=True)[: max(1, m_bowl)]
-    while len(top_bowl) < max(1, m_bowl):
-        top_bowl.append(0.0)
-    bowl_weights = [(m_bowl + 1 - j) / max(1, m_bowl) for j in range(1, m_bowl + 1)]
+    top_bowl = _top_m_bowl_ips_by_order(rows, m_bowl=m_bowl)
+    bowl_weights = _bowl_slot_weights(m_bowl)
     bowl_w_sum = sum(bowl_weights) or 1.0
     bowling_strength = sum(v * x for v, x in zip(bowl_weights, top_bowl)) / bowl_w_sum
     bowling_depth = sum(1 for x in top_bowl if x >= float(theta_bowl)) / float(max(1, m_bowl))
@@ -577,26 +616,35 @@ def compute_strength_metrics_for_match(
         "theta_AR": round(theta_ar, 4),
         "ARIP_max": round(float(arip_max), 4),
     }
+    block1 = compute_team_strength_metrics_from_impact(
+        t1_rows,
+        n_bat=n_bat,
+        m_bowl=m_bowl,
+        alpha=alpha,
+        theta_bowl=theta_bowl,
+        theta_ar=theta_ar,
+        arip_max=arip_max,
+    )
+    block2 = compute_team_strength_metrics_from_impact(
+        t2_rows,
+        n_bat=n_bat,
+        m_bowl=m_bowl,
+        alpha=alpha,
+        theta_bowl=theta_bowl,
+        theta_ar=theta_ar,
+        arip_max=arip_max,
+    )
+    ph1, ok1 = team_phase_quality(t1_rows)
+    ph2, ok2 = team_phase_quality(t2_rows)
+    if ph1 is not None:
+        block1["phase"] = ph1
+    if ph2 is not None:
+        block2["phase"] = ph2
     return {
         "config": config,
-        "team1": compute_team_strength_metrics_from_impact(
-            t1_rows,
-            n_bat=n_bat,
-            m_bowl=m_bowl,
-            alpha=alpha,
-            theta_bowl=theta_bowl,
-            theta_ar=theta_ar,
-            arip_max=arip_max,
-        ),
-        "team2": compute_team_strength_metrics_from_impact(
-            t2_rows,
-            n_bat=n_bat,
-            m_bowl=m_bowl,
-            alpha=alpha,
-            theta_bowl=theta_bowl,
-            theta_ar=theta_ar,
-            arip_max=arip_max,
-        ),
+        "team1": block1,
+        "team2": block2,
+        "phase_data_ready": bool(ok1 and ok2),
     }
 
 
@@ -874,6 +922,20 @@ def _death_overs_performance_logit_from_web(web_context: dict) -> Optional[float
     t1 = (t1s - t1c) / 30.0
     t2 = (t2s - t2c) / 30.0
     return 2.6 * (t1 - t2)
+
+
+def _phase_profile_logit(
+    t1_phase: Optional[dict],
+    t2_phase: Optional[dict],
+    index_key: str,
+    scale: float,
+) -> float:
+    """team1 − team2 logit from 0–100 phase indices (see team_phase_quality)."""
+    if not isinstance(t1_phase, dict) or not isinstance(t2_phase, dict):
+        return 0.0
+    i1 = float(t1_phase.get(index_key) or 50.0)
+    i2 = float(t2_phase.get(index_key) or 50.0)
+    return float(scale) * ((i1 - i2) / 100.0)
 
 
 def _key_players_availability_logit_from_web(web_context: dict) -> Optional[float]:
@@ -1193,13 +1255,40 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
     allrounder_depth_logit = _allrounder_depth_logit(t1_rating, t2_rating)
     allrounder_strength_logit = _allrounder_strength_logit(t1_rating, t2_rating)
 
-    # These three factors consume web-search context when available, fallback to deterministic XI proxy.
-    powerplay_logit = _powerplay_performance_logit_from_web(web_context)
-    if powerplay_logit is None:
-        powerplay_logit = _powerplay_performance_logit(remapped_squads)
-    death_overs_logit = _death_overs_performance_logit_from_web(web_context)
-    if death_overs_logit is None:
-        death_overs_logit = _death_overs_performance_logit(remapped_squads)
+    # PP / death: prefer ball-by-ball phase indices when both XIs have enough sample; else web; else XI proxy.
+    phase_dual_ready = bool(team_strength_metrics.get("phase_data_ready"))
+    t1_phase_block = (t1_strength or {}).get("phase") if has_impact_strength else None
+    t2_phase_block = (t2_strength or {}).get("phase") if has_impact_strength else None
+    web_pp_logit = _powerplay_performance_logit_from_web(web_context)
+    web_death_logit = _death_overs_performance_logit_from_web(web_context)
+
+    if (
+        phase_dual_ready
+        and isinstance(t1_phase_block, dict)
+        and isinstance(t2_phase_block, dict)
+    ):
+        powerplay_logit = _phase_profile_logit(
+            t1_phase_block, t2_phase_block, "powerplay_index", 2.0
+        )
+        death_overs_logit = _phase_profile_logit(
+            t1_phase_block, t2_phase_block, "death_index", 2.2
+        )
+        pp_source = "sportmonks_ball_phases"
+        death_source = "sportmonks_ball_phases"
+    else:
+        powerplay_logit = web_pp_logit
+        if powerplay_logit is None:
+            powerplay_logit = _powerplay_performance_logit(remapped_squads)
+            pp_source = "fallback_xi_proxy"
+        else:
+            pp_source = "openai_web"
+        death_overs_logit = web_death_logit
+        if death_overs_logit is None:
+            death_overs_logit = _death_overs_performance_logit(remapped_squads)
+            death_source = "fallback_xi_proxy"
+        else:
+            death_source = "openai_web"
+
     key_avail_logit = _key_players_availability_logit_from_web(web_context)
     if key_avail_logit is None:
         key_avail_logit = _key_players_availability_logit(remapped_squads)
@@ -1379,8 +1468,9 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
         "form_ready": bool(form_data),
         "weather_ready": bool(weather and weather.get("available")),
         "h2h_ready": bool(total_h2h > 0),
-        "web_pp_ready": _powerplay_performance_logit_from_web(web_context) is not None,
-        "web_death_ready": _death_overs_performance_logit_from_web(web_context) is not None,
+        "sportmonks_phase_ready": phase_dual_ready,
+        "web_pp_ready": web_pp_logit is not None,
+        "web_death_ready": web_death_logit is not None,
         "web_inj_ready": _key_players_availability_logit_from_web(web_context) is not None,
     }
     quality_ratio = sum(1 for v in quality_sources.values() if v) / max(1, len(quality_sources))
@@ -1524,17 +1614,43 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
         else "Top bowling quality is evenly matched."
     )
     pp_f = _favours_from_logit(powerplay_logit)
-    pp_line = (
-        f"{_named(pp_f)} — stronger powerplay batting profile."
-        if pp_f != "neutral"
-        else "Powerplay batting profiles are even."
-    )
+    if pp_source == "sportmonks_ball_phases":
+        pp_line = (
+            f"{_named(pp_f)} — stronger powerplay mix from ball-by-ball phase tagging."
+            if pp_f != "neutral"
+            else "Powerplay phase indices are even in the synced sample."
+        )
+    elif pp_source == "openai_web":
+        pp_line = (
+            f"{_named(pp_f)} — stronger powerplay profile (web context)."
+            if pp_f != "neutral"
+            else "Powerplay signals from web context are balanced."
+        )
+    else:
+        pp_line = (
+            f"{_named(pp_f)} — stronger powerplay batting profile (XI rating proxy)."
+            if pp_f != "neutral"
+            else "Powerplay batting profiles are even (XI proxy)."
+        )
     death_f = _favours_from_logit(death_overs_logit)
-    death_line = (
-        f"{_named(death_f)} — better death-overs specialist mix."
-        if death_f != "neutral"
-        else "Death overs profiles are balanced."
-    )
+    if death_source == "sportmonks_ball_phases":
+        death_line = (
+            f"{_named(death_f)} — stronger death-overs mix from ball-by-ball phase tagging."
+            if death_f != "neutral"
+            else "Death overs phase indices are even in the synced sample."
+        )
+    elif death_source == "openai_web":
+        death_line = (
+            f"{_named(death_f)} — better death overs (web context)."
+            if death_f != "neutral"
+            else "Death overs signals from web context are balanced."
+        )
+    else:
+        death_line = (
+            f"{_named(death_f)} — better death-overs specialist mix (XI proxy)."
+            if death_f != "neutral"
+            else "Death overs profiles are balanced (XI proxy)."
+        )
     ka_f = _favours_from_logit(key_avail_logit)
     ka_line = (
         f"{_named(ka_f)} — fewer flagged availability issues in the XI."
@@ -1743,13 +1859,35 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
                 "weight": WEIGHTS["powerplay_performance"],
                 "logit_contribution": round(WEIGHTS["powerplay_performance"] * powerplay_logit, 4),
                 "raw_logit": round(powerplay_logit, 4),
-                "source": "openai_web" if _powerplay_performance_logit_from_web(web_context) is not None else "fallback_xi_proxy",
+                "source": pp_source,
+                **(
+                    {
+                        "team1_powerplay_index": (t1_phase_block or {}).get("powerplay_index"),
+                        "team2_powerplay_index": (t2_phase_block or {}).get("powerplay_index"),
+                        "team1_pp_bat_balls": (t1_phase_block or {}).get("pp_bat_balls_sample"),
+                        "team2_pp_bat_balls": (t2_phase_block or {}).get("pp_bat_balls_sample"),
+                        "team1_pp_bowl_balls": (t1_phase_block or {}).get("pp_bowl_balls_sample"),
+                        "team2_pp_bowl_balls": (t2_phase_block or {}).get("pp_bowl_balls_sample"),
+                    }
+                    if pp_source == "sportmonks_ball_phases"
+                    else {}
+                ),
             },
             "death_overs_performance": {
                 "weight": WEIGHTS["death_overs_performance"],
                 "logit_contribution": round(WEIGHTS["death_overs_performance"] * death_overs_logit, 4),
                 "raw_logit": round(death_overs_logit, 4),
-                "source": "openai_web" if _death_overs_performance_logit_from_web(web_context) is not None else "fallback_xi_proxy",
+                "source": death_source,
+                **(
+                    {
+                        "team1_death_index": (t1_phase_block or {}).get("death_index"),
+                        "team2_death_index": (t2_phase_block or {}).get("death_index"),
+                        "team1_death_bat_balls": (t1_phase_block or {}).get("death_bat_balls_sample"),
+                        "team2_death_bat_balls": (t2_phase_block or {}).get("death_bat_balls_sample"),
+                    }
+                    if death_source == "sportmonks_ball_phases"
+                    else {}
+                ),
             },
             "key_players_availability": {
                 "weight": WEIGHTS["key_players_availability"],

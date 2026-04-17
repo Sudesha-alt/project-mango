@@ -1,7 +1,37 @@
 import os
 import logging
+import asyncio
+from datetime import datetime, timezone
 import httpx
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
+
+APP_META_PLAYER_PERF_ID = "player_performance"
+
+
+async def record_player_performance_db_touch(db, *, source: str, **extra: Any) -> None:
+    """Bump monotonic metadata so pre-match UI can prompt re-predict after sync/enrich."""
+    payload = {
+        "last_update_at": datetime.now(timezone.utc).isoformat(),
+        "last_update_source": source,
+        **extra,
+    }
+    await db.app_meta.update_one(
+        {"_id": APP_META_PLAYER_PERF_ID},
+        {"$set": payload},
+        upsert=True,
+    )
+
+
+async def get_player_performance_meta(db) -> dict:
+    doc = await db.app_meta.find_one({"_id": APP_META_PLAYER_PERF_ID}, {"_id": 0})
+    return dict(doc) if doc else {}
+
+from services.cricket_phase_utils import (
+    accumulate_phases_from_balls,
+    empty_phases_root,
+    finalize_phase_derived,
+    normalize_balls_payload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -813,9 +843,12 @@ def _lineup_team_player_ids(lineup_raw: list, team_id: int) -> set:
     return ids
 
 
-async def fetch_fixture_batting_bowling(fixture_id: int) -> dict:
-    """Fetch batting and bowling scorecard data for a fixture."""
-    data = await _get(f"fixtures/{fixture_id}", {"include": "batting,bowling,lineup"})
+async def fetch_fixture_batting_bowling(fixture_id: int, include_balls: bool = True) -> dict:
+    """Fetch batting, bowling, lineup, and optional ball-by-ball data for phase tagging."""
+    inc = "batting,bowling,lineup"
+    if include_balls:
+        inc += ",balls"
+    data = await _get(f"fixtures/{fixture_id}", {"include": inc})
     if _sm_response_failed(data):
         logger.warning(f"fetch_fixture_batting_bowling({fixture_id}): {data.get('error') or data.get('message')}")
         return {"fixture_id": fixture_id, "batting": [], "bowling": [], "player_names": {}}
@@ -888,11 +921,15 @@ async def fetch_fixture_batting_bowling(fixture_id: int) -> dict:
             "team_id": tid,
         })
 
+    balls_raw = fixture.get("balls", [])
+    balls = normalize_balls_payload(balls_raw)
+
     return {
         "fixture_id": fixture_id,
         "batting": batting,
         "bowling": bowling,
         "player_names": player_names,
+        "balls": balls,
     }
 
 
@@ -1026,13 +1063,117 @@ async def fetch_team_recent_performance(team_name: str, num_matches: int = 5) ->
     return player_stats
 
 
+def _empty_by_season_block() -> dict:
+    return {
+        "batting": {
+            "runs": 0, "balls": 0, "innings": 0, "fours": 0, "sixes": 0,
+            "fifties": 0, "hundreds": 0,
+        },
+        "bowling": {
+            "overs": 0, "wickets": 0, "runs_conceded": 0, "innings": 0,
+            "maidens": 0, "three_fers": 0,
+        },
+    }
+
+
+def _new_player_stat_doc(pid, name: str) -> dict:
+    return {
+        "player_id": pid,
+        "name": name,
+        "batting": {
+            "runs": 0, "balls": 0, "innings": 0, "fours": 0, "sixes": 0,
+            "fifties": 0, "hundreds": 0,
+        },
+        "bowling": {
+            "overs": 0, "wickets": 0, "runs_conceded": 0, "innings": 0,
+            "maidens": 0, "three_fers": 0,
+        },
+        "matches": 0,
+        "seasons": [],
+        "by_season": {},
+        "phases": empty_phases_root(),
+        "_bat_entries": [],
+        "_bowl_entries": [],
+    }
+
+
+async def fetch_cricket_player_profile_fields(player_id: int) -> Optional[dict]:
+    """SportMonks player-by-id includes for career / batting / bowling splits (plan-dependent)."""
+    for include in ("career,batting,bowling", "career,battings,bowlings", "career", "batting,bowling"):
+        data = await _get(f"players/{int(player_id)}", {"include": include})
+        if _sm_response_failed(data):
+            continue
+        pd = data.get("data")
+        if not isinstance(pd, dict) or not pd:
+            continue
+        bat = pd.get("batting") or pd.get("battings")
+        bow = pd.get("bowling") or pd.get("bowlings")
+        if isinstance(bat, dict) and "data" in bat:
+            bat = bat.get("data")
+        if isinstance(bow, dict) and "data" in bow:
+            bow = bow.get("data")
+        return {
+            "api_profile": {
+                "player_id": int(player_id),
+                "include": include,
+                "career": pd.get("career"),
+                "batting": bat,
+                "bowling": bow,
+                "stats": pd.get("stats"),
+            },
+            "api_profile_fetched_at": datetime.now(timezone.utc).isoformat(),
+        }
+    return None
+
+
+async def sync_player_career_enrichment_to_db(db, limit: int = 500) -> dict:
+    """On-demand: enrich Mongo player_performance with /players/{id} career-style payloads."""
+    from pymongo import UpdateOne
+
+    ids: List[int] = []
+    async for doc in db.player_performance.find({"player_id": {"$exists": True}}, {"player_id": 1}).limit(
+        max(1, int(limit))
+    ):
+        try:
+            ids.append(int(doc["player_id"]))
+        except (TypeError, ValueError, KeyError):
+            continue
+
+    ops: list = []
+    errors = 0
+    for i, pid in enumerate(ids):
+        try:
+            fields = await fetch_cricket_player_profile_fields(pid)
+            if fields:
+                ops.append(UpdateOne({"player_id": pid}, {"$set": fields}))
+        except Exception as e:
+            errors += 1
+            logger.warning(f"Career enrich failed for player {pid}: {e}")
+        if i and i % 12 == 0:
+            await asyncio.sleep(0.25)
+
+    if ops:
+        await db.player_performance.bulk_write(ops)
+        try:
+            await record_player_performance_db_touch(
+                db,
+                source="career_api_profile_enrich",
+                players_touched=len(ids),
+                mongodb_writes=len(ops),
+                errors=errors,
+            )
+        except Exception as e:
+            logger.warning(f"Could not record player_performance meta after career enrich: {e}")
+    return {"players_touched": len(ids), "mongodb_writes": len(ops), "errors": errors}
+
+
 async def sync_player_performance_to_db(db) -> dict:
     """Sync player performance stats from last 3 IPL seasons (2024-2026) into MongoDB.
 
-    Stores aggregated per-player stats for use in form calculations.
-    Returns summary of sync operation.
+    Stores career totals, per-season splits (for BPR: career / last-3 / current),
+    and last batting innings / bowling spells (for CSA weights) for Option C scoring.
     """
-    all_player_stats = {}
+    all_player_stats: dict = {}
     total_fixtures = 0
 
     for year, season_id in sorted(IPL_SEASON_IDS.items()):
@@ -1042,6 +1183,7 @@ async def sync_player_performance_to_db(db) -> dict:
 
         for fix in finished:
             fid = fix.get("id")
+            fix_started = fix.get("starting_at") or ""
             try:
                 data = await fetch_fixture_batting_bowling(fid)
                 total_fixtures += 1
@@ -1049,17 +1191,18 @@ async def sync_player_performance_to_db(db) -> dict:
                 logger.warning(f"Error fetching fixture {fid}: {e}")
                 continue
 
+            seen_bat = set()
             for b in data.get("batting", []):
                 pid = b["player_id"]
+                sb = b.get("scoreboard") or "S1"
+                bkey = (fid, pid, sb)
+                if bkey in seen_bat:
+                    continue
+                seen_bat.add(bkey)
+                if int(b.get("balls") or 0) <= 0 and int(b.get("runs") or 0) <= 0:
+                    continue
                 if pid not in all_player_stats:
-                    all_player_stats[pid] = {
-                        "player_id": pid,
-                        "name": b["player_name"],
-                        "batting": {"runs": 0, "balls": 0, "innings": 0, "fours": 0, "sixes": 0, "fifties": 0, "hundreds": 0},
-                        "bowling": {"overs": 0, "wickets": 0, "runs_conceded": 0, "innings": 0, "maidens": 0, "three_fers": 0},
-                        "matches": 0,
-                        "seasons": [],
-                    }
+                    all_player_stats[pid] = _new_player_stat_doc(pid, b["player_name"])
                 ps = all_player_stats[pid]
                 ps["name"] = b["player_name"] or ps["name"]
                 ps["batting"]["runs"] += b["runs"]
@@ -1074,17 +1217,33 @@ async def sync_player_performance_to_db(db) -> dict:
                 if year not in ps["seasons"]:
                     ps["seasons"].append(year)
 
+                ys = ps.setdefault("by_season", {})
+                blk = ys.setdefault(str(year), _empty_by_season_block())
+                bb = blk["batting"]
+                bb["runs"] += b["runs"]
+                bb["balls"] += b["balls"]
+                bb["innings"] += 1
+                bb["fours"] += b["fours"]
+                bb["sixes"] += b["sixes"]
+                if b["runs"] >= 50:
+                    bb["fifties"] += 1
+                if b["runs"] >= 100:
+                    bb["hundreds"] += 1
+
+                sr = round((b["runs"] / max(b["balls"], 1)) * 100, 1)
+                ps["_bat_entries"].append({
+                    "date": fix_started,
+                    "season_year": year,
+                    "fixture_id": fid,
+                    "runs": int(b.get("runs") or 0),
+                    "balls": int(b.get("balls") or 0),
+                    "sr": sr,
+                })
+
             for bw in data.get("bowling", []):
                 pid = bw["player_id"]
                 if pid not in all_player_stats:
-                    all_player_stats[pid] = {
-                        "player_id": pid,
-                        "name": bw["player_name"],
-                        "batting": {"runs": 0, "balls": 0, "innings": 0, "fours": 0, "sixes": 0, "fifties": 0, "hundreds": 0},
-                        "bowling": {"overs": 0, "wickets": 0, "runs_conceded": 0, "innings": 0, "maidens": 0, "three_fers": 0},
-                        "matches": 0,
-                        "seasons": [],
-                    }
+                    all_player_stats[pid] = _new_player_stat_doc(pid, bw["player_name"])
                 ps = all_player_stats[pid]
                 ps["name"] = bw["player_name"] or ps["name"]
                 ps["bowling"]["overs"] += bw["overs"]
@@ -1096,6 +1255,95 @@ async def sync_player_performance_to_db(db) -> dict:
                     ps["bowling"]["three_fers"] += 1
                 if year not in ps["seasons"]:
                     ps["seasons"].append(year)
+
+                ys = ps.setdefault("by_season", {})
+                blk = ys.setdefault(str(year), _empty_by_season_block())
+                bwblk = blk["bowling"]
+                bwblk["overs"] += bw["overs"]
+                bwblk["wickets"] += bw["wickets"]
+                bwblk["runs_conceded"] += bw["runs_conceded"]
+                bwblk["innings"] += 1
+                bwblk["maidens"] += bw["maidens"]
+                if bw["wickets"] >= 3:
+                    bwblk["three_fers"] += 1
+
+                eco = float(bw.get("economy") or 0) or (
+                    float(bw.get("runs_conceded") or 0) / max(float(bw.get("overs") or 0), 0.01)
+                )
+                ps["_bowl_entries"].append({
+                    "date": fix_started,
+                    "season_year": year,
+                    "fixture_id": fid,
+                    "overs": float(bw.get("overs") or 0),
+                    "wickets": int(bw.get("wickets") or 0),
+                    "runs_conceded": int(bw.get("runs_conceded") or 0),
+                    "economy": round(eco, 2),
+                })
+
+            balls_list = data.get("balls") or []
+            if balls_list:
+                accumulate_phases_from_balls(all_player_stats, balls_list)
+
+    # Match appearances (approx): unique fixtures per player from logs
+    for pid, ps in all_player_stats.items():
+        fids = set()
+        for e in ps.get("_bat_entries") or []:
+            fids.add(e.get("fixture_id"))
+        for e in ps.get("_bowl_entries") or []:
+            fids.add(e.get("fixture_id"))
+        ps["matches"] = len(fids)
+
+        bat_logs = sorted(
+            ps.pop("_bat_entries", []),
+            key=lambda x: x.get("date") or "",
+            reverse=True,
+        )
+        out_bat = []
+        seen_bf = set()
+        for e in bat_logs:
+            bf = e.get("fixture_id")
+            if bf is not None:
+                if bf in seen_bf:
+                    continue
+                seen_bf.add(bf)
+            out_bat.append({
+                "runs": e["runs"],
+                "balls": e["balls"],
+                "sr": e["sr"],
+                "season_year": e.get("season_year"),
+                "date": e.get("date"),
+            })
+            if len(out_bat) >= 5:
+                break
+        ps["last5_bat_innings"] = out_bat
+
+        bowl_logs = sorted(
+            ps.pop("_bowl_entries", []),
+            key=lambda x: x.get("date") or "",
+            reverse=True,
+        )
+        out_bowl = []
+        seen_bwf = set()
+        for e in bowl_logs:
+            bf = e.get("fixture_id")
+            if bf is not None:
+                if bf in seen_bwf:
+                    continue
+                seen_bwf.add(bf)
+            out_bowl.append({
+                "overs": e["overs"],
+                "wickets": e["wickets"],
+                "runs_conceded": e["runs_conceded"],
+                "economy": e["economy"],
+                "season_year": e.get("season_year"),
+                "date": e.get("date"),
+            })
+            if len(out_bowl) >= 5:
+                break
+        ps["last5_bowl_spells"] = out_bowl
+        ph = ps.get("phases")
+        if isinstance(ph, dict):
+            finalize_phase_derived(ph)
 
     # Compute derived stats and store in DB
     for pid, ps in all_player_stats.items():
@@ -1115,6 +1363,22 @@ async def sync_player_performance_to_db(db) -> dict:
             bowl["economy"] = 0
             bowl["avg"] = 0
 
+        for y, blk in (ps.get("by_season") or {}).items():
+            bb = blk.get("batting") or {}
+            if bb.get("innings", 0) > 0:
+                bb["avg"] = round(bb["runs"] / bb["innings"], 1)
+                bb["sr"] = round((bb["runs"] / max(bb["balls"], 1)) * 100, 1)
+            else:
+                bb["avg"] = 0
+                bb["sr"] = 0
+            bw = blk.get("bowling") or {}
+            if bw.get("innings", 0) > 0 and bw.get("overs", 0) > 0:
+                bw["economy"] = round(bw["runs_conceded"] / bw["overs"], 2)
+                bw["avg"] = round(bw["runs_conceded"] / max(bw["wickets"], 1), 1)
+            else:
+                bw["economy"] = 0
+                bw["avg"] = 0
+
     # Bulk upsert to MongoDB
     from pymongo import UpdateOne
     ops = []
@@ -1126,8 +1390,17 @@ async def sync_player_performance_to_db(db) -> dict:
         ))
 
     if ops:
-        result = await db.player_performance.bulk_write(ops)
+        await db.player_performance.bulk_write(ops)
         logger.info(f"Synced {len(ops)} player stats from {total_fixtures} fixtures")
+        try:
+            await record_player_performance_db_touch(
+                db,
+                source="bulk_ipl_sync",
+                players_synced=len(all_player_stats),
+                fixtures_processed=total_fixtures,
+            )
+        except Exception as e:
+            logger.warning(f"Could not record player_performance meta after bulk sync: {e}")
 
     return {
         "players_synced": len(all_player_stats),

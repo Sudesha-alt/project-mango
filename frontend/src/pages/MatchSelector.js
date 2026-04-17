@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import { useMatchData } from "@/hooks/useMatchData";
-import { Lightning, MapPin, Clock, CaretRight, Broadcast, Trophy, CalendarBlank, ArrowsClockwise, Spinner, Target, TrendUp, TrendDown, Minus, UsersThree, Sparkle } from "@phosphor-icons/react";
+import { Lightning, MapPin, Clock, CaretRight, Broadcast, Trophy, CalendarBlank, ArrowsClockwise, Spinner, Target, TrendUp, TrendDown, Minus, UsersThree, Sparkle, Database } from "@phosphor-icons/react";
 import { Badge } from "@/components/ui/badge";
 import CricApiLivePanel from "@/components/CricApiLivePanel";
 import InfoTooltip from "@/components/InfoTooltip";
@@ -72,6 +72,24 @@ export default function MatchSelector() {
 
   const [syncingResults, setSyncingResults] = useState(false);
   const [syncResult, setSyncResult] = useState(null);
+  const [syncingPlayerPerf, setSyncingPlayerPerf] = useState(false);
+  const [playerPerfSyncMsg, setPlayerPerfSyncMsg] = useState(null);
+  const handleSyncPlayerStats = async () => {
+    if (!API) return;
+    setSyncingPlayerPerf(true);
+    setPlayerPerfSyncMsg(null);
+    try {
+      const res = await axios.post(`${API}/sync-player-stats`, {}, { timeout: 30000 });
+      setPlayerPerfSyncMsg(res.data?.message || res.data?.status || "Sync started.");
+    } catch (e) {
+      const d = e?.response?.data?.detail;
+      setPlayerPerfSyncMsg(
+        typeof d === "string" ? d : e?.message || "Sync request failed."
+      );
+    }
+    setSyncingPlayerPerf(false);
+  };
+
   const handleSyncResults = async () => {
     setSyncingResults(true);
     setSyncResult(null);
@@ -319,6 +337,20 @@ export default function MatchSelector() {
                   <><ArrowsClockwise weight="bold" className="w-3.5 h-3.5 text-[#34C759]" /> Sync Results</>
                 )}
               </button>
+              <button onClick={handleSyncPlayerStats} disabled={syncingPlayerPerf} data-testid="home-sync-player-stats-btn"
+                title="Rebuild Mongo player_performance from SportMonks (runs in background). Use before Predict All for full form/strength inputs."
+                className="flex items-center gap-2 bg-[#141414] border border-[#22D3EE]/35 text-white px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider hover:border-[#22D3EE] transition-colors disabled:opacity-40">
+                {syncingPlayerPerf ? (
+                  <><Spinner className="w-3.5 h-3.5 animate-spin" /> Starting…</>
+                ) : (
+                  <><Database weight="bold" className="w-3.5 h-3.5 text-[#22D3EE]" /> Sync player stats</>
+                )}
+              </button>
+              {playerPerfSyncMsg && (
+                <span className="self-center text-[10px] text-[#A3A3A3] max-w-[200px] truncate" title={playerPerfSyncMsg}>
+                  {playerPerfSyncMsg}
+                </span>
+              )}
               {syncResult && (
                 <span className="self-center text-[10px] text-[#34C759]">{syncResult.updated || 0} updated</span>
               )}

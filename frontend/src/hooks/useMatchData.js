@@ -159,16 +159,40 @@ export function useMatchData() {
     } catch (e) { return null; }
   }, []);
 
-  const fetchPreMatchPrediction = useCallback(async (matchId, force = false) => {
+  const fetchPreMatchPrediction = useCallback(async (matchId, opts = {}) => {
+    const force = typeof opts === "boolean" ? opts : Boolean(opts.force);
+    const livePlayerPerf = typeof opts === "boolean" ? false : Boolean(opts.livePlayerPerf);
     try {
-      const url = force
-        ? `${API}/matches/${matchId}/pre-match-predict?force=true`
-        : `${API}/matches/${matchId}/pre-match-predict`;
+      const p = new URLSearchParams();
+      if (force) p.set("force", "true");
+      if (livePlayerPerf) p.set("live_player_perf", "true");
+      const q = p.toString();
+      const url = `${API}/matches/${matchId}/pre-match-predict${q ? `?${q}` : ""}`;
       // Pre-match work can exceed global 30s (SportMonks + DB + enrichment).
       const res = await axios.post(url, {}, { timeout: 180000 });
       return res.data;
     } catch (e) {
       console.error("Pre-match prediction error:", e);
+      return null;
+    }
+  }, []);
+
+  const startPlayerPerformanceSync = useCallback(async () => {
+    try {
+      const res = await axios.post(`${API}/sync-player-stats`, {}, { timeout: 30000 });
+      return res.data;
+    } catch (e) {
+      console.error("Player performance sync error:", e);
+      return null;
+    }
+  }, []);
+
+  const getPlayerPerformanceStatus = useCallback(async () => {
+    try {
+      const res = await axios.get(`${API}/player-performance/status`, { timeout: 20000 });
+      return res.data;
+    } catch (e) {
+      console.error("Player performance status error:", e);
       return null;
     }
   }, []);
@@ -301,6 +325,8 @@ export function useMatchData() {
     fetchStatus, loadSchedule, loadSquads, getTeamSquad,
     fetchLiveData, getMatchState, fetchPlayerPredictions, fetchMatchPrediction,
     fetchPreMatchPrediction,
+    startPlayerPerformanceSync,
+    getPlayerPerformanceStatus,
     fetchBetaPrediction, fetchConsultation, sendChat,
     fetchClaudeAnalysis, clearClaudeAnalysis, fetchClaudeLive, refreshClaudePrediction,
     checkMatchStatus, getCurrentLiveMatch, getModelEvaluation,
