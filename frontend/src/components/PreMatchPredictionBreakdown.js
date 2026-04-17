@@ -1,10 +1,19 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import { Spinner, Scales, TrendUp, UsersThree, House, TrendDown, Minus, ArrowsClockwise, Target, CloudSun, Lightning } from "@phosphor-icons/react";
 import InfoTooltip from "./InfoTooltip";
 import { API_BASE } from "@/lib/apiBase";
+import PreMatchPlayerPerfToolbar, { readLivePlayerPerfPreference } from "./PreMatchPlayerPerfToolbar";
+import { buildPreMatchPredictUrl, buildFetchXiRolesAndPredictUrl } from "@/lib/preMatchApi";
 
 const API = API_BASE;
+
+function phaseFactorSourceLabel(src) {
+  if (src === "sportmonks_ball_phases") return "SportMonks ball-by-ball phases";
+  if (src === "openai_web") return "Web context";
+  if (src === "fallback_xi_proxy") return "XI rating proxy";
+  return src || "—";
+}
 
 function xiRoleColor(role) {
   if (!role) return "#737373";
@@ -126,6 +135,26 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
   const [loading, setLoading] = useState(false);
   const [xiRolesLoading, setXiRolesLoading] = useState(false);
   const [xiRolesError, setXiRolesError] = useState(null);
+  const [livePlayerPerf, setLivePlayerPerf] = useState(() => readLivePlayerPerfPreference());
+
+  const reloadPreMatchDoc = useCallback(async () => {
+    if (!API || !matchId) return;
+    try {
+      const res = await axios.get(`${API}/predictions/${matchId}/pre-match`, { timeout: 45000 });
+      if (res.data && res.data.matchId) {
+        setData(res.data);
+        if (onDataUpdate) onDataUpdate(res.data);
+      }
+    } catch (_) { /* ignore */ }
+  }, [matchId, onDataUpdate]);
+
+  const scheduleReloadAfterBackgroundPlayerJob = useCallback(() => {
+    [4000, 20000, 60000, 120000].forEach((ms) => {
+      window.setTimeout(() => {
+        reloadPreMatchDoc();
+      }, ms);
+    });
+  }, [reloadPreMatchDoc]);
 
   useEffect(() => {
     const load = async () => {
@@ -145,11 +174,8 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
   const handlePredict = async () => {
     setLoading(true);
     try {
-      const res = await axios.post(
-        `${API}/matches/${matchId}/pre-match-predict`,
-        {},
-        { timeout: 180000 }
-      );
+      const url = buildPreMatchPredictUrl(matchId, { force: false, livePlayerPerf });
+      const res = await axios.post(url, {}, { timeout: 180000 });
       if (res.data && !res.data.error) {
         setData(res.data);
         if (onDataUpdate) onDataUpdate(res.data);
@@ -161,11 +187,8 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
   const handleRefresh = async () => {
     setLoading(true);
     try {
-      const res = await axios.post(
-        `${API}/matches/${matchId}/pre-match-predict?force=true`,
-        {},
-        { timeout: 180000 }
-      );
+      const url = buildPreMatchPredictUrl(matchId, { force: true, livePlayerPerf });
+      const res = await axios.post(url, {}, { timeout: 180000 });
       if (res.data && !res.data.error) {
         setData(res.data);
         if (onDataUpdate) onDataUpdate(res.data);
@@ -178,11 +201,8 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
     setXiRolesError(null);
     setXiRolesLoading(true);
     try {
-      const res = await axios.post(
-        `${API}/matches/${matchId}/fetch-playing-xi-roles-and-predict`,
-        {},
-        { timeout: 180000 }
-      );
+      const url = buildFetchXiRolesAndPredictUrl(matchId, { livePlayerPerf });
+      const res = await axios.post(url, {}, { timeout: 180000 });
       if (res.data && !res.data.error) {
         setData(res.data);
         if (onDataUpdate) onDataUpdate(res.data);
@@ -200,7 +220,14 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
 
   if (!data) {
     return (
-      <div className="bg-[#141414] border border-[#262626] rounded-lg p-5" data-testid="prematch-predict-trigger">
+      <div className="bg-[#141414] border border-[#262626] rounded-lg p-5 space-y-4" data-testid="prematch-predict-trigger">
+        <PreMatchPlayerPerfToolbar
+          livePlayerPerf={livePlayerPerf}
+          onLivePlayerPerfChange={setLivePlayerPerf}
+          predictionSummary={null}
+          phaseDataReady={undefined}
+          onBackgroundPlayerJobStarted={scheduleReloadAfterBackgroundPlayerJob}
+        />
         <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold mb-3 flex items-center gap-1">Algorithm Prediction <InfoTooltip text="16-category pre-match model from SportMonks squad/form/history data plus weather-based conditions." /></p>
         <p className="text-xs text-[#A3A3A3] mb-3">16-Category Model: batting/bowling/all-round strength+depth, form, venue, home, h2h, conditions, momentum, powerplay, death, availability, top-order consistency</p>
         <button onClick={handlePredict} disabled={loading} data-testid="run-prematch-predict-btn"
@@ -236,6 +263,44 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
 
   return (
     <div className="bg-[#141414] border border-[#262626] rounded-lg p-5 space-y-4" data-testid="prematch-prediction-breakdown">
+      <PreMatchPlayerPerfToolbar
+        livePlayerPerf={livePlayerPerf}
+        onLivePlayerPerfChange={setLivePlayerPerf}
+        predictionSummary={data.player_performance_summary || null}
+        phaseDataReady={data.team_strength_metrics?.phase_data_ready}
+        onBackgroundPlayerJobStarted={scheduleReloadAfterBackgroundPlayerJob}
+      />
+      {data.player_data_signals?.repredict_recommended && (
+        <div
+          className="rounded-md border border-amber-500/45 bg-amber-500/10 px-3 py-2.5 space-y-1.5"
+          data-testid="player-data-stale-banner"
+        >
+          <p className="text-[10px] font-bold uppercase tracking-wide text-amber-400">
+            Player data / coverage — action needed
+          </p>
+          {data.player_data_signals.message && (
+            <p className="text-[10px] text-amber-100/95 leading-snug">{data.player_data_signals.message}</p>
+          )}
+          <p className="text-[9px] text-[#92400E]">
+            Use <span className="font-semibold text-amber-200">Re-Predict</span> (or Run prediction) after sync finishes so the model uses the latest Mongo stats. Missing names need a successful Sync player stats (or live-stats run) so every XI player has a row.
+          </p>
+          {Array.isArray(data.player_data_signals.reasons?.missing_xi_player_perf) &&
+            data.player_data_signals.reasons.missing_xi_player_perf.length > 0 && (
+            <ul className="text-[9px] font-mono text-amber-200/90 list-disc pl-4 max-h-28 overflow-y-auto space-y-0.5">
+              {data.player_data_signals.reasons.missing_xi_player_perf.slice(0, 16).map((m, i) => (
+                <li key={`${m.side}-${m.name}-${i}`}>
+                  {m.side}: {m.name}
+                  {m.player_id != null ? ` · id ${m.player_id}` : ""}
+                  {m.issue ? ` · ${m.issue}` : ""}
+                </li>
+              ))}
+              {data.player_data_signals.reasons.missing_xi_player_perf.length > 16 ? (
+                <li className="list-none text-[#737373]">…and more</li>
+              ) : null}
+            </ul>
+          )}
+        </div>
+      )}
       {/* Main probability */}
       <div>
         <div className="flex items-center justify-between mb-3">
@@ -411,19 +476,35 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
         )}
 
         <FactorBar label="Powerplay Performance" weight={factors.powerplay_performance?.weight || 0.055} logit={factorLogit("powerplay_performance")} icon={TrendUp}
-          tooltip="First-6-over profile strength."
+          tooltip={`First-6-over strength. Source: ${phaseFactorSourceLabel(factors.powerplay_performance?.source)}.`}
           team1={t1} team2={t2}
-          team1Detail={`Raw: ${factors.powerplay_performance?.raw_logit ?? "0.000"}`}
-          team2Detail="Compared with opposition"
+          team1Detail={
+            factors.powerplay_performance?.source === "sportmonks_ball_phases"
+              ? `Idx ${factors.powerplay_performance?.team1_powerplay_index ?? "—"} · bat balls ${factors.powerplay_performance?.team1_pp_bat_balls ?? "—"} · bowl ${factors.powerplay_performance?.team1_pp_bowl_balls ?? "—"}`
+              : `Raw: ${factors.powerplay_performance?.raw_logit ?? "0.000"}`
+          }
+          team2Detail={
+            factors.powerplay_performance?.source === "sportmonks_ball_phases"
+              ? `Idx ${factors.powerplay_performance?.team2_powerplay_index ?? "—"} · bat balls ${factors.powerplay_performance?.team2_pp_bat_balls ?? "—"} · bowl ${factors.powerplay_performance?.team2_pp_bowl_balls ?? "—"}`
+              : "Compared with opposition"
+          }
           reasonLine={factorReason("powerplay_performance")}
           favours={factorOneLiners.powerplay_performance?.favours}
           claudeVerdict={factorVerdict("powerplay_performance")}
         />
         <FactorBar label="Death Overs Performance" weight={factors.death_overs_performance?.weight || 0.055} logit={factorLogit("death_overs_performance")} icon={Target}
-          tooltip="Overs 16-20 specialist profile."
+          tooltip={`Overs 16–20 strength. Source: ${phaseFactorSourceLabel(factors.death_overs_performance?.source)}.`}
           team1={t1} team2={t2}
-          team1Detail={`Raw: ${factors.death_overs_performance?.raw_logit ?? "0.000"}`}
-          team2Detail="Compared with opposition"
+          team1Detail={
+            factors.death_overs_performance?.source === "sportmonks_ball_phases"
+              ? `Idx ${factors.death_overs_performance?.team1_death_index ?? "—"} · death bat balls ${factors.death_overs_performance?.team1_death_bat_balls ?? "—"}`
+              : `Raw: ${factors.death_overs_performance?.raw_logit ?? "0.000"}`
+          }
+          team2Detail={
+            factors.death_overs_performance?.source === "sportmonks_ball_phases"
+              ? `Idx ${factors.death_overs_performance?.team2_death_index ?? "—"} · death bat balls ${factors.death_overs_performance?.team2_death_bat_balls ?? "—"}`
+              : "Compared with opposition"
+          }
           reasonLine={factorReason("death_overs_performance")}
           favours={factorOneLiners.death_overs_performance?.favours}
           claudeVerdict={factorVerdict("death_overs_performance")}

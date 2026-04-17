@@ -1,5 +1,5 @@
 import { Link, useLocation } from "react-router-dom";
-import { Pulse, ChartLine, Target, Crosshair } from "@phosphor-icons/react";
+import { Pulse, ChartLine, Target, Crosshair, UsersThree } from "@phosphor-icons/react";
 
 export default function Header({ selectedMatch }) {
   const location = useLocation();
@@ -8,6 +8,7 @@ export default function Header({ selectedMatch }) {
   const navItems = [
     { path: "/", label: "MATCHES", icon: Target },
     { path: "/live", label: "LIVE", icon: Pulse },
+    { path: "/players", label: "PLAYERS", icon: UsersThree },
     { path: "/analysis", label: "ANALYSIS", icon: ChartLine },
   ];
 
@@ -30,7 +31,10 @@ export default function Header({ selectedMatch }) {
         <nav className="flex items-center gap-1" data-testid="main-nav">
           {navItems.map((item) => {
             const Icon = item.icon;
-            const isActive = path === item.path || (item.path === "/live" && path.startsWith("/live"));
+            const isActive =
+              path === item.path ||
+              (item.path === "/live" && path.startsWith("/live")) ||
+              (item.path === "/players" && path.startsWith("/players"));
             return (
               <Link
                 key={item.path}
