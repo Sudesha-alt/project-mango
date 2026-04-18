@@ -84,6 +84,7 @@ from services.pre_match_predictor import (
     compute_prediction,
     resolve_star_player_rating,
     compute_strength_metrics_for_match,
+    sanitize_prediction_to_five_factors,
     _normalize_name,
 )
 from services.live_predictor import (
@@ -4659,6 +4660,8 @@ async def get_pre_match_prediction(match_id: str):
     cached = await db.pre_match_predictions.find_one({"matchId": match_id}, {"_id": 0})
     if cached:
         d = dict(cached)
+        if d.get("prediction"):
+            d["prediction"] = sanitize_prediction_to_five_factors(d["prediction"])
         if _playing_xi_needs_claude_roles(d):
             xi = await db.playing_xi.find_one({"matchId": match_id}, {"_id": 0})
             if xi:
@@ -4728,6 +4731,8 @@ async def api_pre_match_predict(
             )
         if not is_stale and not formula_mismatch and not _playing_xi_needs_claude_roles(cached):
             out = dict(cached)
+            if out.get("prediction"):
+                out["prediction"] = sanitize_prediction_to_five_factors(out["prediction"])
             if out.get("playing_xi"):
                 _sanitize_playing_xi_payload(out["playing_xi"])
             await _attach_player_data_signals(db, match_id, out)
@@ -4931,6 +4936,8 @@ async def api_pre_match_predict(
     except Exception as e:
         logger.warning(f"Factor reason validation failed for {match_id}: {e}")
         prediction["factor_claude_validation"] = {}
+
+    prediction = sanitize_prediction_to_five_factors(prediction)
 
     # Compute odds direction vs previous prediction
     odds_direction = {"team1": "new", "team2": "new"}
@@ -5167,6 +5174,8 @@ async def api_get_upcoming_predictions(
                 _merge_playing_xi_roles_from_storage(d, xi)
         if d.get("playing_xi"):
             _sanitize_playing_xi_payload(d["playing_xi"])
+        if d.get("prediction"):
+            d["prediction"] = sanitize_prediction_to_five_factors(d["prediction"])
         await _attach_player_data_signals(db, mid, d)
         predictions.append(d)
     return {"predictions": predictions, "count": len(predictions)}
