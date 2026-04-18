@@ -35,6 +35,7 @@ from services.cricket_phase_utils import (
     finalize_phase_derived,
     normalize_balls_payload,
 )
+from services.player_name_canonical import canonical_player_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -327,9 +328,10 @@ def parse_fixture(raw: dict) -> dict:
         if isinstance(is_sub, int):
             is_sub = bool(is_sub)
 
+        _raw_nm = p.get("fullname", f"{p.get('firstname', '')} {p.get('lastname', '')}".strip())
         player = {
             "id": p.get("id"),
-            "name": p.get("fullname", f"{p.get('firstname', '')} {p.get('lastname', '')}".strip()),
+            "name": canonical_player_display_name(_raw_nm),
             "batting_style": p.get("battingstyle", ""),
             "bowling_style": p.get("bowlingstyle", ""),
             "position": p.get("position", {}).get("name", "") if isinstance(p.get("position"), dict) else "",
@@ -415,7 +417,11 @@ def parse_fixture(raw: dict) -> dict:
     # Build player name map from lineup
     player_names = {}
     for p in lineup_raw:
-        player_names[p.get("id")] = p.get("fullname", f"{p.get('firstname', '')} {p.get('lastname', '')}".strip())
+        _rid = p.get("id")
+        if _rid is None:
+            continue
+        _rnm = p.get("fullname", f"{p.get('firstname', '')} {p.get('lastname', '')}".strip())
+        player_names[_rid] = canonical_player_display_name(_rnm)
 
     # Attach names to batting/bowling
     for b in batsmen_inn1 + batsmen_inn2:
@@ -869,6 +875,7 @@ async def _enrich_players(players: list) -> list:
     async def _fetch_player(p):
         pid = p.get("sm_player_id")
         if not pid:
+            p["name"] = canonical_player_display_name(p.get("name", ""))
             return p
         data = await _get(f"players/{pid}")
         pd = data.get("data", {})
@@ -879,6 +886,7 @@ async def _enrich_players(players: list) -> list:
             if isinstance(pos, dict):
                 p["position"] = pos.get("name", "")
             p["country_id"] = pd.get("country_id")
+        p["name"] = canonical_player_display_name(p.get("name", ""))
         return p
 
     # Fetch in batches of 5 to respect rate limits
@@ -942,7 +950,10 @@ async def fetch_fixture_batting_bowling(fixture_id: int, include_balls: bool = T
     # Build player name map from lineup
     player_names = {}
     for p in lineup_raw:
-        player_names[p.get("id")] = p.get("fullname", "")
+        _pid = p.get("id")
+        if _pid is None:
+            continue
+        player_names[_pid] = canonical_player_display_name(p.get("fullname", ""))
 
     batting = []
     for b in batting_raw:
@@ -1057,12 +1068,14 @@ async def fetch_team_recent_performance(team_name: str, num_matches: int = 5) ->
             pid = b["player_id"]
             if pid not in player_stats:
                 player_stats[pid] = {
-                    "name": b["player_name"],
+                    "name": canonical_player_display_name(b["player_name"] or ""),
                     "matches": 0,
                     "batting": {"runs": 0, "balls": 0, "innings": 0, "fours": 0, "sixes": 0},
                     "bowling": {"overs": 0, "wickets": 0, "runs_conceded": 0, "innings": 0, "maidens": 0},
                 }
-            player_stats[pid]["name"] = b["player_name"] or player_stats[pid]["name"]
+            player_stats[pid]["name"] = canonical_player_display_name(
+                b["player_name"] or player_stats[pid]["name"]
+            )
             player_stats[pid]["batting"]["runs"] += b["runs"]
             player_stats[pid]["batting"]["balls"] += b["balls"]
             player_stats[pid]["batting"]["innings"] += 1
@@ -1079,12 +1092,14 @@ async def fetch_team_recent_performance(team_name: str, num_matches: int = 5) ->
             pid = bw["player_id"]
             if pid not in player_stats:
                 player_stats[pid] = {
-                    "name": bw["player_name"],
+                    "name": canonical_player_display_name(bw["player_name"] or ""),
                     "matches": 0,
                     "batting": {"runs": 0, "balls": 0, "innings": 0, "fours": 0, "sixes": 0},
                     "bowling": {"overs": 0, "wickets": 0, "runs_conceded": 0, "innings": 0, "maidens": 0},
                 }
-            player_stats[pid]["name"] = bw["player_name"] or player_stats[pid]["name"]
+            player_stats[pid]["name"] = canonical_player_display_name(
+                bw["player_name"] or player_stats[pid]["name"]
+            )
             player_stats[pid]["bowling"]["overs"] += bw["overs"]
             player_stats[pid]["bowling"]["wickets"] += bw["wickets"]
             player_stats[pid]["bowling"]["runs_conceded"] += bw["runs_conceded"]
@@ -1144,7 +1159,7 @@ def _empty_by_season_block() -> dict:
 def _new_player_stat_doc(pid, name: str) -> dict:
     return {
         "player_id": pid,
-        "name": name,
+        "name": canonical_player_display_name(name or ""),
         "batting": {
             "runs": 0, "balls": 0, "innings": 0, "fours": 0, "sixes": 0,
             "fifties": 0, "hundreds": 0, "innings_ge15": 0,
@@ -1272,7 +1287,7 @@ async def sync_player_performance_to_db(db) -> dict:
                 if pid not in all_player_stats:
                     all_player_stats[pid] = _new_player_stat_doc(pid, b["player_name"])
                 ps = all_player_stats[pid]
-                ps["name"] = b["player_name"] or ps["name"]
+                ps["name"] = canonical_player_display_name(b["player_name"] or ps["name"])
                 ps["batting"]["runs"] += b["runs"]
                 ps["batting"]["balls"] += b["balls"]
                 ps["batting"]["innings"] += 1
@@ -1317,7 +1332,7 @@ async def sync_player_performance_to_db(db) -> dict:
                 if pid not in all_player_stats:
                     all_player_stats[pid] = _new_player_stat_doc(pid, bw["player_name"])
                 ps = all_player_stats[pid]
-                ps["name"] = bw["player_name"] or ps["name"]
+                ps["name"] = canonical_player_display_name(bw["player_name"] or ps["name"])
                 ps["bowling"]["overs"] += bw["overs"]
                 ps["bowling"]["wickets"] += bw["wickets"]
                 ps["bowling"]["runs_conceded"] += bw["runs_conceded"]
@@ -1619,8 +1634,9 @@ def _parse_impact_subs_from_lineup(lineup_data: list, team_id: int) -> List[dict
             is_sub = bool(is_sub)
         if not is_sub:
             continue
+        _sub_nm = (p.get("fullname") or p.get("lastname") or "").strip() or "?"
         subs.append({
-            "name": (p.get("fullname") or p.get("lastname") or "").strip() or "?",
+            "name": canonical_player_display_name(_sub_nm),
             "sm_player_id": p.get("id"),
         })
     return subs
@@ -1741,7 +1757,7 @@ def _parse_lineup(lineup_data: list, team_id: int) -> list:
         if is_sub:
             continue  # Skip impact player subs
         xi.append({
-            "name": p.get("fullname", ""),
+            "name": canonical_player_display_name(p.get("fullname", "")),
             "sm_player_id": p.get("id"),
             "batting_style": p.get("battingstyle", ""),
             "bowling_style": p.get("bowlingstyle", ""),

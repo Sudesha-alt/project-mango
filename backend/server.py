@@ -106,6 +106,7 @@ from services.claude_opus_player_input import (
     build_opus_player_cards_for_claude,
     format_opus_player_cards_for_prompt,
 )
+from services.player_name_canonical import canonical_player_display_name
 
 def _require_env(name: str) -> str:
     val = os.environ.get(name, "").strip()
@@ -500,12 +501,29 @@ def _mongo_exact_name_variants_for_xi(xi_name: str) -> list:
             disp = " ".join(t.title() for t in token_set.split())
             if disp and disp.lower() != raw.lower():
                 extras.append(disp)
-    # Single-letter initial expansions common in DB (T. Natarajan ↔ Thangarasu Natarajan handled via group).
-    out = [raw]
+    # Prefer app-wide canonical (e.g. KL Rahul) so Mongo rows match after sync / XI refresh.
+    canon = canonical_player_display_name(raw)
+    out: list = []
+    for x in (canon, raw):
+        if x and x not in out:
+            out.append(x)
     for e in extras:
         if e not in out:
             out.append(e)
     return out
+
+
+def _canonicalize_xi_player_rows(rows: Optional[list]) -> None:
+    """Apply ``canonical_player_display_name`` to each row's ``name`` (Expected XI / subs)."""
+    if not rows:
+        return
+    for p in rows:
+        if not isinstance(p, dict):
+            continue
+        nm = (p.get("name") or p.get("fullname") or "").strip()
+        if not nm:
+            continue
+        p["name"] = canonical_player_display_name(nm)
 
 
 def _player_name_matches(a: str, b: str) -> bool:
@@ -1450,7 +1468,7 @@ async def _fuzzy_player_performance_doc_by_name(db, nm: str) -> Optional[dict]:
     """
     if not nm or not str(nm).strip():
         return None
-    nm_clean = str(nm).strip()
+    nm_clean = canonical_player_display_name(str(nm).strip())
     nn = _normalize_player_name(nm_clean)
     parts = [t for t in nn.split() if t]
     if not parts:
@@ -1608,7 +1626,7 @@ async def _load_player_performance_for_xi_from_db(db, xi_players: list) -> dict:
     for p in xi_players:
         if not isinstance(p, dict):
             continue
-        nm = (p.get("name") or "").strip()
+        nm = canonical_player_display_name((p.get("name") or "").strip())
         if not nm:
             continue
         if any(
@@ -1650,7 +1668,7 @@ async def _xi_players_missing_performance(db, xi_players: list, side: str) -> li
     for p in xi_players:
         if not isinstance(p, dict):
             continue
-        name = (p.get("name") or "").strip()
+        name = canonical_player_display_name((p.get("name") or "").strip())
         if not name:
             missing.append({"side": side, "name": "(unnamed slot)", "player_id": None, "issue": "no_name"})
             continue
@@ -5666,6 +5684,10 @@ async def _bg_fetch_playing_xi(match_id: str, team1: str, team2: str, venue: str
             t2_use = t2_db if len(t2_db) >= 8 else list(t2_xi_raw)
             t1_use = ensure_rr_vaibhav_in_playing_xi_rows(t1_use, team1, roster1)
             t2_use = ensure_rr_vaibhav_in_playing_xi_rows(t2_use, team2, roster2)
+            _canonicalize_xi_player_rows(t1_use)
+            _canonicalize_xi_player_rows(t2_use)
+            _canonicalize_xi_player_rows(t1_impact_subs)
+            _canonicalize_xi_player_rows(t2_impact_subs)
             xi_data = {
                 "team1_xi": t1_use,
                 "team2_xi": t2_use,
@@ -5691,6 +5713,8 @@ async def _bg_fetch_playing_xi(match_id: str, team1: str, team2: str, venue: str
                 t2_xi = generate_expected_xi(match_squads.get(team2, []))
                 t1_xi = ensure_rr_vaibhav_in_playing_xi_rows(t1_xi, team1, match_squads.get(team1, []))
                 t2_xi = ensure_rr_vaibhav_in_playing_xi_rows(t2_xi, team2, match_squads.get(team2, []))
+                _canonicalize_xi_player_rows(t1_xi)
+                _canonicalize_xi_player_rows(t2_xi)
                 xi_data = {
                     "team1_xi": t1_xi,
                     "team2_xi": t2_xi,
