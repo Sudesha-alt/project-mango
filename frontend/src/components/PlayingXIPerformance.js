@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import { Spinner, Lightning, TrendUp, TrendDown, Minus, UsersThree, ChatDots } from "@phosphor-icons/react";
 import InfoTooltip from "./InfoTooltip";
@@ -35,7 +35,7 @@ export default function PlayingXIPerformance({ matchId, team1, team2 }) {
   const [t2FillSearching, setT2FillSearching] = useState(false);
   const [fillSaving, setFillSaving] = useState(null);
 
-  const refreshPlayingXiData = async () => {
+  const refreshPlayingXiData = useCallback(async () => {
     try {
       const res = await axios.get(`${API}/predictions/upcoming`);
       const pred = (res.data.predictions || []).find((p) => p.matchId === matchId);
@@ -55,11 +55,11 @@ export default function PlayingXIPerformance({ matchId, team1, team2 }) {
     } catch (e) {
       /* ignore */
     }
-  };
+  }, [matchId]);
 
   useEffect(() => {
     refreshPlayingXiData();
-  }, [matchId]);
+  }, [refreshPlayingXiData]);
 
   useEffect(() => {
     const m1 = data?.team1_manual_impact_player;
@@ -83,8 +83,8 @@ export default function PlayingXIPerformance({ matchId, team1, team2 }) {
     const s2 = data?.team2_manual_impact_swap_out;
     setT2SwapOut(typeof s2 === "string" && s2.trim() ? s2.trim() : "");
   }, [
-    data?.team1_manual_impact_player?.name,
-    data?.team2_manual_impact_player?.name,
+    data?.team1_manual_impact_player,
+    data?.team2_manual_impact_player,
     data?.team1_manual_impact_swap_out,
     data?.team2_manual_impact_swap_out,
   ]);
