@@ -99,39 +99,53 @@ export default function PreMatch() {
   const [prematchRadarT1, prematchRadarT2] = useMemo(() => {
     const f = algoData?.prediction?.factors;
     if (!f) return [{}, {}];
-    const h2hT = f.h2h?.total ?? 0;
-    const t1h = h2hT > 0 ? (100 * (f.h2h.team1_wins ?? 0)) / h2hT : 50;
-    const t2h = h2hT > 0 ? (100 * (f.h2h.team2_wins ?? 0)) / h2hT : 50;
-    let v1 = 50;
-    let v2 = 50;
-    if (f.home_ground_advantage?.team1_home) v1 += 8;
-    if (f.home_ground_advantage?.team2_home) v2 += 8;
-    const pl = Number(f.venue_pitch?.pitch_logit) || 0;
-    v1 = clampRadarPct(v1 + pl * 15);
-    v2 = clampRadarPct(v2 - pl * 15);
-    const bd1 = f.bowling_depth?.team1_depth_share_pct;
-    const bd2 = f.bowling_depth?.team2_depth_share_pct;
-    const b1 = typeof bd1 === "number" ? bd1 : clampRadarPct(f.bowling_strength?.team1_bowling_rating ?? 50);
-    const b2 = typeof bd2 === "number" ? bd2 : clampRadarPct(f.bowling_strength?.team2_bowling_rating ?? 50);
-    const n1 = 50 + Math.min(25, Math.max(-25, (Number(f.current_form?.team1_nrr) || 0) * 12));
-    const n2 = 50 + Math.min(25, Math.max(-25, (Number(f.current_form?.team2_nrr) || 0) * 12));
+
+    const bq = f.batting_quality ?? {};
+    const bowq = f.bowling_quality ?? {};
+    const arb = f.allrounder_balance ?? {};
+    const vb = f.venue_baseline ?? {};
+    const h2h = f.h2h_squad_adjusted ?? {};
+
+    const h2hT = Number(h2h.total) || 0;
+    const t1h = h2hT > 0 ? (100 * (Number(h2h.team1_wins) || 0)) / h2hT : 50;
+    const t2h = h2hT > 0 ? (100 * (Number(h2h.team2_wins) || 0)) / h2hT : 50;
+
+    const bat1 = clampRadarPct(
+      typeof bq.team1_share_pct === "number" ? bq.team1_share_pct : Number(bq.team1_batting) || 50
+    );
+    const bat2 = clampRadarPct(
+      typeof bq.team2_share_pct === "number" ? bq.team2_share_pct : Number(bq.team2_batting) || 50
+    );
+    const bowl1 = clampRadarPct(
+      typeof bowq.team1_share_pct === "number" ? bowq.team1_share_pct : Number(bowq.team1_bowling) || 50
+    );
+    const bowl2 = clampRadarPct(
+      typeof bowq.team2_share_pct === "number" ? bowq.team2_share_pct : Number(bowq.team2_bowling) || 50
+    );
+
+    const s1a = arb.team1_strength_share_pct;
+    const s1b = arb.team1_depth_share_pct;
+    const s2a = arb.team2_strength_share_pct;
+    const s2b = arb.team2_depth_share_pct;
+    const bal1 =
+      typeof s1a === "number" && typeof s1b === "number"
+        ? clampRadarPct((s1a + s1b) / 2)
+        : clampRadarPct(Number(arb.team1_allrounder_strength) || 50);
+    const bal2 =
+      typeof s2a === "number" && typeof s2b === "number"
+        ? clampRadarPct((s2a + s2b) / 2)
+        : clampRadarPct(Number(arb.team2_allrounder_strength) || 50);
+
+    const vl = Number(vb.raw_logit);
+    const vlSafe = Number.isFinite(vl) ? vl : 0;
+    const vScale = 14;
+    const vAdj = Math.max(-1.4, Math.min(1.4, vlSafe / 2));
+    const venue1 = clampRadarPct(50 + vScale * vAdj);
+    const venue2 = clampRadarPct(50 - vScale * vAdj);
+
     return [
-      {
-        form: clampRadarPct(f.current_form?.team1_form_score ?? 50),
-        h2h: clampRadarPct(t1h),
-        venue: clampRadarPct(v1),
-        batting: clampRadarPct(f.batting_strength?.team1_batting ?? 50),
-        bowling: clampRadarPct(b1),
-        nrr: clampRadarPct(n1),
-      },
-      {
-        form: clampRadarPct(f.current_form?.team2_form_score ?? 50),
-        h2h: clampRadarPct(t2h),
-        venue: clampRadarPct(v2),
-        batting: clampRadarPct(f.batting_strength?.team2_batting ?? 50),
-        bowling: clampRadarPct(b2),
-        nrr: clampRadarPct(n2),
-      },
+      { batting: bat1, bowling: bowl1, balance: bal1, venue: venue1, h2h: clampRadarPct(t1h) },
+      { batting: bat2, bowling: bowl2, balance: bal2, venue: venue2, h2h: clampRadarPct(t2h) },
     ];
   }, [algoData]);
 
@@ -170,7 +184,7 @@ export default function PreMatch() {
                 team2={t2Short}
               />
 
-              {/* Algorithm-Based Prediction (16-factor) */}
+              {/* Algorithm-Based Prediction (5-factor BPR/CSA model) */}
               <PreMatchPredictionBreakdown matchId={matchId} team1={t1Short} team2={t2Short} onDataUpdate={handleAlgoUpdate} />
 
               {/* Claude Opus Deep Analysis */}

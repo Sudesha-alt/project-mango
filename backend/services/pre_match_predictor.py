@@ -1134,6 +1134,21 @@ def _weather_bowler_pressure_index(weather: Dict, conditions_detail: Dict) -> fl
     return max(0.0, min(1.0, idx))
 
 
+def _venue_weather_bowler_logit(weather: Dict, t1_bowl: float, t2_bowl: float) -> Tuple[float, Dict]:
+    """
+    When the weather report implies swing / moisture / cloud, shift the logit toward the team with stronger BPR/CSA bowling (t1 − t2 perspective).
+    """
+    wpress = _weather_bowler_pressure_index(weather or {}, {})
+    bowl_diff = (float(t1_bowl) - float(t2_bowl)) / 100.0
+    w_logit = 2.75 * wpress * bowl_diff
+    detail = {
+        "weather_bowler_pressure_index": round(wpress, 4),
+        "weather_bowler_logit": round(w_logit, 4),
+        "weather_available": bool((weather or {}).get("available")),
+    }
+    return float(w_logit), detail
+
+
 def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
                         weather: Dict = None, form_data: Dict = None,
                         momentum_data: Dict = None, player_performance: Dict = None,
@@ -1248,13 +1263,11 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
             t2_strength.get("allrounder_depth", t2_rating.get("allrounder_depth", 0))
         )
 
-        batting_strength_logit = 3.2 * ((t1_rating["batting"] - t2_rating["batting"]) / 100.0)
-        batting_depth_logit = 2.5 * (float(t1_strength.get("batting_depth", 0.0)) - float(t2_strength.get("batting_depth", 0.0)))
-        bowling_strength_logit = 3.0 * ((t1_rating["bowling"] - t2_rating["bowling"]) / 100.0)
+        batting_quality_logit = 3.2 * ((t1_rating["batting"] - t2_rating["batting"]) / 100.0)
+        bowling_quality_logit = 3.0 * ((t1_rating["bowling"] - t2_rating["bowling"]) / 100.0)
     else:
-        batting_strength_logit = _batting_strength_logit(t1_rating, t2_rating)
-        batting_depth_logit = _batting_depth_logit(remapped_squads)
-        bowling_strength_logit = _bowling_strength_logit(remapped_squads)
+        batting_quality_logit = _batting_strength_logit(t1_rating, t2_rating)
+        bowling_quality_logit = _bowling_strength_logit(remapped_squads)
     t1_ar_strength_act, t2_ar_strength_act, t1_ar_depth_act, t2_ar_depth_act = _allrounder_activity_indices(
         remapped_squads, player_performance
     )
@@ -1265,67 +1278,18 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
         t2_rating["allrounder_depth"] = round(max(float(t2_rating.get("allrounder_depth", 0)), t2_ar_depth_act), 2)
     allrounder_depth_logit = _allrounder_depth_logit(t1_rating, t2_rating)
     allrounder_strength_logit = _allrounder_strength_logit(t1_rating, t2_rating)
+    allrounder_balance_logit = 0.55 * allrounder_strength_logit + 0.45 * allrounder_depth_logit
 
-    # PP / death: prefer ball-by-ball phase indices when both XIs have enough sample; else web; else XI proxy.
-    phase_dual_ready = bool(team_strength_metrics.get("phase_data_ready"))
-    t1_phase_block = (t1_strength or {}).get("phase") if has_impact_strength else None
-    t2_phase_block = (t2_strength or {}).get("phase") if has_impact_strength else None
-    web_pp_logit = _powerplay_performance_logit_from_web(web_context)
-    web_death_logit = _death_overs_performance_logit_from_web(web_context)
-
-    if (
-        phase_dual_ready
-        and isinstance(t1_phase_block, dict)
-        and isinstance(t2_phase_block, dict)
-    ):
-        powerplay_logit = _phase_profile_logit(
-            t1_phase_block, t2_phase_block, "powerplay_index", 2.0
-        )
-        death_overs_logit = _phase_profile_logit(
-            t1_phase_block, t2_phase_block, "death_index", 2.2
-        )
-        pp_source = "sportmonks_ball_phases"
-        death_source = "sportmonks_ball_phases"
+    xi_t1 = remapped_squads.get("team1") or []
+    xi_t2 = remapped_squads.get("team2") or []
+    if has_impact_strength:
+        t1_bd_n = max(0.0, min(1.0, float(t1_strength.get("batting_depth", 0.5))))
+        t2_bd_n = max(0.0, min(1.0, float(t2_strength.get("batting_depth", 0.5))))
     else:
-        powerplay_logit = web_pp_logit
-        if powerplay_logit is None:
-            powerplay_logit = _powerplay_performance_logit(remapped_squads)
-            pp_source = "fallback_xi_proxy"
-        else:
-            pp_source = "openai_web"
-        death_overs_logit = web_death_logit
-        if death_overs_logit is None:
-            death_overs_logit = _death_overs_performance_logit(remapped_squads)
-            death_source = "fallback_xi_proxy"
-        else:
-            death_source = "openai_web"
+        t1_bd_n = (_team_batting_depth_tail_index(xi_t1) / 100.0) if xi_t1 else 0.5
+        t2_bd_n = (_team_batting_depth_tail_index(xi_t2) / 100.0) if xi_t2 else 0.5
 
-    key_avail_logit = _key_players_availability_logit_from_web(web_context)
-    if key_avail_logit is None:
-        key_avail_logit = _key_players_availability_logit(remapped_squads)
-
-    # ━━━━━━ Category 2: Current Season Form — SportMonks API (21%) ━━━━━━
-    t1_form = form_data.get("team1", {})
-    t2_form = form_data.get("team2", {})
-    t1_form_score = t1_form.get("form_score", 50)
-    t2_form_score = t2_form.get("form_score", 50)
-    t1_matches_played = t1_form.get("matches_played", 0)
-    t2_matches_played = t2_form.get("matches_played", 0)
-    min_matches = min(t1_matches_played, t2_matches_played)
-    form_damping = min(1.0, min_matches / 3.0) if min_matches > 0 else 0.3
-    # Current form = sum of current-season player activity points for expected XI when available.
-    if remapped_squads.get("team1") and remapped_squads.get("team2") and isinstance(player_performance, dict):
-        t1_form_points = _team_xi_activity_sum(remapped_squads.get("team1", []), player_performance.get("team1", {}))
-        t2_form_points = _team_xi_activity_sum(remapped_squads.get("team2", []), player_performance.get("team2", {}))
-        if (t1_form_points + t2_form_points) > 0:
-            t1_form_score = round(t1_form_points, 1)
-            t2_form_score = round(t2_form_points, 1)
-            form_logit = 3.0 * ((t1_form_points - t2_form_points) / max(t1_form_points + t2_form_points, 1.0))
-        else:
-            form_logit = 3.5 * ((t1_form_score - t2_form_score) / 100) * form_damping
-    else:
-        form_logit = 3.5 * ((t1_form_score - t2_form_score) / 100) * form_damping
-
+    # Venue: pitch fit + home (weather bowler tilt merged into venue baseline after pitch logit)
     # ━━━━━━ Category 3: Venue + Pitch + Home Advantage ━━━━━━
     is_t1_home = _is_home(team1, venue_key) if venue_key else False
     is_t2_home = _is_home(team2, venue_key) if venue_key else False
@@ -1395,10 +1359,40 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
             t1_fit = 0.40 * t1_spin_share + 0.30 * (t1_bowl_strength / 100.0) + 0.30 * (float(t1_rating.get("allrounder_strength", 50)) / 100.0)
             t2_fit = 0.40 * t2_spin_share + 0.30 * (t2_bowl_strength / 100.0) + 0.30 * (float(t2_rating.get("allrounder_strength", 50)) / 100.0)
         else:
-            # Dry/high-scoring tracks: batting quality and depth matter more.
-            t1_fit = 0.45 * (t1_bat_strength / 100.0) + 0.30 * (1.0 + batting_depth_logit / 3.0) / 2.0 + 0.25 * (float(t1_rating.get("allrounder_strength", 50)) / 100.0)
-            t2_fit = 0.45 * (t2_bat_strength / 100.0) + 0.30 * (1.0 - batting_depth_logit / 3.0) / 2.0 + 0.25 * (float(t2_rating.get("allrounder_strength", 50)) / 100.0)
+            # Dry/high-scoring tracks: batting quality and lower-order depth matter more.
+            t1_fit = (
+                0.45 * (t1_bat_strength / 100.0)
+                + 0.30 * t1_bd_n
+                + 0.25 * (float(t1_rating.get("allrounder_strength", 50)) / 100.0)
+            )
+            t2_fit = (
+                0.45 * (t2_bat_strength / 100.0)
+                + 0.30 * t2_bd_n
+                + 0.25 * (float(t2_rating.get("allrounder_strength", 50)) / 100.0)
+            )
         venue_pitch_logit = 2.4 * (t1_fit - t2_fit)
+
+    weather_bowler_logit, weather_venue_detail = _venue_weather_bowler_logit(
+        weather, t1_rating["bowling"], t2_rating["bowling"]
+    )
+    venue_baseline_logit = venue_pitch_logit + home_ground_logit + weather_bowler_logit
+    venue_baseline_detail = {
+        "venue": venue_str,
+        "venue_key": venue_key,
+        "pitch_type": pitch_type,
+        "pitch_profile": pitch_profile,
+        "avg_first_innings": avg_first_innings,
+        "batting_first_win_pct": round(batting_first_win_pct * 100, 1),
+        "pace_assist": pace_assist,
+        "spin_assist": spin_assist,
+        "venue_pitch_logit": round(venue_pitch_logit, 4),
+        "home_ground_logit": round(home_ground_logit, 4),
+        "weather_bowler_logit": round(weather_bowler_logit, 4),
+        "venue_baseline_logit": round(venue_baseline_logit, 4),
+        "team1_home": is_t1_home,
+        "team2_home": is_t2_home,
+        **weather_venue_detail,
+    }
 
     # ━━━━━━ Category 4: Head-to-Head (11%) ━━━━━━
     h2h = form_data.get("h2h", {})
@@ -1417,72 +1411,30 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
     else:
         h2h_logit = 0.0
 
-    # ━━━━━━ Category 5: Bowling Attack Depth ━━━━━━
-    bowl_depth_logit, bowl_detail = _compute_bowling_depth(remapped_squads, t1_rating, t2_rating, venue_key=venue_key)
-    if has_impact_strength:
-        t1_bdepth = max(0.0, min(1.0, float(t1_strength.get("bowling_depth", 0.0))))
-        t2_bdepth = max(0.0, min(1.0, float(t2_strength.get("bowling_depth", 0.0))))
-        bowl_depth_logit = 2.6 * (t1_bdepth - t2_bdepth)
-        b1, b2 = _duel_share_pct(t1_bdepth, t2_bdepth)
-        bowl_detail["team1_depth_share_pct"] = b1
-        bowl_detail["team2_depth_share_pct"] = b2
-        bowl_detail["source"] = "impact_points"
 
-    # ━━━━━━ Category 6: Conditions — Real Weather Data ━━━━━━
-    conditions_logit, conditions_detail = _compute_conditions_from_weather(
-        venue_key, match_time, weather, remapped_squads, team1=team1, team2=team2
+    h2h_raw_logit = float(h2h_logit)
+    squad_gap = abs(
+        (float(t1_rating["batting"]) + float(t1_rating["bowling"]))
+        - (float(t2_rating["batting"]) + float(t2_rating["bowling"]))
     )
-
-    # ━━━━━━ Category 7: Team Momentum — Last 4 Matches ━━━━━━
-    # Recent completed-match W/L (most recent first). Logit scaled so 4-game form matters without dominating.
-    _mw = int(momentum_data.get("momentum_window", 4) or 4)
-    _mw = max(1, min(8, _mw))
-    t1_recent = list(momentum_data.get("team1_last4") or momentum_data.get("team1_last2", []))[:_mw]
-    t2_recent = list(momentum_data.get("team2_last4") or momentum_data.get("team2_last2", []))[:_mw]
-    t1_wins_recent = sum(1 for r in t1_recent if r == "W")
-    t2_wins_recent = sum(1 for r in t2_recent if r == "W")
-    win_diff = t1_wins_recent - t2_wins_recent
-    # Comparable max linear signal to old 2-game rule: 4 * 0.45 ~= 2 * 0.9
-    momentum_logit = min(2.0, max(-2.0, 0.45 * win_diff))
-    if abs(win_diff) >= 4:
-        momentum_logit = min(2.0, max(-2.0, momentum_logit * 1.25))
-    elif abs(win_diff) >= 3:
-        momentum_logit = min(2.0, max(-2.0, momentum_logit * 1.15))
-
-    top_order_consistency_logit = _top_order_consistency_logit(form_data)
+    squad_parity = 1.0 - min(1.0, squad_gap / 160.0)
+    h2h_squad_adjusted_logit = h2h_raw_logit * (0.52 + 0.48 * squad_parity)
 
     _RATINGS_OVERRIDE.reset(rtok)
 
     combined_logit = (
-        WEIGHTS["batting_strength"] * batting_strength_logit
-        + WEIGHTS["batting_depth"] * batting_depth_logit
-        + WEIGHTS["bowling_strength"] * bowling_strength_logit
-        + WEIGHTS["bowling_depth"] * bowl_depth_logit
-        + WEIGHTS["allrounder_strength"] * allrounder_strength_logit
-        + WEIGHTS["allrounder_depth"] * allrounder_depth_logit
-        + WEIGHTS["current_form"] * form_logit
-        + WEIGHTS["venue_pitch"] * venue_pitch_logit
-        + WEIGHTS["home_ground_advantage"] * home_ground_logit
-        + WEIGHTS["h2h"] * h2h_logit
-        + WEIGHTS["conditions"] * conditions_logit
-        + WEIGHTS["momentum"] * momentum_logit
-        + WEIGHTS["powerplay_performance"] * powerplay_logit
-        + WEIGHTS["death_overs_performance"] * death_overs_logit
-        + WEIGHTS["key_players_availability"] * key_avail_logit
-        + WEIGHTS["top_order_consistency"] * top_order_consistency_logit
+        WEIGHTS["batting_quality"] * batting_quality_logit
+        + WEIGHTS["bowling_quality"] * bowling_quality_logit
+        + WEIGHTS["allrounder_balance"] * allrounder_balance_logit
+        + WEIGHTS["venue_baseline"] * venue_baseline_logit
+        + WEIGHTS["h2h_squad_adjusted"] * h2h_squad_adjusted_logit
     )
 
-
-    # Data-quality shrinkage: if many factors are fallback/neutral, pull confidence toward 50%.
     quality_sources = {
         "squads_ready": bool(remapped_squads.get("team1") and remapped_squads.get("team2")),
-        "form_ready": bool(form_data),
         "weather_ready": bool(weather and weather.get("available")),
         "h2h_ready": bool(total_h2h > 0),
-        "sportmonks_phase_ready": phase_dual_ready,
-        "web_pp_ready": web_pp_logit is not None,
-        "web_death_ready": web_death_logit is not None,
-        "web_inj_ready": _key_players_availability_logit_from_web(web_context) is not None,
+        "bpr_csa_ready": bool(has_impact_strength),
     }
     quality_ratio = sum(1 for v in quality_sources.values() if v) / max(1, len(quality_sources))
     quality_shrink = 0.55 + 0.45 * quality_ratio
@@ -1499,24 +1451,12 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
     else:
         confidence = "low"
 
-    # ── Human-readable attribution (logits are always team1 − team2 perspective)
     raw_logits = {
-        "batting_strength": batting_strength_logit,
-        "batting_depth": batting_depth_logit,
-        "bowling_strength": bowling_strength_logit,
-        "bowling_depth": bowl_depth_logit,
-        "allrounder_strength": allrounder_strength_logit,
-        "allrounder_depth": allrounder_depth_logit,
-        "current_form": form_logit,
-        "venue_pitch": venue_pitch_logit,
-        "home_ground_advantage": home_ground_logit,
-        "h2h": h2h_logit,
-        "conditions": conditions_logit,
-        "momentum": momentum_logit,
-        "powerplay_performance": powerplay_logit,
-        "death_overs_performance": death_overs_logit,
-        "key_players_availability": key_avail_logit,
-        "top_order_consistency": top_order_consistency_logit,
+        "batting_quality": batting_quality_logit,
+        "bowling_quality": bowling_quality_logit,
+        "allrounder_balance": allrounder_balance_logit,
+        "venue_baseline": venue_baseline_logit,
+        "h2h_squad_adjusted": h2h_squad_adjusted_logit,
     }
     weighted_contribs = {k: WEIGHTS[k] * raw_logits[k] for k in WEIGHTS}
     is_t1_fav = team1_win_prob >= 50.0
@@ -1543,162 +1483,44 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
     def _named(key: str) -> str:
         return _team_label(key, team1 or "Team 1", team2 or "Team 2")
 
-    vp_f = _favours_from_logit(venue_pitch_logit)
-    vp_line = (
-        f"{_named(vp_f)} — better suited to this {pitch_profile} pitch profile."
-        if vp_f != "neutral"
-        else f"{pitch_profile.title()} pitch profile looks evenly matched between teams."
+    bat_q_f = _favours_from_logit(batting_quality_logit)
+    bat_q_line = (
+        f"{_named(bat_q_f)} — stronger BPR/CSA batting index in the XI."
+        if bat_q_f != "neutral"
+        else "Batting quality (BPR/CSA) is closely matched."
     )
-    hg_f = _favours_from_logit(home_ground_logit)
-    hg_line = (
-        f"{_named(hg_f)} — home-ground edge at this venue."
-        if hg_f != "neutral"
-        else "No single home-ground advantage in the schedule mapping."
+    bowl_q_f = _favours_from_logit(bowling_quality_logit)
+    bowl_q_line = (
+        f"{_named(bowl_q_f)} — stronger BPR/CSA bowling index in the XI."
+        if bowl_q_f != "neutral"
+        else "Bowling quality (BPR/CSA) is evenly matched."
     )
-    h2h_f = _favours_from_logit(h2h_logit)
+    ar_bal_f = _favours_from_logit(allrounder_balance_logit)
+    ar_bal_line = (
+        f"{_named(ar_bal_f)} — better all-round balance (strength + depth)."
+        if ar_bal_f != "neutral"
+        else "All-rounder balance is similar."
+    )
+    vb_f = _favours_from_logit(venue_baseline_logit)
+    wpi = weather_venue_detail.get("weather_bowler_pressure_index", 0.0)
+    vb_line = (
+        f"{_named(vb_f)} — pitch/home/weather baseline favours them "
+        f"({pitch_profile} profile; weather bowler-pressure {wpi:.2f})."
+        if vb_f != "neutral"
+        else f"Venue baseline is even ({pitch_profile} profile; weather bowler-pressure {wpi:.2f})."
+    )
+    h2h_adj_f = _favours_from_logit(h2h_squad_adjusted_logit)
     if total_h2h > 0:
         h2h_line = (
-            f"{_named(h2h_f)} — {t1_h2h}-{t2_h2h} in the sampled H2H ({total_h2h} matches)."
-            if h2h_f != "neutral"
-            else f"H2H is balanced ({t1_h2h}-{t2_h2h} over {total_h2h} matches)."
+            f"{_named(h2h_adj_f)} — H2H {t1_h2h}-{t2_h2h} over {total_h2h} "
+            f"(squad-parity damped from raw {h2h_raw_logit:.3f})."
+            if h2h_adj_f != "neutral"
+            else f"H2H adjusted neutral ({t1_h2h}-{t2_h2h} over {total_h2h})."
         )
     else:
-        h2h_line = "No head-to-head sample — this factor is left neutral."
+        h2h_line = "No head-to-head sample — H2H factor is neutral."
 
-    bd1 = bowl_detail.get("team1_depth_share_pct")
-    bd2 = bowl_detail.get("team2_depth_share_pct")
-    bowl_f = _favours_from_logit(bowl_depth_logit)
-    if bd1 is not None and bd2 is not None:
-        bowl_line = (
-            f"{_named(bowl_f)} — venue-weighted bowling depth score ~{bd1}%–{bd2}% split."
-            if bowl_f != "neutral"
-            else f"Bowling depth is comparable (~{bd1}%–{bd2}% share for this venue)."
-        )
-    else:
-        bowl_line = (
-            f"{_named(bowl_f)} — deeper attack for this surface."
-            if bowl_f != "neutral"
-            else "Bowling depth nets out even for this venue."
-        )
-
-    cond_key = conditions_detail.get("favours_team", "neutral")
-    cond_line = conditions_detail.get("one_liner") or conditions_detail.get(
-        "conditions_edge_text", "Conditions relatively neutral for both teams"
-    )
-
-    mom_f = _favours_from_logit(momentum_logit)
-    _n1, _n2 = len(t1_recent), len(t2_recent)
-    if win_diff > 0:
-        momentum_line = (
-            f"{t1n} carry momentum ({t1_wins_recent}W in last {_n1} vs {t2n}'s {t2_wins_recent}W in last {_n2})."
-        )
-    elif win_diff < 0:
-        momentum_line = (
-            f"{t2n} carry momentum ({t2_wins_recent}W in last {_n2} vs {t1n}'s {t1_wins_recent}W in last {_n1})."
-        )
-    else:
-        momentum_line = f"Even momentum — {t1n} and {t2n} similar over recent completed results."
-
-    batstr_f = _favours_from_logit(batting_strength_logit)
-    batstr_line = (
-        f"{_named(batstr_f)} — stronger core batting quality."
-        if batstr_f != "neutral"
-        else "Core batting strength is closely matched."
-    )
-    form_f = _favours_from_logit(form_logit)
-    form_line = (
-        f"{_named(form_f)} — better recent season form (SportMonks)."
-        if form_f != "neutral"
-        else "Recent league form is neck-and-neck."
-    )
-
-    bdepth_f = _favours_from_logit(batting_depth_logit)
-    bdepth_line = (
-        f"{_named(bdepth_f)} — stronger middle/lower order on paper."
-        if bdepth_f != "neutral"
-        else "Batting depth through the order is comparable."
-    )
-    bstr_f = _favours_from_logit(bowling_strength_logit)
-    bstr_line = (
-        f"{_named(bstr_f)} — higher top-end bowling quality."
-        if bstr_f != "neutral"
-        else "Top bowling quality is evenly matched."
-    )
-    pp_f = _favours_from_logit(powerplay_logit)
-    if pp_source == "sportmonks_ball_phases":
-        pp_line = (
-            f"{_named(pp_f)} — stronger powerplay mix from ball-by-ball phase tagging."
-            if pp_f != "neutral"
-            else "Powerplay phase indices are even in the synced sample."
-        )
-    elif pp_source == "openai_web":
-        pp_line = (
-            f"{_named(pp_f)} — stronger powerplay profile (web context)."
-            if pp_f != "neutral"
-            else "Powerplay signals from web context are balanced."
-        )
-    else:
-        pp_line = (
-            f"{_named(pp_f)} — stronger powerplay batting profile (XI rating proxy)."
-            if pp_f != "neutral"
-            else "Powerplay batting profiles are even (XI proxy)."
-        )
-    death_f = _favours_from_logit(death_overs_logit)
-    if death_source == "sportmonks_ball_phases":
-        death_line = (
-            f"{_named(death_f)} — stronger death-overs mix from ball-by-ball phase tagging."
-            if death_f != "neutral"
-            else "Death overs phase indices are even in the synced sample."
-        )
-    elif death_source == "openai_web":
-        death_line = (
-            f"{_named(death_f)} — better death overs (web context)."
-            if death_f != "neutral"
-            else "Death overs signals from web context are balanced."
-        )
-    else:
-        death_line = (
-            f"{_named(death_f)} — better death-overs specialist mix (XI proxy)."
-            if death_f != "neutral"
-            else "Death overs profiles are balanced (XI proxy)."
-        )
-    ka_f = _favours_from_logit(key_avail_logit)
-    ka_line = (
-        f"{_named(ka_f)} — fewer flagged availability issues in the XI."
-        if ka_f != "neutral"
-        else "No meaningful availability flags on either XI."
-    )
-    ar_f = _favours_from_logit(allrounder_depth_logit)
-    ar_line = (
-        f"{_named(ar_f)} — more all-round options in the squad."
-        if ar_f != "neutral"
-        else "All-rounder depth is similar."
-    )
-    ars_f = _favours_from_logit(allrounder_strength_logit)
-    ars_line = (
-        f"{_named(ars_f)} — higher all-rounder quality ceiling."
-        if ars_f != "neutral"
-        else "All-rounder quality is evenly matched."
-    )
-    toc_f = _favours_from_logit(top_order_consistency_logit)
-    toc_line = (
-        f"{_named(toc_f)} — more consistent top-order form scores."
-        if toc_f != "neutral"
-        else "Top-order consistency is even from recent performer data."
-    )
-
-    xi_t1 = remapped_squads.get("team1") or []
-    xi_t2 = remapped_squads.get("team2") or []
-    if has_impact_strength:
-        t1_tail_f = 100.0 * max(0.0, min(1.0, float(t1_strength.get("batting_depth", 0.0))))
-        t2_tail_f = 100.0 * max(0.0, min(1.0, float(t2_strength.get("batting_depth", 0.0))))
-    else:
-        t1_tail_f = _team_batting_depth_tail_index(xi_t1) if xi_t1 else 50.0
-        t2_tail_f = _team_batting_depth_tail_index(xi_t2) if xi_t2 else 50.0
-    t1_tail_bat_idx = round(t1_tail_f, 1) if xi_t1 else None
-    t2_tail_bat_idx = round(t2_tail_f, 1) if xi_t2 else None
     bat_st_share1, bat_st_share2 = _duel_share_pct(t1_rating.get("batting", 50), t2_rating.get("batting", 50))
-    bat_dp_share1, bat_dp_share2 = _duel_share_pct(t1_tail_f, t2_tail_f)
     bowl_st_share1, bowl_st_share2 = _duel_share_pct(t1_rating.get("bowling", 50), t2_rating.get("bowling", 50))
     ar_st_share1, ar_st_share2 = _duel_share_pct(
         t1_rating.get("allrounder_strength", 50), t2_rating.get("allrounder_strength", 50)
@@ -1706,8 +1528,6 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
     ar_dp_share1, ar_dp_share2 = _duel_share_pct(
         t1_rating.get("allrounder_depth", 0), t2_rating.get("allrounder_depth", 0)
     )
-    bowl_dp_share1 = int(bowl_detail.get("team1_depth_share_pct", 50))
-    bowl_dp_share2 = int(bowl_detail.get("team2_depth_share_pct", 50))
 
     return {
         "team1_win_prob": team1_win_prob,
@@ -1721,220 +1541,83 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
             "shrink_applied": round(quality_shrink, 3),
             "signals": quality_sources,
         },
-        "model": "16-category-v2",
+        "model": "5-parameter-bpr-csa-v1",
         "favourite_team": "team1" if is_t1_fav else "team2",
         "favourite_one_liner": favourite_one_liner,
         "factor_one_liners": {
-            "batting_strength": {"favours": batstr_f, "one_liner": batstr_line},
-            "current_form": {"favours": form_f, "one_liner": form_line},
-            "venue_pitch": {"favours": vp_f, "one_liner": vp_line},
-            "home_ground_advantage": {"favours": hg_f, "one_liner": hg_line},
-            "h2h": {"favours": h2h_f, "one_liner": h2h_line},
-            "bowling_depth": {"favours": bowl_f, "one_liner": bowl_line},
-            "bowling_strength": {"favours": bstr_f, "one_liner": bstr_line},
-            "conditions": {
-                "favours": cond_key if cond_key in ("team1", "team2") else "neutral",
-                "one_liner": cond_line,
-            },
-            "momentum": {"favours": mom_f, "one_liner": momentum_line},
-            "batting_depth": {"favours": bdepth_f, "one_liner": bdepth_line},
-            "powerplay_performance": {"favours": pp_f, "one_liner": pp_line},
-            "death_overs_performance": {"favours": death_f, "one_liner": death_line},
-            "key_players_availability": {"favours": ka_f, "one_liner": ka_line},
-            "allrounder_strength": {"favours": ars_f, "one_liner": ars_line},
-            "allrounder_depth": {"favours": ar_f, "one_liner": ar_line},
-            "top_order_consistency": {"favours": toc_f, "one_liner": toc_line},
+            "batting_quality": {"favours": bat_q_f, "one_liner": bat_q_line},
+            "bowling_quality": {"favours": bowl_q_f, "one_liner": bowl_q_line},
+            "allrounder_balance": {"favours": ar_bal_f, "one_liner": ar_bal_line},
+            "venue_baseline": {"favours": vb_f, "one_liner": vb_line},
+            "h2h_squad_adjusted": {"favours": h2h_adj_f, "one_liner": h2h_line},
         },
         "attribution": {
             "primary_driver_factor": driver_key,
             "primary_driver_aligned_weight": round(driver_aligned, 4),
             "logits_team1_minus_team2": {k: round(v, 4) for k, v in raw_logits.items()},
+            "h2h_raw_logit_team1_minus_team2": round(h2h_raw_logit, 4),
+            "h2h_squad_parity": round(squad_parity, 4),
         },
         "factors": {
-            "batting_strength": {
-                "weight": WEIGHTS["batting_strength"],
-                "logit_contribution": round(WEIGHTS["batting_strength"] * batting_strength_logit, 4),
+            "batting_quality": {
+                "weight": WEIGHTS["batting_quality"],
+                "logit_contribution": round(WEIGHTS["batting_quality"] * batting_quality_logit, 4),
+                "raw_logit": round(batting_quality_logit, 4),
                 "team1_batting": t1_rating["batting"],
                 "team2_batting": t2_rating["batting"],
                 "team1_share_pct": bat_st_share1,
                 "team2_share_pct": bat_st_share2,
-                "raw_logit": round(batting_strength_logit, 4),
-                "source": "impact_points" if has_impact_strength else "xi_roles",
-                "basis": "xi_roles_top6_batting_pool",
-                **t1_squad_detail, **t2_squad_detail,
+                "source": "bpr_csa_batip" if has_impact_strength else "xi_roles_fallback",
+                **t1_squad_detail,
+                **t2_squad_detail,
             },
-            "current_form": {
-                "weight": WEIGHTS["current_form"],
-                "logit_contribution": round(WEIGHTS["current_form"] * form_logit, 4),
-                "team1_form_score": round(t1_form_score, 1),
-                "team2_form_score": round(t2_form_score, 1),
-                "team1_wl_form": t1_form.get("wl_form_score", t1_form_score),
-                "team2_wl_form": t2_form.get("wl_form_score", t2_form_score),
-                "team1_player_form": t1_form.get("player_form_score", 0),
-                "team2_player_form": t2_form.get("player_form_score", 0),
-                "team1_matches_played": t1_matches_played,
-                "team2_matches_played": t2_matches_played,
-                "team1_wins": t1_form.get("wins", 0),
-                "team2_wins": t2_form.get("wins", 0),
-                "team1_top_performers": t1_form.get("top_performers", []),
-                "team2_top_performers": t2_form.get("top_performers", []),
-                "team1_nrr": t1_form.get("nrr", 0),
-                "team2_nrr": t2_form.get("nrr", 0),
-                "source": "sportmonks_api",
-                "damping": round(form_damping, 2),
-                "has_player_stats": bool(player_performance),
+            "bowling_quality": {
+                "weight": WEIGHTS["bowling_quality"],
+                "logit_contribution": round(WEIGHTS["bowling_quality"] * bowling_quality_logit, 4),
+                "raw_logit": round(bowling_quality_logit, 4),
+                "team1_bowling": t1_rating.get("bowling", 50),
+                "team2_bowling": t2_rating.get("bowling", 50),
+                "team1_share_pct": bowl_st_share1,
+                "team2_share_pct": bowl_st_share2,
+                "source": "bpr_csa_bowlip" if has_impact_strength else "xi_roles_fallback",
             },
-            "venue_pitch": {
-                "weight": WEIGHTS["venue_pitch"],
-                "logit_contribution": round(WEIGHTS["venue_pitch"] * venue_pitch_logit, 4),
-                "venue": venue_str,
-                "venue_key": venue_key,
-                "pitch_type": pitch_type,
-                "pitch_profile": pitch_profile,
-                "avg_first_innings": avg_first_innings,
-                "batting_first_win_pct": round(batting_first_win_pct * 100, 1),
-                "pace_assist": pace_assist,
-                "spin_assist": spin_assist,
-                "pitch_logit": round(venue_pitch_logit, 3),
-                "raw_logit": round(venue_pitch_logit, 3),
+            "allrounder_balance": {
+                "weight": WEIGHTS["allrounder_balance"],
+                "logit_contribution": round(WEIGHTS["allrounder_balance"] * allrounder_balance_logit, 4),
+                "raw_logit": round(allrounder_balance_logit, 4),
+                "blend": {"strength_weight": 0.55, "depth_weight": 0.45},
+                "strength_logit": round(allrounder_strength_logit, 4),
+                "depth_logit": round(allrounder_depth_logit, 4),
+                "team1_allrounder_strength": t1_rating.get("allrounder_strength", 50),
+                "team2_allrounder_strength": t2_rating.get("allrounder_strength", 50),
+                "team1_allrounder_depth": t1_rating.get("allrounder_depth", 0),
+                "team2_allrounder_depth": t2_rating.get("allrounder_depth", 0),
+                "team1_strength_share_pct": ar_st_share1,
+                "team2_strength_share_pct": ar_st_share2,
+                "team1_depth_share_pct": ar_dp_share1,
+                "team2_depth_share_pct": ar_dp_share2,
+                "source": "bpr_csa_arip" if has_impact_strength else "xi_roles_fallback",
             },
-            "home_ground_advantage": {
-                "weight": WEIGHTS["home_ground_advantage"],
-                "logit_contribution": round(WEIGHTS["home_ground_advantage"] * home_ground_logit, 4),
-                "team1_home": is_t1_home,
-                "team2_home": is_t2_home,
-                "home_team": "team1" if is_t1_home else ("team2" if is_t2_home else "neutral"),
-                "home_logit": round(home_ground_logit, 3),
-                "raw_logit": round(home_ground_logit, 3),
+            "venue_baseline": {
+                "weight": WEIGHTS["venue_baseline"],
+                "logit_contribution": round(WEIGHTS["venue_baseline"] * venue_baseline_logit, 4),
+                "raw_logit": round(venue_baseline_logit, 4),
+                **venue_baseline_detail,
             },
-            "h2h": {
-                "weight": WEIGHTS["h2h"],
-                "logit_contribution": round(WEIGHTS["h2h"] * h2h_logit, 4),
+            "h2h_squad_adjusted": {
+                "weight": WEIGHTS["h2h_squad_adjusted"],
+                "logit_contribution": round(WEIGHTS["h2h_squad_adjusted"] * h2h_squad_adjusted_logit, 4),
+                "raw_logit": round(h2h_squad_adjusted_logit, 4),
+                "h2h_raw_logit": round(h2h_raw_logit, 4),
+                "squad_parity": round(squad_parity, 4),
                 "team1_wins": t1_h2h,
                 "team2_wins": t2_h2h,
                 "total": total_h2h,
                 "source": h2h_source,
             },
-            "bowling_depth": {
-                "weight": WEIGHTS["bowling_depth"],
-                "logit_contribution": round(WEIGHTS["bowling_depth"] * bowl_depth_logit, 4),
-                "team1_share_pct": bowl_dp_share1,
-                "team2_share_pct": bowl_dp_share2,
-                "source": "impact_points" if has_impact_strength else "xi_roles",
-                "basis": "xi_bowling_contributors_venue_weighted_top5",
-                **bowl_detail,
-            },
-            "bowling_strength": {
-                "weight": WEIGHTS["bowling_strength"],
-                "logit_contribution": round(WEIGHTS["bowling_strength"] * bowling_strength_logit, 4),
-                "raw_logit": round(bowling_strength_logit, 4),
-                "team1_bowling_rating": t1_rating.get("bowling", 50),
-                "team2_bowling_rating": t2_rating.get("bowling", 50),
-                "team1_share_pct": bowl_st_share1,
-                "team2_share_pct": bowl_st_share2,
-                "source": "impact_points" if has_impact_strength else "xi_roles",
-                "basis": "xi_roles_top5_bowling_pool",
-            },
-            "conditions": {
-                "weight": WEIGHTS["conditions"],
-                "logit_contribution": round(WEIGHTS["conditions"] * conditions_logit, 4),
-                **conditions_detail,
-            },
-            "momentum": {
-                "weight": WEIGHTS["momentum"],
-                "logit_contribution": round(WEIGHTS["momentum"] * momentum_logit, 4),
-                "momentum_window": _mw,
-                "team1_last4": t1_recent,
-                "team2_last4": t2_recent,
-                "team1_wins_last4": t1_wins_recent,
-                "team2_wins_last4": t2_wins_recent,
-                "team1_last2": t1_recent[:2],
-                "team2_last2": t2_recent[:2],
-                "team1_wins_last2": sum(1 for r in t1_recent[:2] if r == "W"),
-                "team2_wins_last2": sum(1 for r in t2_recent[:2] if r == "W"),
-                "raw_logit": round(momentum_logit, 4),
-                "momentum_text": momentum_line,
-            },
-            "batting_depth": {
-                "weight": WEIGHTS["batting_depth"],
-                "logit_contribution": round(WEIGHTS["batting_depth"] * batting_depth_logit, 4),
-                "raw_logit": round(batting_depth_logit, 4),
-                "team1_share_pct": bat_dp_share1,
-                "team2_share_pct": bat_dp_share2,
-                "team1_tail_batting_index": t1_tail_bat_idx,
-                "team2_tail_batting_index": t2_tail_bat_idx,
-                "source": "impact_points" if has_impact_strength else "xi_roles",
-                "basis": "xi_roles_positions_7_11_batting_tail",
-            },
-            "powerplay_performance": {
-                "weight": WEIGHTS["powerplay_performance"],
-                "logit_contribution": round(WEIGHTS["powerplay_performance"] * powerplay_logit, 4),
-                "raw_logit": round(powerplay_logit, 4),
-                "source": pp_source,
-                **(
-                    {
-                        "team1_powerplay_index": (t1_phase_block or {}).get("powerplay_index"),
-                        "team2_powerplay_index": (t2_phase_block or {}).get("powerplay_index"),
-                        "team1_pp_bat_balls": (t1_phase_block or {}).get("pp_bat_balls_sample"),
-                        "team2_pp_bat_balls": (t2_phase_block or {}).get("pp_bat_balls_sample"),
-                        "team1_pp_bowl_balls": (t1_phase_block or {}).get("pp_bowl_balls_sample"),
-                        "team2_pp_bowl_balls": (t2_phase_block or {}).get("pp_bowl_balls_sample"),
-                    }
-                    if pp_source == "sportmonks_ball_phases"
-                    else {}
-                ),
-            },
-            "death_overs_performance": {
-                "weight": WEIGHTS["death_overs_performance"],
-                "logit_contribution": round(WEIGHTS["death_overs_performance"] * death_overs_logit, 4),
-                "raw_logit": round(death_overs_logit, 4),
-                "source": death_source,
-                **(
-                    {
-                        "team1_death_index": (t1_phase_block or {}).get("death_index"),
-                        "team2_death_index": (t2_phase_block or {}).get("death_index"),
-                        "team1_death_bat_balls": (t1_phase_block or {}).get("death_bat_balls_sample"),
-                        "team2_death_bat_balls": (t2_phase_block or {}).get("death_bat_balls_sample"),
-                    }
-                    if death_source == "sportmonks_ball_phases"
-                    else {}
-                ),
-            },
-            "key_players_availability": {
-                "weight": WEIGHTS["key_players_availability"],
-                "logit_contribution": round(WEIGHTS["key_players_availability"] * key_avail_logit, 4),
-                "raw_logit": round(key_avail_logit, 4),
-                "source": "openai_web" if _key_players_availability_logit_from_web(web_context) is not None else "fallback_xi_proxy",
-            },
-            "allrounder_depth": {
-                "weight": WEIGHTS["allrounder_depth"],
-                "logit_contribution": round(WEIGHTS["allrounder_depth"] * allrounder_depth_logit, 4),
-                "raw_logit": round(allrounder_depth_logit, 4),
-                "team1_allrounder_depth": t1_rating.get("allrounder_depth", 0),
-                "team2_allrounder_depth": t2_rating.get("allrounder_depth", 0),
-                "team1_share_pct": ar_dp_share1,
-                "team2_share_pct": ar_dp_share2,
-                "source": "impact_points" if has_impact_strength else "xi_roles",
-                "basis": "xi_allrounder_role_max_form_activity",
-            },
-            "allrounder_strength": {
-                "weight": WEIGHTS["allrounder_strength"],
-                "logit_contribution": round(WEIGHTS["allrounder_strength"] * allrounder_strength_logit, 4),
-                "raw_logit": round(allrounder_strength_logit, 4),
-                "team1_allrounder_strength": t1_rating.get("allrounder_strength", 50),
-                "team2_allrounder_strength": t2_rating.get("allrounder_strength", 50),
-                "team1_share_pct": ar_st_share1,
-                "team2_share_pct": ar_st_share2,
-                "source": "impact_points" if has_impact_strength else "xi_roles",
-                "basis": "xi_allrounder_role_top3_mean_effective_rating",
-            },
-            "top_order_consistency": {
-                "weight": WEIGHTS["top_order_consistency"],
-                "logit_contribution": round(WEIGHTS["top_order_consistency"] * top_order_consistency_logit, 4),
-                "raw_logit": round(top_order_consistency_logit, 4),
-            },
         },
     }
+
 
 
 # ── Helper Functions ──

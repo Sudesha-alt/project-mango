@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import axios from "axios";
-import { Spinner, Scales, TrendUp, UsersThree, House, TrendDown, Minus, ArrowsClockwise, Target, CloudSun, Lightning } from "@phosphor-icons/react";
+import { Spinner, Scales, TrendUp, UsersThree, House, TrendDown, Minus, ArrowsClockwise, Target } from "@phosphor-icons/react";
 import InfoTooltip from "./InfoTooltip";
 import { API_BASE } from "@/lib/apiBase";
 import PreMatchPlayerPerfToolbar, { readLivePlayerPerfPreference } from "./PreMatchPlayerPerfToolbar";
@@ -9,11 +9,11 @@ import { readImpactFormulaPreference } from "@/lib/impactFormulaPref";
 
 const API = API_BASE;
 
-function phaseFactorSourceLabel(src) {
-  if (src === "sportmonks_ball_phases") return "SportMonks ball-by-ball phases";
-  if (src === "openai_web") return "Web context";
-  if (src === "fallback_xi_proxy") return "XI rating proxy";
-  return src || "—";
+/** Coerce API/Mongo values that may arrive as strings into finite numbers. */
+function toFiniteNumber(value, fallback = null) {
+  if (value === null || value === undefined || value === "") return fallback;
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 function xiRoleColor(role) {
@@ -26,32 +26,9 @@ function xiRoleColor(role) {
   return "#737373";
 }
 
-/** Last 4 completed results for momentum: W/L per game, newest first; pad with —; append record. */
-function formatMomentumLastFour(momentum, teamSide) {
-  const key4 = teamSide === "team1" ? "team1_last4" : "team2_last4";
-  const key2 = teamSide === "team1" ? "team1_last2" : "team2_last2";
-  const raw = momentum?.[key4] ?? momentum?.[key2] ?? [];
-  const arr = Array.isArray(raw) ? raw : [];
-  const normalized = arr.map((r) => {
-    const u = String(r ?? "").toUpperCase().trim();
-    if (u === "W" || u === "WIN") return "W";
-    if (u === "L" || u === "LOSS") return "L";
-    return null;
-  });
-  const slots = [];
-  for (let i = 0; i < 4; i += 1) {
-    slots.push(normalized[i] ?? "—");
-  }
-  const wins = normalized.filter((x) => x === "W").length;
-  const losses = normalized.filter((x) => x === "L").length;
-  const played = wins + losses;
-  const record = played > 0 ? ` (${wins}W-${losses}L)` : "";
-  return `Last 4 (new→old): ${slots.join(" · ")}${record}`;
-}
-
 function FactorBar({ label, weight, logit, icon: Icon, tooltip, team1, team2, team1Detail, team2Detail, reasonLine, favours, claudeVerdict }) {
   // logit > 0 favors team1, logit < 0 favors team2
-  const safeLogit = Number.isFinite(logit) ? logit : 0;
+  const safeLogit = toFiniteNumber(logit, 0);
   const absLogit = Math.abs(safeLogit);
   const barWidth = Math.min(100, absLogit * 300); // visual scale
   const favorsTeam1 = safeLogit > 0;
@@ -62,13 +39,30 @@ function FactorBar({ label, weight, logit, icon: Icon, tooltip, team1, team2, te
   return (
     <div className="py-3 border-b border-[#262626] last:border-0 space-y-2" data-testid={testId}>
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-1.5">
-          <Icon weight="bold" className="w-3.5 h-3.5 text-[#007AFF]" />
-          <span className="text-[10px] font-bold uppercase tracking-wider text-[#A3A3A3]">{label}</span>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <Icon weight="bold" className="w-3.5 h-3.5 text-[#007AFF] shrink-0" />
+          <span className="text-[10px] font-bold uppercase tracking-wider text-[#A3A3A3] truncate">{label}</span>
           {tooltip && <InfoTooltip text={tooltip} />}
         </div>
-        <span className="text-[9px] font-mono text-[#737373]">Weight: {(weight * 100).toFixed(0)}%</span>
+        <div className="flex flex-col items-end gap-0.5 shrink-0">
+          <span className="text-[9px] font-mono text-[#737373]">Weight: {(toFiniteNumber(weight, 0) * 100).toFixed(0)}%</span>
+          {favours === "team1" && (
+            <span className="text-[8px] font-bold uppercase tracking-wider text-[#34C759]">Favours {team1}</span>
+          )}
+          {favours === "team2" && (
+            <span className="text-[8px] font-bold uppercase tracking-wider text-[#FF3B30]">Favours {team2}</span>
+          )}
+          {(favours === "neutral" || !favours) && neutral && (
+            <span className="text-[8px] font-bold uppercase tracking-wider text-[#525252]">Even</span>
+          )}
+          {(favours === "neutral" || !favours) && !neutral && favorsTeam1 && (
+            <span className="text-[8px] font-bold uppercase tracking-wider text-[#34C759]">Edge {team1}</span>
+          )}
+          {(favours === "neutral" || !favours) && !neutral && favorsTeam2 && (
+            <span className="text-[8px] font-bold uppercase tracking-wider text-[#FF3B30]">Edge {team2}</span>
+          )}
+        </div>
       </div>
       {/* Two-sided bar — neutral shows a visible “even” marker (zero logit used to render empty) */}
       <div className="flex items-center gap-1">
@@ -222,7 +216,9 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
     setXiRolesLoading(false);
   };
 
-  if (!data) {
+  const predMissing = !data || data.prediction == null || typeof data.prediction !== "object";
+
+  if (predMissing) {
     return (
       <div className="bg-[#141414] border border-[#262626] rounded-lg p-5 space-y-4" data-testid="prematch-predict-trigger">
         <PreMatchPlayerPerfToolbar
@@ -232,8 +228,8 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
           phaseDataReady={undefined}
           onBackgroundPlayerJobStarted={scheduleReloadAfterBackgroundPlayerJob}
         />
-        <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold mb-3 flex items-center gap-1">Algorithm Prediction <InfoTooltip text="16-category pre-match model from SportMonks squad/form/history data plus weather-based conditions." /></p>
-        <p className="text-xs text-[#A3A3A3] mb-3">16-Category Model: batting/bowling/all-round strength+depth, form, venue, home, h2h, conditions, momentum, powerplay, death, availability, top-order consistency</p>
+        <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold mb-3 flex items-center gap-1">Algorithm Prediction <InfoTooltip text="5-parameter pre-match model: BPR/CSA batting & bowling, all-rounder balance, venue + weather (bowler tilt), squad-adjusted H2H." /></p>
+        <p className="text-xs text-[#A3A3A3] mb-3">5-Parameter Model (30% / 30% / 10% / 20% / 10%): batting quality, bowling quality, all-rounder balance, venue baseline, H2H</p>
         <button onClick={handlePredict} disabled={loading} data-testid="run-prematch-predict-btn"
           className="w-full flex items-center justify-center gap-2 bg-[#007AFF] text-white py-2.5 rounded-md text-xs font-bold uppercase tracking-wider hover:bg-blue-600 transition-colors disabled:opacity-50">
           {loading ? <><Spinner className="w-4 h-4 animate-spin" /> Fetching Stats...</> : <><Scales weight="fill" className="w-4 h-4" /> Run Prediction</>}
@@ -250,12 +246,21 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
   const oddsDir = data.odds_direction || {};
   const t1 = data.team1Short || team1;
   const t2 = data.team2Short || team2;
-  const t1Prob = pred.team1_win_prob || 50;
-  const t2Prob = pred.team2_win_prob || 50;
+  const t1Prob = toFiniteNumber(pred.team1_win_prob, 50);
+  const t2Prob = toFiniteNumber(pred.team2_win_prob, 50);
+  const hasFiveFactorModel = Boolean(
+    pred.factors &&
+      pred.factors.batting_quality &&
+      pred.factors.bowling_quality &&
+      pred.factors.h2h_squad_adjusted
+  );
   const factorLogit = (key) => {
     const f = factors?.[key] || {};
-    if (Number.isFinite(f.raw_logit)) return f.raw_logit;
-    if (Number.isFinite(f.logit_contribution)) return f.logit_contribution;
+    const raw = toFiniteNumber(f.raw_logit, null);
+    if (raw != null) return raw;
+    const w = toFiniteNumber(f.weight, null);
+    const lc = toFiniteNumber(f.logit_contribution, null);
+    if (w != null && lc != null && Math.abs(w) > 1e-9) return lc / w;
     return 0;
   };
   const factorReason = (key) =>
@@ -319,7 +324,7 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
       {/* Main probability */}
       <div>
         <div className="flex items-center justify-between mb-3">
-          <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold flex items-center gap-1">Algorithm Prediction <InfoTooltip text="16-category pre-match model. Toss is intentionally excluded from algorithm scoring and handled in Claude analysis." /></p>
+          <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold flex items-center gap-1">Algorithm Prediction <InfoTooltip text="5-parameter BPR/CSA model. Toss is excluded from algorithm scoring and handled in Claude analysis." /></p>
           <button onClick={handleRefresh} disabled={loading} data-testid="refresh-prediction-btn"
             className="flex items-center gap-1 text-[10px] text-[#737373] hover:text-[#007AFF] transition-colors disabled:opacity-50 font-bold uppercase tracking-wider">
             {loading ? <Spinner className="w-3 h-3 animate-spin" /> : <ArrowsClockwise weight="bold" className="w-3 h-3" />} Re-Predict
@@ -334,7 +339,10 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
           <div className="h-full transition-all duration-700 rounded-r-full" style={{ width: `${t2Prob}%`, backgroundColor: t2Color }} />
         </div>
         <p className="text-center text-[9px] text-[#737373] font-mono mt-1">
-          Model confidence: {pred.confidence || "—"} | Logit: {pred.combined_logit || "—"}
+          Model confidence: {pred.confidence || "—"} | Logit:{" "}
+          {toFiniteNumber(pred.combined_logit, null) != null
+            ? toFiniteNumber(pred.combined_logit, 0).toFixed(4)
+            : pred.combined_logit ?? "—"}
         </p>
         {/* Odds Direction Indicator */}
         {oddsDir.team1 && oddsDir.team1 !== "new" && (
@@ -359,190 +367,165 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
         )}
       </div>
 
-      {/* Factor Breakdown — 16 Categories */}
-      <div>
-        <div className="flex items-center justify-between mb-2">
-          <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold flex items-center gap-1">Factor Breakdown (16 Categories) <InfoTooltip text="All active backend factors are displayed. Toss is intentionally excluded from algorithm scoring." /></p>
+      {!hasFiveFactorModel && (
+        <div
+          className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 space-y-1"
+          data-testid="prematch-stale-model-banner"
+        >
+          <p className="text-[10px] font-bold uppercase tracking-wide text-amber-400">5-factor breakdown not in this cache</p>
+          <p className="text-[10px] text-amber-100/90 leading-snug">
+            Stored prediction is missing the current five-factor block (batting_quality, bowling_quality, …). Use{" "}
+            <span className="font-semibold">Re-Predict</span> so BPR/CSA indices, logits, and bars populate.
+          </p>
         </div>
-        <div className="flex items-center justify-between mb-1 px-1">
-          <span className="text-[9px] font-bold uppercase tracking-wider text-[#007AFF]">{t1}</span>
-          <span className="text-[9px] font-bold uppercase tracking-wider text-[#FF3B30]">{t2}</span>
-        </div>
+      )}
 
-        <FactorBar label="Batting Strength" weight={factors.batting_strength?.weight || 0.08} logit={factorLogit("batting_strength")} icon={UsersThree}
-          tooltip="Share of combined core batting index (sums to 100%). Higher % = stronger top-6 batting pool on paper."
-          team1={t1} team2={t2}
-          team1Detail={`${factors.batting_strength?.team1_share_pct ?? 50}% · idx ${factors.batting_strength?.team1_batting ?? "?"}`}
-          team2Detail={`${factors.batting_strength?.team2_share_pct ?? 50}% · idx ${factors.batting_strength?.team2_batting ?? "?"}`}
-          reasonLine={factorReason("batting_strength")}
-          favours={factorOneLiners.batting_strength?.favours}
-          claudeVerdict={factorVerdict("batting_strength")}
-        />
-        <FactorBar label="Batting Depth" weight={factors.batting_depth?.weight || 0.08} logit={factorLogit("batting_depth")} icon={UsersThree}
-          tooltip="Share of combined tail (7th–11th batting-slot) index. Higher % = deeper middle/lower order."
-          team1={t1} team2={t2}
-          team1Detail={`${factors.batting_depth?.team1_share_pct ?? 50}% · tail ${factors.batting_depth?.team1_tail_batting_index ?? "—"}`}
-          team2Detail={`${factors.batting_depth?.team2_share_pct ?? 50}% · tail ${factors.batting_depth?.team2_tail_batting_index ?? "—"}`}
-          reasonLine={factorReason("batting_depth")}
-          favours={factorOneLiners.batting_depth?.favours}
-          claudeVerdict={factorVerdict("batting_depth")}
-        />
-        <FactorBar label="Bowling Strength" weight={factors.bowling_strength?.weight || 0.08} logit={factorLogit("bowling_strength")} icon={Target}
-          tooltip="Share of combined top-5 bowling pool index. Higher % = stronger front-line attack on paper."
-          team1={t1} team2={t2}
-          team1Detail={`${factors.bowling_strength?.team1_share_pct ?? 50}% · idx ${factors.bowling_strength?.team1_bowling_rating ?? "?"}`}
-          team2Detail={`${factors.bowling_strength?.team2_share_pct ?? 50}% · idx ${factors.bowling_strength?.team2_bowling_rating ?? "?"}`}
-          reasonLine={factorReason("bowling_strength")}
-          favours={factorOneLiners.bowling_strength?.favours}
-          claudeVerdict={factorVerdict("bowling_strength")}
-        />
-        <FactorBar label="Bowling Depth" weight={factors.bowling_depth?.weight ?? 0.08} logit={factorLogit("bowling_depth")} icon={Target}
-          tooltip={`Share of venue-weighted top-5 attack score (sums to 100%). Pace assist: ${factors.bowling_depth?.venue_pace_assist ?? "?"}, Spin: ${factors.bowling_depth?.venue_spin_assist ?? "?"}`}
-          team1={t1} team2={t2}
-          team1Detail={`${factors.bowling_depth?.team1_share_pct ?? factors.bowling_depth?.team1_depth_share_pct ?? 50}% · ${factors.bowling_depth?.team1_bowler_count ?? "?"} bowlers (P${factors.bowling_depth?.team1_pace_count ?? 0} S${factors.bowling_depth?.team1_spin_count ?? 0})`}
-          team2Detail={`${factors.bowling_depth?.team2_share_pct ?? factors.bowling_depth?.team2_depth_share_pct ?? 50}% · ${factors.bowling_depth?.team2_bowler_count ?? "?"} bowlers (P${factors.bowling_depth?.team2_pace_count ?? 0} S${factors.bowling_depth?.team2_spin_count ?? 0})`}
-          reasonLine={factorReason("bowling_depth")}
-          favours={factorOneLiners.bowling_depth?.favours}
-          claudeVerdict={factorVerdict("bowling_depth")}
-        />
-        <FactorBar label="All-rounder Strength" weight={factors.allrounder_strength?.weight || 0.08} logit={factorLogit("allrounder_strength")} icon={Scales}
-          tooltip="Share of combined all-rounder quality (top-3 mean). Higher % = better AR ceiling."
-          team1={t1} team2={t2}
-          team1Detail={`${factors.allrounder_strength?.team1_share_pct ?? 50}% · AR idx ${factors.allrounder_strength?.team1_allrounder_strength ?? "?"}`}
-          team2Detail={`${factors.allrounder_strength?.team2_share_pct ?? 50}% · AR idx ${factors.allrounder_strength?.team2_allrounder_strength ?? "?"}`}
-          reasonLine={factorReason("allrounder_strength")}
-          favours={factorOneLiners.allrounder_strength?.favours}
-          claudeVerdict={factorVerdict("allrounder_strength")}
-        />
-        <FactorBar label="All-rounder Depth" weight={factors.allrounder_depth?.weight || 0.08} logit={factorLogit("allrounder_depth")} icon={Scales}
-          tooltip="Share of combined all-rounder depth (count/activity). Higher % = more AR flexibility."
-          team1={t1} team2={t2}
-          team1Detail={`${factors.allrounder_depth?.team1_share_pct ?? 50}% · AR units ${factors.allrounder_depth?.team1_allrounder_depth ?? "?"}`}
-          team2Detail={`${factors.allrounder_depth?.team2_share_pct ?? 50}% · AR units ${factors.allrounder_depth?.team2_allrounder_depth ?? "?"}`}
-          reasonLine={factorReason("allrounder_depth")}
-          favours={factorOneLiners.allrounder_depth?.favours}
-          claudeVerdict={factorVerdict("allrounder_depth")}
-        />
-        <FactorBar label="Current Form" weight={factors.current_form?.weight || 0.08} logit={factorLogit("current_form")} icon={TrendUp}
-          tooltip="IPL 2026 recency-weighted form from SportMonks."
-          team1={t1} team2={t2}
-          team1Detail={`Score: ${factors.current_form?.team1_form_score || 50} | ${factors.current_form?.team1_wins || 0}W`}
-          team2Detail={`Score: ${factors.current_form?.team2_form_score || 50} | ${factors.current_form?.team2_wins || 0}W`}
-          reasonLine={factorReason("current_form")}
-          favours={factorOneLiners.current_form?.favours}
-          claudeVerdict={factorVerdict("current_form")}
-        />
-        <FactorBar label="Venue Pitch Profile" weight={factors.venue_pitch?.weight || 0.08} logit={factorLogit("venue_pitch")} icon={House}
-          tooltip={`Profile: ${factors.venue_pitch?.pitch_profile || "?"}. Pace ${factors.venue_pitch?.pace_assist || "?"}, Spin ${factors.venue_pitch?.spin_assist || "?"}.`}
-          team1={t1} team2={t2}
-          team1Detail={`Type: ${factors.venue_pitch?.pitch_type || "?"}`}
-          team2Detail={`Avg 1st inns: ${factors.venue_pitch?.avg_first_innings || "?"}`}
-          reasonLine={factorReason("venue_pitch")}
-          favours={factorOneLiners.venue_pitch?.favours}
-          claudeVerdict={factorVerdict("venue_pitch")}
-        />
-        <FactorBar label="Home Ground Advantage" weight={factors.home_ground_advantage?.weight || 0.04} logit={factorLogit("home_ground_advantage")} icon={House}
-          tooltip="Venue familiarity/home mapping."
-          team1={t1} team2={t2}
-          team1Detail={factors.home_ground_advantage?.team1_home ? "HOME" : "Away/Neutral"}
-          team2Detail={factors.home_ground_advantage?.team2_home ? "HOME" : "Away/Neutral"}
-          reasonLine={factorReason("home_ground_advantage")}
-          favours={factorOneLiners.home_ground_advantage?.favours}
-          claudeVerdict={factorVerdict("home_ground_advantage")}
-        />
-        <FactorBar label="Head-to-Head" weight={factors.h2h?.weight || 0.065} logit={factorLogit("h2h")} icon={Scales}
-          tooltip={`H2H source: ${factors.h2h?.source || "season_2026"}.`}
-          team1={t1} team2={t2}
-          team1Detail={`${factors.h2h?.team1_wins || 0} wins`}
-          team2Detail={`${factors.h2h?.team2_wins || 0} wins (${factors.h2h?.total || 0} total)`}
-          reasonLine={factorReason("h2h")}
-          favours={factorOneLiners.h2h?.favours}
-          claudeVerdict={factorVerdict("h2h")}
-        />
-
-        <div className="text-[9px] text-[#737373] -mt-1 mb-1 px-1">
-          Toss is handled in Claude contextual analysis, not in algorithm score.
-        </div>
-
-        <FactorBar label="Conditions (Weather/Dew)" weight={factors.conditions?.weight || 0.05} logit={factorLogit("conditions")} icon={CloudSun}
-          tooltip={factors.conditions?.conditions_edge_text || "Real-time weather conditions."}
-          team1={t1} team2={t2}
-          team1Detail={`${factors.conditions?.condition || "?"} | ${factors.conditions?.temperature || "?"}C`}
-          team2Detail={`Humidity: ${factors.conditions?.humidity || "?"}% | Dew: ${factors.conditions?.dew_factor || "none"}`}
-          reasonLine={factorReason("conditions")}
-          favours={factorOneLiners.conditions?.favours}
-          claudeVerdict={factorVerdict("conditions")}
-        />
-        <FactorBar label="Momentum (Last 4)" weight={factors.momentum?.weight || 0.035} logit={factorLogit("momentum")} icon={Lightning}
-          tooltip="Last 4 completed-match results: W = win, L = loss, left slot = most recent. — = fewer than 4 games in sample."
-          team1={t1} team2={t2}
-          team1Detail={formatMomentumLastFour(factors.momentum, "team1")}
-          team2Detail={formatMomentumLastFour(factors.momentum, "team2")}
-          reasonLine={factorReason("momentum")}
-          favours={factorOneLiners.momentum?.favours}
-          claudeVerdict={factorVerdict("momentum")}
-        />
-        {factors.conditions?.conditions_edge_text && factors.conditions?.conditions_edge_text !== "Conditions relatively neutral for both teams" && (
-          <div className="flex items-center text-[9px] -mt-1.5 mb-1.5 px-1">
-            <span className={`${factors.conditions?.favours_team === "team1" ? "text-[#34C759]" : factors.conditions?.favours_team === "team2" ? "text-[#FF3B30]" : "text-[#525252]"}`}>
-              {factors.conditions.conditions_edge_text}
-            </span>
+      {hasFiveFactorModel && (
+        <>
+          <div className="rounded-md border border-[#262626] bg-[#0A0A0A] px-3 py-2.5 space-y-2" data-testid="prematch-formula-panel">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-[#A3A3A3]">How BPR/CSA becomes the score</p>
+            <ul className="text-[9px] text-[#A3A3A3] leading-relaxed list-disc pl-4 space-y-1">
+              <li>
+                <span className="font-semibold text-[#E5E5E5]">Per player</span> — BatIP and BowlIP blend baseline BPR with
+                current-season CSA (formula matches Players directory / impact preference).
+              </li>
+              <li>
+                <span className="font-semibold text-[#E5E5E5]">Team batting strength</span> — weighted mean of the top{" "}
+                {data.team_strength_metrics?.config?.N ?? 5} batting-order slots (weights 0.25→0.15 on BatIP).
+              </li>
+              <li>
+                <span className="font-semibold text-[#E5E5E5]">Team bowling strength</span> — weighted mean of the top{" "}
+                {data.team_strength_metrics?.config?.M ?? 4} bowling-order slots on BowlIP.
+              </li>
+              <li>
+                <span className="font-semibold text-[#E5E5E5]">Factor logits (team1 minus team2)</span> — batting{" "}
+                <span className="font-mono">3.2 * (bat1 - bat2) / 100</span>, bowling{" "}
+                <span className="font-mono">3.0 * (bowl1 - bowl2) / 100</span>; then venue baseline and H2H (damped). Weighted
+                sum, confidence shrink, then <span className="font-mono">sigmoid(combined logit)</span> for win %.
+              </li>
+              <li>
+                <span className="font-semibold text-[#E5E5E5]">Fielding</span> — not a separate FieldIP in this BPR/CSA pipeline
+                (only bat/bowl). It does not enter the five weighted factors until we add a fielding signal to player rows.
+              </li>
+            </ul>
+            {data.team_strength_metrics?.team1 && data.team_strength_metrics?.team2 && (
+              <div className="text-[9px] font-mono text-[#737373] border-t border-[#262626] pt-2 space-y-0.5">
+                <div className="flex justify-between gap-2">
+                  <span className="text-[#007AFF]">{t1}</span>
+                  <span>
+                    bat {toFiniteNumber(data.team_strength_metrics.team1.batting_strength, null)?.toFixed(2) ?? "—"} · bowl{" "}
+                    {toFiniteNumber(data.team_strength_metrics.team1.bowling_strength, null)?.toFixed(2) ?? "—"} · AR{" "}
+                    {toFiniteNumber(data.team_strength_metrics.team1.allrounder_strength, null)?.toFixed(2) ?? "—"}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span className="text-[#FF3B30]">{t2}</span>
+                  <span>
+                    bat {toFiniteNumber(data.team_strength_metrics.team2.batting_strength, null)?.toFixed(2) ?? "—"} · bowl{" "}
+                    {toFiniteNumber(data.team_strength_metrics.team2.bowling_strength, null)?.toFixed(2) ?? "—"} · AR{" "}
+                    {toFiniteNumber(data.team_strength_metrics.team2.allrounder_strength, null)?.toFixed(2) ?? "—"}
+                  </span>
+                </div>
+              </div>
+            )}
+            {pred.favourite_one_liner && (
+              <p className="text-[9px] text-[#525252] border-t border-[#262626] pt-2">
+                <span className="font-semibold text-[#A3A3A3]">Overall: </span>
+                {pred.favourite_one_liner}
+              </p>
+            )}
           </div>
-        )}
 
-        <FactorBar label="Powerplay Performance" weight={factors.powerplay_performance?.weight || 0.055} logit={factorLogit("powerplay_performance")} icon={TrendUp}
-          tooltip={`First-6-over strength. Source: ${phaseFactorSourceLabel(factors.powerplay_performance?.source)}.`}
-          team1={t1} team2={t2}
-          team1Detail={
-            factors.powerplay_performance?.source === "sportmonks_ball_phases"
-              ? `Idx ${factors.powerplay_performance?.team1_powerplay_index ?? "—"} · bat balls ${factors.powerplay_performance?.team1_pp_bat_balls ?? "—"} · bowl ${factors.powerplay_performance?.team1_pp_bowl_balls ?? "—"}`
-              : `Raw: ${factors.powerplay_performance?.raw_logit ?? "0.000"}`
-          }
-          team2Detail={
-            factors.powerplay_performance?.source === "sportmonks_ball_phases"
-              ? `Idx ${factors.powerplay_performance?.team2_powerplay_index ?? "—"} · bat balls ${factors.powerplay_performance?.team2_pp_bat_balls ?? "—"} · bowl ${factors.powerplay_performance?.team2_pp_bowl_balls ?? "—"}`
-              : "Compared with opposition"
-          }
-          reasonLine={factorReason("powerplay_performance")}
-          favours={factorOneLiners.powerplay_performance?.favours}
-          claudeVerdict={factorVerdict("powerplay_performance")}
-        />
-        <FactorBar label="Death Overs Performance" weight={factors.death_overs_performance?.weight || 0.055} logit={factorLogit("death_overs_performance")} icon={Target}
-          tooltip={`Overs 16–20 strength. Source: ${phaseFactorSourceLabel(factors.death_overs_performance?.source)}.`}
-          team1={t1} team2={t2}
-          team1Detail={
-            factors.death_overs_performance?.source === "sportmonks_ball_phases"
-              ? `Idx ${factors.death_overs_performance?.team1_death_index ?? "—"} · death bat balls ${factors.death_overs_performance?.team1_death_bat_balls ?? "—"}`
-              : `Raw: ${factors.death_overs_performance?.raw_logit ?? "0.000"}`
-          }
-          team2Detail={
-            factors.death_overs_performance?.source === "sportmonks_ball_phases"
-              ? `Idx ${factors.death_overs_performance?.team2_death_index ?? "—"} · death bat balls ${factors.death_overs_performance?.team2_death_bat_balls ?? "—"}`
-              : "Compared with opposition"
-          }
-          reasonLine={factorReason("death_overs_performance")}
-          favours={factorOneLiners.death_overs_performance?.favours}
-          claudeVerdict={factorVerdict("death_overs_performance")}
-        />
-        <FactorBar label="Key Players Availability" weight={factors.key_players_availability?.weight || 0.03} logit={factorLogit("key_players_availability")} icon={UsersThree}
-          tooltip="Availability/injury flags from XI data."
-          team1={t1} team2={t2}
-          team1Detail={`Raw: ${factors.key_players_availability?.raw_logit ?? "0.000"}`}
-          team2Detail="Compared with opposition"
-          reasonLine={factorReason("key_players_availability")}
-          favours={factorOneLiners.key_players_availability?.favours}
-          claudeVerdict={factorVerdict("key_players_availability")}
-        />
-        <FactorBar label="Top Order Consistency" weight={factors.top_order_consistency?.weight || 0.03} logit={factorLogit("top_order_consistency")} icon={TrendUp}
-          tooltip="Top-order form consistency from performer scores."
-          team1={t1} team2={t2}
-          team1Detail={`Raw: ${factors.top_order_consistency?.raw_logit ?? "0.000"}`}
-          team2Detail="Compared with opposition"
-          reasonLine={factorReason("top_order_consistency")}
-          favours={factorOneLiners.top_order_consistency?.favours}
-          claudeVerdict={factorVerdict("top_order_consistency")}
-        />
-      </div>
+          {/* Factor Breakdown — 5 parameters */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[10px] text-[#737373] uppercase tracking-[0.2em] font-semibold flex items-center gap-1">
+                Factor Breakdown (5){" "}
+                <InfoTooltip text="Weights: batting 30%, bowling 30%, all-rounder balance 10%, venue baseline 20%, H2H 10%. H2H is squad-parity damped and applied as the last weighted term." />
+              </p>
+            </div>
+            <div className="flex items-center justify-between mb-1 px-1">
+              <span className="text-[9px] font-bold uppercase tracking-wider text-[#007AFF]">{t1}</span>
+              <span className="text-[9px] font-bold uppercase tracking-wider text-[#FF3B30]">{t2}</span>
+            </div>
+
+            <FactorBar
+              label="Batting quality (BPR/CSA)"
+              weight={factors.batting_quality?.weight || 0.3}
+              logit={factorLogit("batting_quality")}
+              icon={UsersThree}
+              tooltip="Team batting index from BPR + CSA (BatIP) when player rows exist; else XI fallback."
+              team1={t1}
+              team2={t2}
+              team1Detail={`${toFiniteNumber(factors.batting_quality?.team1_share_pct, 50)}% · idx ${toFiniteNumber(factors.batting_quality?.team1_batting, "?")}`}
+              team2Detail={`${toFiniteNumber(factors.batting_quality?.team2_share_pct, 50)}% · idx ${toFiniteNumber(factors.batting_quality?.team2_batting, "?")}`}
+              reasonLine={factorReason("batting_quality")}
+              favours={factorOneLiners.batting_quality?.favours}
+              claudeVerdict={factorVerdict("batting_quality")}
+            />
+            <FactorBar
+              label="Bowling quality (BPR/CSA)"
+              weight={factors.bowling_quality?.weight || 0.3}
+              logit={factorLogit("bowling_quality")}
+              icon={Target}
+              tooltip="Team bowling index from BPR + CSA (BowlIP) when player rows exist; else XI fallback."
+              team1={t1}
+              team2={t2}
+              team1Detail={`${toFiniteNumber(factors.bowling_quality?.team1_share_pct, 50)}% · idx ${toFiniteNumber(factors.bowling_quality?.team1_bowling, "?")}`}
+              team2Detail={`${toFiniteNumber(factors.bowling_quality?.team2_share_pct, 50)}% · idx ${toFiniteNumber(factors.bowling_quality?.team2_bowling, "?")}`}
+              reasonLine={factorReason("bowling_quality")}
+              favours={factorOneLiners.bowling_quality?.favours}
+              claudeVerdict={factorVerdict("bowling_quality")}
+            />
+            <FactorBar
+              label="All-rounder balance"
+              weight={factors.allrounder_balance?.weight || 0.1}
+              logit={factorLogit("allrounder_balance")}
+              icon={Scales}
+              tooltip="Blended strength + depth (55% / 45%) from AR slots."
+              team1={t1}
+              team2={t2}
+              team1Detail={`AR str ${toFiniteNumber(factors.allrounder_balance?.team1_allrounder_strength, "?")} · depth ${toFiniteNumber(factors.allrounder_balance?.team1_allrounder_depth, "?")}`}
+              team2Detail={`AR str ${toFiniteNumber(factors.allrounder_balance?.team2_allrounder_strength, "?")} · depth ${toFiniteNumber(factors.allrounder_balance?.team2_allrounder_depth, "?")}`}
+              reasonLine={factorReason("allrounder_balance")}
+              favours={factorOneLiners.allrounder_balance?.favours}
+              claudeVerdict={factorVerdict("allrounder_balance")}
+            />
+            <FactorBar
+              label="Venue baseline"
+              weight={factors.venue_baseline?.weight || 0.2}
+              logit={factorLogit("venue_baseline")}
+              icon={House}
+              tooltip={`Pitch fit + home + weather. Weather swing/humidity/cloud shifts toward the stronger bowling index. Profile: ${factors.venue_baseline?.pitch_profile || "?"}.`}
+              team1={t1}
+              team2={t2}
+              team1Detail={`${factors.venue_baseline?.team1_home ? "HOME" : "—"} · w-bowl ${toFiniteNumber(factors.venue_baseline?.weather_bowler_pressure_index, 0).toFixed(2)}`}
+              team2Detail={`${factors.venue_baseline?.team2_home ? "HOME" : "—"} · ${factors.venue_baseline?.pitch_type || "?"}`}
+              reasonLine={factorReason("venue_baseline")}
+              favours={factorOneLiners.venue_baseline?.favours}
+              claudeVerdict={factorVerdict("venue_baseline")}
+            />
+            <FactorBar
+              label="H2H (squad-adjusted)"
+              weight={factors.h2h_squad_adjusted?.weight || 0.1}
+              logit={factorLogit("h2h_squad_adjusted")}
+              icon={Scales}
+              tooltip={`Last weighted term. Raw H2H logit damped when current squads are very uneven. Source: ${factors.h2h_squad_adjusted?.source || "season_2026"}.`}
+              team1={t1}
+              team2={t2}
+              team1Detail={`${factors.h2h_squad_adjusted?.team1_wins ?? 0}W · raw logit ${factors.h2h_squad_adjusted?.h2h_raw_logit ?? "—"}`}
+              team2Detail={`${factors.h2h_squad_adjusted?.team2_wins ?? 0}W · parity ${factors.h2h_squad_adjusted?.squad_parity ?? "—"}`}
+              reasonLine={factorReason("h2h_squad_adjusted")}
+              favours={factorOneLiners.h2h_squad_adjusted?.favours}
+              claudeVerdict={factorVerdict("h2h_squad_adjusted")}
+            />
+
+            <div className="text-[9px] text-[#737373] -mt-1 mb-1 px-1">
+              Toss is handled in Claude contextual analysis, not in algorithm score.
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Expected Playing XI — SportMonks last match + impact points */}
       {data.playing_xi?.team1_xi?.length > 0 && (
