@@ -1,14 +1,17 @@
 """
 Pre-Match Prediction Engine — The Lucky 11 (IPL 2026)
-16-Category Model — logit sum → sigmoid → team1 win %
+5-Parameter Model — logit sum → sigmoid → team1 win %
 
-Weights sum to 1.0. Categories combine structural squad data, SportMonks form,
-venue/pitch, toss/weather, and phase-specific proxies (PP/death) where data allows.
+Parameters (weights sum to 1.0):
+  1. Batting quality (BPR/CSA-backed team strength) — 30%
+  2. Bowling quality (BPR/CSA-backed) — 30%
+  3. All-rounder balance (strength + depth) — 10%
+  4. Venue baseline (weather report; bowler-favoured tilt) — 20%
+  5. H2H squad-adjusted (applied last in the weighted sum) — 10%
 
 Design Principles:
-- NO web scraping. All data from DB squads, SportMonks API, or weather API.
-- Squad data from ipl_squads / Expected XI paths.
-- New factors use deterministic rules; missing data → neutral logit 0.
+- NO web scraping for extra factors. Squad/weather from APIs + DB.
+- Missing data → neutral logit 0 for that component.
 """
 import math
 import re
@@ -22,29 +25,13 @@ from services.cricket_phase_utils import team_phase_quality
 logger = logging.getLogger(__name__)
 _RATINGS_OVERRIDE: contextvars.ContextVar = contextvars.ContextVar("ratings_override", default=None)
 
-# ── Weights (16 categories, sum = 1.0) ──
-# User-directed split:
-# - Core composition buckets at 8% each:
-#   batting_strength, batting_depth, bowling_strength, bowling_depth,
-#   allrounder_strength, allrounder_depth.
-# - Remaining contextual factors are rebalanced to keep total = 100%.
+# ── Weights (5 parameters, sum = 1.0) ──
 WEIGHTS = {
-    "batting_strength": 0.08,
-    "batting_depth": 0.08,
-    "bowling_strength": 0.08,
-    "bowling_depth": 0.08,
-    "allrounder_strength": 0.08,
-    "allrounder_depth": 0.08,
-    "current_form": 0.08,
-    "venue_pitch": 0.08,
-    "home_ground_advantage": 0.04,
-    "h2h": 0.065,
-    "conditions": 0.05,
-    "momentum": 0.035,
-    "powerplay_performance": 0.055,
-    "death_overs_performance": 0.055,
-    "key_players_availability": 0.03,
-    "top_order_consistency": 0.03,
+    "batting_quality": 0.30,
+    "bowling_quality": 0.30,
+    "allrounder_balance": 0.10,
+    "venue_baseline": 0.20,
+    "h2h_squad_adjusted": 0.10,
 }
 
 # ── Toss Lookup (from user-provided venue-specific data) ──
@@ -653,22 +640,11 @@ BAT_ROLES_DEW = frozenset({"Batsman", "Wicketkeeper", "WK-Batsman", "All-rounder
 
 # Short labels for overall favourite explanation (weighted driver)
 FACTOR_SUMMARY_PHRASES = {
-    "batting_strength": "top-order and core batting quality",
-    "batting_depth": "middle and lower-order batting depth",
-    "bowling_strength": "top-end bowling quality",
-    "bowling_depth": "attack depth for this venue",
-    "allrounder_strength": "all-rounder quality impact",
-    "allrounder_depth": "all-rounder count and flexibility",
-    "current_form": "recent league form",
-    "venue_pitch": "pitch profile suitability (green/dry/dusty)",
-    "home_ground_advantage": "home ground familiarity",
-    "h2h": "head-to-head record",
-    "conditions": "wet/dry weather-to-skill correlation",
-    "momentum": "last-four-results momentum",
-    "powerplay_performance": "powerplay batting/bowling profile",
-    "death_overs_performance": "death overs specialists",
-    "key_players_availability": "key player availability in the XI",
-    "top_order_consistency": "top-order scoring consistency",
+    "batting_quality": "BPR/CSA batting strength in the XI",
+    "bowling_quality": "BPR/CSA bowling strength in the XI",
+    "allrounder_balance": "all-rounder quality and depth balance",
+    "venue_baseline": "venue + weather (bowler-weighted conditions)",
+    "h2h_squad_adjusted": "head-to-head adjusted for current squads",
 }
 
 # Bowler type classification for conditions matching
@@ -1121,15 +1097,50 @@ def _team_label(team_key: str, team1: str, team2: str) -> str:
     return team1 if team_key == "team1" else team2 if team_key == "team2" else team_key
 
 
+def _weather_bowler_pressure_index(weather: Dict, conditions_detail: Dict) -> float:
+    """0 = neutral, 1 = strongly bowling-friendly from weather (swing/humid/cloud/cool)."""
+    weather = weather or {}
+    cur = weather.get("current") or {}
+    cricket = weather.get("cricket_impact") or {}
+    try:
+        hum = float(cur.get("humidity") if cur.get("humidity") is not None else 55)
+    except (TypeError, ValueError):
+        hum = 55.0
+    try:
+        temp = float(cur.get("temperature") if cur.get("temperature") is not None else 28)
+    except (TypeError, ValueError):
+        temp = 28.0
+    try:
+        cloud = float(cur.get("cloudcover") if cur.get("cloudcover") is not None else 0)
+    except (TypeError, ValueError):
+        cloud = 0.0
+    swing = str(cricket.get("swing_conditions") or "").lower()
+    idx = 0.0
+    if "favour" in swing or "high" in swing or "excellent" in swing:
+        idx += 0.38
+    if hum >= 72:
+        idx += 0.22 + min(0.2, (hum - 72) / 45.0)
+    elif hum >= 62:
+        idx += 0.12
+    if temp <= 27 and hum >= 58:
+        idx += 0.14
+    if cloud >= 65:
+        idx += 0.1
+    elif cloud >= 45:
+        idx += 0.05
+    fav = (conditions_detail or {}).get("favours_team")
+    if fav in ("team1", "team2") and abs(float((conditions_detail or {}).get("conditions_logit", 0) or 0)) < 0.02:
+        pass
+    return max(0.0, min(1.0, idx))
+
+
 def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
                         weather: Dict = None, form_data: Dict = None,
                         momentum_data: Dict = None, player_performance: Dict = None,
                         web_context: Dict = None, team_strength_metrics: Dict = None) -> Dict:
     """
-    16-Category Pre-Match Prediction Engine (The Lucky 11, IPL 2026).
-    NO web scraping. All data from DB squads, SportMonks API, or weather API.
-    player_performance: Optional dict with "team1" and "team2" keys containing
-    per-player batting/bowling stats from SportMonks.
+    5-Parameter Pre-Match Prediction (BPR/CSA batting & bowling, AR balance, venue+weather, H2H last).
+    player_performance: optional per-player stats used only to refine XI ratings via perf_overrides.
     """
     match_info = match_info or {}
     squad_data = squad_data or {}

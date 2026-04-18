@@ -1,6 +1,7 @@
 import { useState, useCallback } from "react";
 import axios from "axios";
 import { API_BASE, isApiConfigured } from "@/lib/apiBase";
+import { readImpactFormulaPreference } from "@/lib/impactFormulaPref";
 
 const API = API_BASE;
 
@@ -162,10 +163,17 @@ export function useMatchData() {
   const fetchPreMatchPrediction = useCallback(async (matchId, opts = {}) => {
     const force = typeof opts === "boolean" ? opts : Boolean(opts.force);
     const livePlayerPerf = typeof opts === "boolean" ? false : Boolean(opts.livePlayerPerf);
+    const formula =
+      typeof opts === "boolean"
+        ? readImpactFormulaPreference()
+        : opts.formula !== undefined
+          ? opts.formula
+          : readImpactFormulaPreference();
     try {
       const p = new URLSearchParams();
       if (force) p.set("force", "true");
       if (livePlayerPerf) p.set("live_player_perf", "true");
+      if (formula && formula !== "br_bor_v1") p.set("formula", formula);
       const q = p.toString();
       const url = `${API}/matches/${matchId}/pre-match-predict${q ? `?${q}` : ""}`;
       // Pre-match work can exceed global 30s (SportMonks + DB + enrichment).

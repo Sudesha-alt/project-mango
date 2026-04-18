@@ -42,6 +42,9 @@ Build a full-stack cricket prediction app for IPL 2026 with an 8-category math m
 
 ### Key Endpoints
 - `GET /api/schedule/load` — Fetches full season from SportMonks API
+- `GET /api/predictions/upcoming` — Pre-match cache for **active** schedule fixtures by default (`schedule_upcoming_only=true`); use `=false` for all stored predictions
+- `GET /api/matches/{id}/playing-xi/bench` — Full franchise squad minus Expected XI (seed + DB merge)
+- `GET /api/matches/{id}/playing-xi/impact-search?q=&team=` — Type-ahead for manual Impact player; `PUT …/manual-impact` saves; Claude + pre-match consume `playing_xi`
 - `POST /api/matches/{id}/fetch-live` — Live scores + enriched 11-section Claude analysis
 - `POST /api/matches/{id}/refresh-claude-prediction` — Re-run live Claude with enrichment
 - `POST /api/matches/{id}/pre-match-predict` — 8-category prediction

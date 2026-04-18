@@ -27,6 +27,9 @@ async def get_player_performance_meta(db) -> dict:
     return dict(doc) if doc else {}
 
 from services.cricket_phase_utils import (
+    PHASE_DEATH,
+    PHASE_MID,
+    PHASE_PP,
     accumulate_phases_from_balls,
     empty_phases_root,
     finalize_phase_derived,
@@ -47,8 +50,18 @@ def _sm_response_failed(payload) -> bool:
     return bool(payload.get("error"))
 
 
+# Transient SportMonks / CDN responses — safe to retry (bulk sync hammers fixtures/{id}).
+_SM_RETRYABLE_STATUS = frozenset({429, 502, 503, 504})
+_SM_GET_MAX_RETRIES = 4
+_SM_GET_TIMEOUT_S = 35.0
+
+
 async def _get(endpoint: str, params: dict = None) -> dict:
-    """Make a GET request to SportMonks Cricket API v2.0 (token query param)."""
+    """Make a GET request to SportMonks Cricket API v2.0 (token query param).
+
+    Retries on rate-limit and server errors (429/502/503/504) and common transient
+    network failures so player sync is less brittle during SportMonks outages.
+    """
     if not SPORTMONKS_TOKEN:
         return {"error": "SPORTMONKS_API_TOKEN not configured"}
 
@@ -57,21 +70,73 @@ async def _get(endpoint: str, params: dict = None) -> dict:
     if params:
         query.update(params)
 
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.get(url, params=query)
-            resp.raise_for_status()
-            body = resp.json()
-            if (
-                isinstance(body, dict)
-                and body.get("message")
-                and body.get("data") is None
-            ):
-                logger.warning(f"SportMonks {endpoint}: {body.get('message')}")
-            return body
-    except Exception as e:
-        logger.error(f"SportMonks API error: {e}")
-        return {"error": str(e)}
+    last_exc: Optional[Exception] = None
+    for attempt in range(_SM_GET_MAX_RETRIES):
+        try:
+            async with httpx.AsyncClient(timeout=_SM_GET_TIMEOUT_S) as client:
+                resp = await client.get(url, params=query)
+                if resp.status_code in _SM_RETRYABLE_STATUS and attempt < _SM_GET_MAX_RETRIES - 1:
+                    delay = min(45.0, 1.5 * (2**attempt))
+                    logger.warning(
+                        "SportMonks %s: HTTP %s (attempt %s/%s), retrying in %.1fs",
+                        endpoint,
+                        resp.status_code,
+                        attempt + 1,
+                        _SM_GET_MAX_RETRIES,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                resp.raise_for_status()
+                body = resp.json()
+                if (
+                    isinstance(body, dict)
+                    and body.get("message")
+                    and body.get("data") is None
+                ):
+                    logger.warning(f"SportMonks {endpoint}: {body.get('message')}")
+                return body
+        except httpx.HTTPStatusError as e:
+            last_exc = e
+            st = e.response.status_code if e.response is not None else 0
+            if st in _SM_RETRYABLE_STATUS and attempt < _SM_GET_MAX_RETRIES - 1:
+                delay = min(45.0, 1.5 * (2**attempt))
+                logger.warning(
+                    "SportMonks %s: HTTP %s (attempt %s/%s), retrying in %.1fs",
+                    endpoint,
+                    st,
+                    attempt + 1,
+                    _SM_GET_MAX_RETRIES,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+            logger.error(f"SportMonks API error: {e}")
+            return {"error": str(e)}
+        except (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError) as e:
+            last_exc = e
+            if attempt < _SM_GET_MAX_RETRIES - 1:
+                delay = min(45.0, 1.5 * (2**attempt))
+                logger.warning(
+                    "SportMonks %s: %s (attempt %s/%s), retrying in %.1fs",
+                    endpoint,
+                    type(e).__name__,
+                    attempt + 1,
+                    _SM_GET_MAX_RETRIES,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+            logger.error(f"SportMonks API error: {e}")
+            return {"error": str(e)}
+        except Exception as e:
+            logger.error(f"SportMonks API error: {e}")
+            return {"error": str(e)}
+
+    if last_exc:
+        logger.error(f"SportMonks API error after retries: {last_exc}")
+        return {"error": str(last_exc)}
+    return {"error": "SportMonks request failed"}
 
 
 async def fetch_live_fixtures() -> list:
@@ -1067,7 +1132,7 @@ def _empty_by_season_block() -> dict:
     return {
         "batting": {
             "runs": 0, "balls": 0, "innings": 0, "fours": 0, "sixes": 0,
-            "fifties": 0, "hundreds": 0,
+            "fifties": 0, "hundreds": 0, "innings_ge15": 0,
         },
         "bowling": {
             "overs": 0, "wickets": 0, "runs_conceded": 0, "innings": 0,
@@ -1082,11 +1147,14 @@ def _new_player_stat_doc(pid, name: str) -> dict:
         "name": name,
         "batting": {
             "runs": 0, "balls": 0, "innings": 0, "fours": 0, "sixes": 0,
-            "fifties": 0, "hundreds": 0,
+            "fifties": 0, "hundreds": 0, "innings_ge15": 0,
         },
         "bowling": {
             "overs": 0, "wickets": 0, "runs_conceded": 0, "innings": 0,
             "maidens": 0, "three_fers": 0,
+            "dot_balls": 0,
+            "legal_balls_bowled": 0,
+            "dot_ball_pct": 0.0,
         },
         "matches": 0,
         "seasons": [],
@@ -1171,7 +1239,7 @@ async def sync_player_performance_to_db(db) -> dict:
     """Sync player performance stats from last 3 IPL seasons (2024-2026) into MongoDB.
 
     Stores career totals, per-season splits (for BPR: career / last-3 / current),
-    and last batting innings / bowling spells (for CSA weights) for Option C scoring.
+    last5 + extended recent (50), plus ``csa_season_*`` = every innings/spell in the active IPL year for CSA.
     """
     all_player_stats: dict = {}
     total_fixtures = 0
@@ -1208,6 +1276,8 @@ async def sync_player_performance_to_db(db) -> dict:
                 ps["batting"]["runs"] += b["runs"]
                 ps["batting"]["balls"] += b["balls"]
                 ps["batting"]["innings"] += 1
+                if int(b.get("runs") or 0) >= 15:
+                    ps["batting"]["innings_ge15"] = int(ps["batting"].get("innings_ge15") or 0) + 1
                 ps["batting"]["fours"] += b["fours"]
                 ps["batting"]["sixes"] += b["sixes"]
                 if b["runs"] >= 50:
@@ -1223,6 +1293,8 @@ async def sync_player_performance_to_db(db) -> dict:
                 bb["runs"] += b["runs"]
                 bb["balls"] += b["balls"]
                 bb["innings"] += 1
+                if int(b.get("runs") or 0) >= 15:
+                    bb["innings_ge15"] = int(bb.get("innings_ge15") or 0) + 1
                 bb["fours"] += b["fours"]
                 bb["sixes"] += b["sixes"]
                 if b["runs"] >= 50:
@@ -1285,6 +1357,8 @@ async def sync_player_performance_to_db(db) -> dict:
                 accumulate_phases_from_balls(all_player_stats, balls_list)
 
     # Match appearances (approx): unique fixtures per player from logs
+    _csa_recent_cap = 50
+    _cur_ipl_season_y = max(IPL_SEASON_IDS.keys())
     for pid, ps in all_player_stats.items():
         fids = set()
         for e in ps.get("_bat_entries") or []:
@@ -1298,7 +1372,39 @@ async def sync_player_performance_to_db(db) -> dict:
             key=lambda x: x.get("date") or "",
             reverse=True,
         )
+        # Every IPL batting innings in the active season (e.g. all 2026) for CSA — not capped at 5 or 50.
+        csa_season_bat = []
+        seen_csa_bat_fid = set()
+        for e in bat_logs:
+            sy = e.get("season_year")
+            try:
+                if sy is None or int(sy) != int(_cur_ipl_season_y):
+                    continue
+            except (TypeError, ValueError):
+                continue
+            fid = e.get("fixture_id")
+            if fid is not None:
+                if fid in seen_csa_bat_fid:
+                    continue
+                seen_csa_bat_fid.add(fid)
+            br = int(e.get("runs") or 0)
+            bb = int(e.get("balls") or 0)
+            sr_val = e.get("sr")
+            if sr_val is None:
+                sr_val = round((br / max(bb, 1)) * 100, 1)
+            csa_season_bat.append(
+                {
+                    "runs": br,
+                    "balls": bb,
+                    "sr": sr_val,
+                    "season_year": sy,
+                    "date": e.get("date"),
+                }
+            )
+        ps["csa_season_bat_innings"] = csa_season_bat
+
         out_bat = []
+        recent_bat = []
         seen_bf = set()
         for e in bat_logs:
             bf = e.get("fixture_id")
@@ -1306,23 +1412,61 @@ async def sync_player_performance_to_db(db) -> dict:
                 if bf in seen_bf:
                     continue
                 seen_bf.add(bf)
-            out_bat.append({
+            row = {
                 "runs": e["runs"],
                 "balls": e["balls"],
                 "sr": e["sr"],
                 "season_year": e.get("season_year"),
                 "date": e.get("date"),
-            })
-            if len(out_bat) >= 5:
+            }
+            if len(recent_bat) < _csa_recent_cap:
+                recent_bat.append(row)
+            if len(out_bat) < 5:
+                out_bat.append(row)
+            if len(recent_bat) >= _csa_recent_cap and len(out_bat) >= 5:
                 break
         ps["last5_bat_innings"] = out_bat
+        ps["recent_bat_innings"] = recent_bat
 
         bowl_logs = sorted(
             ps.pop("_bowl_entries", []),
             key=lambda x: x.get("date") or "",
             reverse=True,
         )
+        csa_season_bowl = []
+        seen_csa_bowl_fid = set()
+        for e in bowl_logs:
+            sy = e.get("season_year")
+            try:
+                if sy is None or int(sy) != int(_cur_ipl_season_y):
+                    continue
+            except (TypeError, ValueError):
+                continue
+            fid = e.get("fixture_id")
+            if fid is not None:
+                if fid in seen_csa_bowl_fid:
+                    continue
+                seen_csa_bowl_fid.add(fid)
+            ovs = float(e.get("overs") or 0)
+            if ovs <= 0:
+                continue
+            wk = int(e.get("wickets") or 0)
+            rc = int(e.get("runs_conceded") or 0)
+            eco = float(e.get("economy") or 0) or (rc / max(ovs, 0.01))
+            csa_season_bowl.append(
+                {
+                    "overs": ovs,
+                    "wickets": wk,
+                    "runs_conceded": rc,
+                    "economy": round(eco, 2),
+                    "season_year": sy,
+                    "date": e.get("date"),
+                }
+            )
+        ps["csa_season_bowl_spells"] = csa_season_bowl
+
         out_bowl = []
+        recent_bowl = []
         seen_bwf = set()
         for e in bowl_logs:
             bf = e.get("fixture_id")
@@ -1330,20 +1474,34 @@ async def sync_player_performance_to_db(db) -> dict:
                 if bf in seen_bwf:
                     continue
                 seen_bwf.add(bf)
-            out_bowl.append({
+            row = {
                 "overs": e["overs"],
                 "wickets": e["wickets"],
                 "runs_conceded": e["runs_conceded"],
                 "economy": e["economy"],
                 "season_year": e.get("season_year"),
                 "date": e.get("date"),
-            })
-            if len(out_bowl) >= 5:
+            }
+            if len(recent_bowl) < _csa_recent_cap:
+                recent_bowl.append(row)
+            if len(out_bowl) < 5:
+                out_bowl.append(row)
+            if len(recent_bowl) >= _csa_recent_cap and len(out_bowl) >= 5:
                 break
         ps["last5_bowl_spells"] = out_bowl
+        ps["recent_bowl_spells"] = recent_bowl
         ph = ps.get("phases")
         if isinstance(ph, dict):
             finalize_phase_derived(ph)
+            bowl_ph = ph.get("bowl") or {}
+            dots = legal = 0
+            for pk in (PHASE_PP, PHASE_MID, PHASE_DEATH):
+                bbb = bowl_ph.get(pk) or {}
+                dots += int(bbb.get("dots") or 0)
+                legal += int(bbb.get("legal_balls") or 0)
+            ps["bowling"]["dot_balls"] = dots
+            ps["bowling"]["legal_balls_bowled"] = legal
+            ps["bowling"]["dot_ball_pct"] = round(100.0 * dots / max(legal, 1), 2) if legal else 0.0
 
     # Compute derived stats and store in DB
     for pid, ps in all_player_stats.items():
@@ -1656,17 +1814,15 @@ async def fetch_playing_xi_from_live(team1: str, team2: str) -> dict:
     return {"team1_xi": [], "team2_xi": [], "source": "not_found"}
 
 
-async def fetch_last_played_xi(team_name: str) -> list:
-    """Fetch the Playing XI for a team from their most recent completed match.
+async def fetch_last_played_xi_bundle(team_name: str) -> Dict[str, Any]:
+    """Playing XI plus named impact / substitute rows from the same SportMonks resolution path.
 
-    Pipeline (per user doc):
-    1. Try live fixtures first (current match lineup is most relevant)
-    2. Fallback: Last completed IPL match across 2026 / 2025 / 2024 (most recent)
-    3. Fetch fixture with lineup include
-    4. Extract non-substitute players = Playing XI
-
-    Returns a list of player dicts (name, batting_style, bowling_style, captain, wk).
+    IPL lineups mark Impact Player(s) with ``lineup.substitution=true``. Those players are
+    excluded from `_parse_lineup` (starting XI) but returned here so downstream prompts do not
+    treat them as "not playing".
     """
+    out: Dict[str, Any] = {"xi": [], "impact_subs": []}
+
     # Step 1: Try live fixtures first (today's lineup is most relevant)
     data = await _get("livescores", {
         "include": "lineup,localteam,visitorteam"
@@ -1697,30 +1853,33 @@ async def fetch_last_played_xi(team_name: str) -> list:
         else:
             lineup_data = []
 
-        xi = _parse_lineup(lineup_data, team_id)
+        tid = _norm_id(team_id)
+        xi = _parse_lineup(lineup_data, tid)
+        subs = _parse_impact_subs_from_lineup(lineup_data, tid)
         if len(xi) >= 8:
             logger.info(f"Found Playing XI for {team_name} from live match: {len(xi)} players")
-            return await _enrich_players(xi)
+            out["xi"] = await _enrich_players(xi)
+            out["impact_subs"] = subs
+            return out
 
     # Step 2: Last completed IPL match (2026 → 2025 → 2024, most recent overall)
     team_id = _get_team_sm_id(team_name)
     if not team_id:
         logger.warning(f"Could not resolve team ID for: {team_name}")
-        return []
+        return out
 
     fixture = await fetch_team_last_completed_fixture(team_name)
     if not fixture:
-        return []
+        return out
 
     target_fixture_id = fixture.get("id")
     if not target_fixture_id:
-        return []
+        return out
 
-    # Step 3: Fetch fixture with lineup
     data = await _get(f"fixtures/{target_fixture_id}", {"include": "lineup"})
     if _sm_response_failed(data):
         logger.warning(f"Fixture {target_fixture_id} lineup fetch failed for {team_name}")
-        return []
+        return out
     fixture_detail = data.get("data", {})
     lineup = fixture_detail.get("lineup", {})
     if isinstance(lineup, dict):
@@ -1730,13 +1889,32 @@ async def fetch_last_played_xi(team_name: str) -> list:
     else:
         lineup_data = []
 
-    # Step 4: Extract non-sub Playing XI (+ style enrichment, same as fetch_playing_xi_from_last_match)
-    xi = _parse_lineup(lineup_data, team_id)
+    tid = _norm_id(team_id)
+    xi = _parse_lineup(lineup_data, tid)
+    subs = _parse_impact_subs_from_lineup(lineup_data, tid)
     if xi:
         logger.info(f"Found Playing XI for {team_name} from fixture {target_fixture_id}: {len(xi)} players")
-        return await _enrich_players(xi)
+        out["xi"] = await _enrich_players(xi)
+        out["impact_subs"] = subs
+        return out
     logger.warning(f"No lineup data for {team_name} in fixture {target_fixture_id}")
-    return []
+    return out
+
+
+async def fetch_last_played_xi(team_name: str) -> list:
+    """Fetch the Playing XI for a team from their most recent completed match.
+
+    Pipeline (per user doc):
+    1. Try live fixtures first (current match lineup is most relevant)
+    2. Fallback: Last completed IPL match across 2026 / 2025 / 2024 (most recent)
+    3. Fetch fixture with lineup include
+    4. Extract non-substitute players = Playing XI
+
+    Returns a list of player dicts (name, batting_style, bowling_style, captain, wk).
+    For named Impact Player / substitute rows (substitution=true), use ``fetch_last_played_xi_bundle``.
+    """
+    bundle = await fetch_last_played_xi_bundle(team_name)
+    return bundle.get("xi") or []
 
 
 async def fetch_fixture_start_time(team1: str, team2: str) -> Optional[str]:

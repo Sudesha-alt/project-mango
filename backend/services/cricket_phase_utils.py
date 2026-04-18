@@ -88,7 +88,7 @@ def empty_phase_bat_block() -> dict:
 
 
 def empty_phase_bowl_block() -> dict:
-    return {"runs_conceded": 0, "legal_balls": 0, "wickets": 0}
+    return {"runs_conceded": 0, "legal_balls": 0, "wickets": 0, "dots": 0}
 
 
 def empty_phases_root() -> dict:
@@ -165,6 +165,8 @@ def accumulate_phases_from_balls(all_player_stats: dict, balls: List[dict]) -> i
                 bb["legal_balls"] = int(bb.get("legal_balls") or 0) + 1
                 if is_w:
                     bb["wickets"] = int(bb.get("wickets") or 0) + 1
+                if not is_w and rob == 0:
+                    bb["dots"] = int(bb.get("dots") or 0) + 1
         used += 1
     return used
 
