@@ -9,6 +9,15 @@ import { readImpactFormulaPreference } from "@/lib/impactFormulaPref";
 
 const API = API_BASE;
 
+/** Must match backend ``FIVE_FACTOR_PREDICTION_KEYS`` — UI bars need every block. */
+const FIVE_FACTOR_KEYS = [
+  "batting_quality",
+  "bowling_quality",
+  "allrounder_balance",
+  "venue_baseline",
+  "h2h_squad_adjusted",
+];
+
 /** Coerce API/Mongo values that may arrive as strings into finite numbers. */
 function toFiniteNumber(value, fallback = null) {
   if (value === null || value === undefined || value === "") return fallback;
@@ -175,6 +184,7 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
       if (res.data && !res.data.error) {
         setData(res.data);
         if (onDataUpdate) onDataUpdate(res.data);
+        await reloadPreMatchDoc();
       }
     } catch (e) { console.error(e); }
     setLoading(false);
@@ -189,6 +199,7 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
       if (res.data && !res.data.error) {
         setData(res.data);
         if (onDataUpdate) onDataUpdate(res.data);
+        await reloadPreMatchDoc();
       }
     } catch (e) { console.error(e); }
     setLoading(false);
@@ -204,6 +215,7 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
       if (res.data && !res.data.error) {
         setData(res.data);
         if (onDataUpdate) onDataUpdate(res.data);
+        await reloadPreMatchDoc();
       }
     } catch (e) {
       const d = e.response?.data?.detail;
@@ -249,10 +261,7 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
   const t1Prob = toFiniteNumber(pred.team1_win_prob, 50);
   const t2Prob = toFiniteNumber(pred.team2_win_prob, 50);
   const hasFiveFactorModel = Boolean(
-    pred.factors &&
-      pred.factors.batting_quality &&
-      pred.factors.bowling_quality &&
-      pred.factors.h2h_squad_adjusted
+    pred.factors && FIVE_FACTOR_KEYS.every((k) => pred.factors[k] != null)
   );
   const factorLogit = (key) => {
     const f = factors?.[key] || {};

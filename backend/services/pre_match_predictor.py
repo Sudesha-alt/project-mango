@@ -1619,6 +1619,38 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
     }
 
 
+# Keys for the 5-parameter model only (legacy 16-factor caches used names like ``form``, ``venue``, ``h2h``).
+FIVE_FACTOR_PREDICTION_KEYS: Tuple[str, ...] = (
+    "batting_quality",
+    "bowling_quality",
+    "allrounder_balance",
+    "venue_baseline",
+    "h2h_squad_adjusted",
+)
+
+
+def sanitize_prediction_to_five_factors(pred: Optional[Dict]) -> Dict:
+    """
+    Drop legacy multi-factor entries from ``prediction.factors`` (and aligned one-liners / validation)
+    so API + Mongo payloads never mix 16- and 5-parameter shapes. Safe after ``compute_prediction``
+    and when serving stale documents from ``pre_match_predictions``.
+    """
+    if not isinstance(pred, dict):
+        return {}
+    out = dict(pred)
+    keys = FIVE_FACTOR_PREDICTION_KEYS
+    fac = out.get("factors")
+    if isinstance(fac, dict):
+        out["factors"] = {k: fac[k] for k in keys if k in fac}
+    pol = out.get("factor_one_liners")
+    if isinstance(pol, dict):
+        out["factor_one_liners"] = {k: pol[k] for k in keys if k in pol}
+    fcv = out.get("factor_claude_validation")
+    if isinstance(fcv, dict):
+        out["factor_claude_validation"] = {k: fcv[k] for k in keys if k in fcv}
+    out["model"] = "5-parameter-bpr-csa-v1"
+    return out
+
 
 # ── Helper Functions ──
 
