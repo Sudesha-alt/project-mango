@@ -205,19 +205,24 @@ export function AlgorithmRadarChart({ probabilities = {} }) {
   );
 }
 
-// CHART 5: Pre-match Radar (team comparison)
+// CHART 5: Pre-match Radar (team comparison) — aligns with 5-parameter algo: bat/bowl/AR/venue/H2H
 export function PreMatchRadarChart({ team1Data = {}, team2Data = {}, team1 = "T1", team2 = "T2" }) {
-  const axes = ["Form", "H2H", "Venue", "Batting", "Bowling", "NRR"];
-  const key = (axis) => axis.toLowerCase();
-  const data = axes.map((axis) => ({
-    axis,
-    [team1]: team1Data[key(axis)] ?? 50,
-    [team2]: team2Data[key(axis)] ?? 50,
+  const axes = [
+    { label: "Batting", key: "batting" },
+    { label: "Bowling", key: "bowling" },
+    { label: "AR balance", key: "balance" },
+    { label: "Venue", key: "venue" },
+    { label: "H2H", key: "h2h" },
+  ];
+  const data = axes.map(({ label, key }) => ({
+    axis: label,
+    [team1]: team1Data[key] ?? 50,
+    [team2]: team2Data[key] ?? 50,
   }));
 
   return (
     <div data-testid="prematch-radar" className="bg-[#141414] border border-white/10 rounded-md p-4">
-      <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-[#A1A1AA] mb-2" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>Team Comparison</h4>
+      <h4 className="text-xs uppercase tracking-[0.2em] font-bold text-[#A1A1AA] mb-2" style={{ fontFamily: "'Barlow Condensed', sans-serif" }}>Team comparison (5 factors)</h4>
       <div className="flex gap-3 mb-2">
         <div className="flex items-center gap-1"><div className="w-3 h-0.5 bg-[#007AFF]" /><span className="text-[9px] text-[#A1A1AA]">{team1}</span></div>
         <div className="flex items-center gap-1"><div className="w-3 h-0.5 bg-[#FF3B30]" /><span className="text-[9px] text-[#A1A1AA]">{team2}</span></div>

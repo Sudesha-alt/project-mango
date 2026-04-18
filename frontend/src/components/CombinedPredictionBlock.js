@@ -31,8 +31,12 @@ export default function CombinedPredictionBlock({ algoData, claudeData, team1, t
   const algoPred = algoData?.prediction;
   const claudeAnalysis = claudeData?.analysis;
 
-  const algoT1 = algoPred?.team1_win_prob;
-  const algoT2 = algoPred?.team2_win_prob;
+  const algoT1Raw = algoPred?.team1_win_prob;
+  const algoT2Raw = algoPred?.team2_win_prob;
+  const algoT1 =
+    algoT1Raw == null || algoT1Raw === "" ? null : Number.isFinite(Number(algoT1Raw)) ? Number(algoT1Raw) : null;
+  const algoT2 =
+    algoT2Raw == null || algoT2Raw === "" ? null : Number.isFinite(Number(algoT2Raw)) ? Number(algoT2Raw) : null;
   const claudeT1 = claudeAnalysis?.team1_win_pct;
   const claudeT2 = claudeAnalysis?.team2_win_pct;
 

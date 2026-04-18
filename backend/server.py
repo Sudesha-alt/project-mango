@@ -1149,7 +1149,9 @@ async def _ensure_claude_playing_xi_roles(
     """
     Merge Claude-inferred primary roles into prediction_squads (mutates) and persist to playing_xi.
 
-    If mandatory=True (pre-match predict): always calls Claude, validates full coverage, raises on failure.
+    If mandatory=True (pre-match predict): always calls Claude when cache misses, validates full coverage,
+    raises on Claude/inference failure. Persisting to MongoDB is best-effort (retries); a timeout does not
+    fail the request because squads already carry the inferred roles in memory.
     If mandatory=False (background): may use fingerprint cache; failures are logged only.
     """
     if not prediction_squads or not xi_doc:
@@ -1257,27 +1259,42 @@ async def _ensure_claude_playing_xi_roles(
 
     manual_t1 = _manual_persist_row(team1, "team1_manual_impact_player")
     manual_t2 = _manual_persist_row(team2, "team2_manual_impact_player")
-    try:
-        set_doc = {
-            "claude_xi_roles": blob,
-            "team1_xi": t1_rows,
-            "team2_xi": t2_rows,
-        }
-        if manual_t1:
-            set_doc["team1_manual_impact_player"] = manual_t1
-        if manual_t2:
-            set_doc["team2_manual_impact_player"] = manual_t2
-        await db.playing_xi.update_one(
-            {"matchId": match_id},
-            {"$set": set_doc},
+    set_doc = {
+        "claude_xi_roles": blob,
+        "team1_xi": t1_rows,
+        "team2_xi": t2_rows,
+    }
+    if manual_t1:
+        set_doc["team1_manual_impact_player"] = manual_t1
+    if manual_t2:
+        set_doc["team2_manual_impact_player"] = manual_t2
+
+    last_err: Optional[Exception] = None
+    for attempt in range(3):
+        try:
+            await db.playing_xi.update_one(
+                {"matchId": match_id},
+                {"$set": set_doc},
+            )
+            last_err = None
+            break
+        except Exception as e:
+            last_err = e
+            logger.warning(
+                "Could not persist Claude XI roles for %s (attempt %s/3): %s",
+                match_id,
+                attempt + 1,
+                e,
+            )
+            if attempt < 2:
+                await asyncio.sleep(0.6 * (attempt + 1))
+
+    if last_err is not None:
+        logger.warning(
+            "Giving up persisting Claude XI roles for %s — prediction still uses in-memory roles for this response. "
+            "Re-predict after MongoDB is reachable to cache roles in playing_xi.",
+            match_id,
         )
-    except Exception as e:
-        logger.warning(f"Could not persist Claude XI roles for {match_id}: {e}")
-        if mandatory:
-            raise HTTPException(
-                status_code=500,
-                detail={"error": "xi_roles_persist_failed", "message": str(e)},
-            ) from e
 
 
 async def _bg_infer_claude_xi_roles(match_id: str, team1: str, team2: str) -> None:
@@ -1360,6 +1377,83 @@ def _mongo_doc_to_perf_row(doc: dict) -> dict:
         "api_profile": doc.get("api_profile"),
     }
     return row
+
+
+async def _fuzzy_player_performance_doc_by_name(db, nm: str) -> Optional[dict]:
+    """
+    Resolve Expected XI / SportMonks display name -> Mongo ``player_performance`` document when
+    exact ``^name$`` match fails (initials, punctuation, alternate spellings). Uses the same
+    collection as ``/players/directory`` (BPR/CSA source rows).
+    """
+    if not nm or not str(nm).strip():
+        return None
+    nm_clean = str(nm).strip()
+    nn = _normalize_player_name(nm_clean)
+    parts = [t for t in nn.split() if t]
+    if not parts:
+        return None
+
+    candidates: list = []
+    try:
+        surname = parts[-1]
+        if len(surname) >= 5:
+            candidates = await db.player_performance.find(
+                {"name": {"$regex": re.escape(surname), "$options": "i"}},
+                {"_id": 0},
+            ).limit(80).to_list(80)
+        elif len(parts) >= 2:
+            big = " ".join(parts[-2:])
+            candidates = await db.player_performance.find(
+                {"name": {"$regex": re.escape(big), "$options": "i"}},
+                {"_id": 0},
+            ).limit(80).to_list(80)
+        if not candidates:
+            for tok in sorted(set(parts), key=len, reverse=True):
+                if len(tok) < 4:
+                    continue
+                candidates = await db.player_performance.find(
+                    {"name": {"$regex": re.escape(tok), "$options": "i"}},
+                    {"_id": 0},
+                ).limit(60).to_list(60)
+                if candidates:
+                    break
+    except Exception as e:
+        logger.warning(f"fuzzy player_performance scan failed for {nm_clean!r}: {e}")
+        return None
+
+    seen: set = set()
+    uniq: list = []
+    for d in candidates:
+        key = (d.get("player_id"), (d.get("name") or "").strip().lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(d)
+
+    strong = [d for d in uniq if _player_name_matches(nm_clean, (d.get("name") or ""))]
+    if len(strong) == 1:
+        return strong[0]
+    if len(strong) > 1:
+        return max(
+            strong,
+            key=lambda d: SequenceMatcher(
+                None, nn, _normalize_player_name(d.get("name") or "")
+            ).ratio(),
+        )
+
+    best = None
+    best_r = 0.0
+    for d in uniq:
+        cname = (d.get("name") or "").strip()
+        if not cname:
+            continue
+        r = SequenceMatcher(None, nn, _normalize_player_name(cname)).ratio()
+        if r > best_r:
+            best_r = r
+            best = d
+    if best is not None and best_r >= 0.84:
+        return best
+    return None
 
 
 async def _opus_squad_cards_json_for_match(
@@ -1453,6 +1547,8 @@ async def _load_player_performance_for_xi_from_db(db, xi_players: list) -> dict:
             )
         except Exception:
             doc = None
+        if not doc:
+            doc = await _fuzzy_player_performance_doc_by_name(db, nm)
         if not doc:
             continue
         pk = doc.get("player_id")

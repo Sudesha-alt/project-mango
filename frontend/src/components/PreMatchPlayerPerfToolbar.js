@@ -136,10 +136,10 @@ export default function PreMatchPlayerPerfToolbar({
               <span className="text-[#FBBF24]"> · sync recommended</span>
             )}
             {phaseDataReady === true && (
-              <span className="text-[#34C759]"> · PP/death factors use ball-by-ball phases</span>
+              <span className="text-[#34C759]"> · Phase-tagged balls synced (feeds BPR/CSA player inputs)</span>
             )}
             {phaseDataReady === false && predictionSummary?.has_data && (
-              <span className="text-[#737373]"> · PP/death: run sync + predict to build phase sample</span>
+              <span className="text-[#737373]"> · Optional: sync + predict for fuller ball-by-ball phase sample</span>
             )}
           </p>
           {!statusLoading && status?.last_player_db_update_at && (
