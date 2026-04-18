@@ -449,12 +449,73 @@ def _vaibhav_suryavanshi_family_key(name: str) -> Optional[str]:
     return None
 
 
+# Normalized tokens that map to the same Mongo `player_performance.name` / XI label (initials, legal names).
+_PERF_NAME_EQUIVALENCE_GROUPS: tuple = (
+    frozenset({"kl rahul", "lokesh rahul", "k l rahul"}),
+    frozenset({"phil salt", "philip salt"}),
+    frozenset({"t natarajan", "thangarasu natarajan", "tn natarajan"}),
+    frozenset({"rasikh salam", "mohammad rasikh salam", "md rasikh salam", "mohd rasikh salam"}),
+)
+
+
+def _perf_name_equivalence_class(norm: str) -> frozenset:
+    """Return the shared equivalence set for a normalized name, or a singleton."""
+    for g in _PERF_NAME_EQUIVALENCE_GROUPS:
+        if norm in g:
+            return g
+    return frozenset({norm})
+
+
+def _names_equivalent_for_perf(a: str, b: str) -> bool:
+    ca = _perf_name_equivalence_class(_normalize_player_name(a))
+    cb = _perf_name_equivalence_class(_normalize_player_name(b))
+    return bool(ca & cb)
+
+
+def _ordered_token_prefix_match(a_parts: list, b_parts: list) -> bool:
+    """True if one side's tokens equal the leading tokens of the other (e.g. Auqib Nabi vs Auqib Nabi Dar)."""
+    if not a_parts or not b_parts:
+        return False
+    if len(a_parts) <= len(b_parts) and a_parts == b_parts[: len(a_parts)]:
+        return True
+    if len(b_parts) <= len(a_parts) and b_parts == a_parts[: len(b_parts)]:
+        return True
+    return False
+
+
+def _mongo_exact_name_variants_for_xi(xi_name: str) -> list:
+    """Extra spellings to try with ^…$ regex before fuzzy search (same collection as Players directory)."""
+    raw = (xi_name or "").strip()
+    if not raw:
+        return []
+    nn = _normalize_player_name(raw)
+    extras: list = []
+    for g in _PERF_NAME_EQUIVALENCE_GROUPS:
+        if nn not in g:
+            continue
+        for token_set in g:
+            if token_set == nn:
+                continue
+            # Rebuild a display-ish string from normalized tokens (Mongo often uses Title Case).
+            disp = " ".join(t.title() for t in token_set.split())
+            if disp and disp.lower() != raw.lower():
+                extras.append(disp)
+    # Single-letter initial expansions common in DB (T. Natarajan ↔ Thangarasu Natarajan handled via group).
+    out = [raw]
+    for e in extras:
+        if e not in out:
+            out.append(e)
+    return out
+
+
 def _player_name_matches(a: str, b: str) -> bool:
     """Robust player name match for DB roster vs SportMonks lineup."""
     na = _normalize_player_name(a)
     nb = _normalize_player_name(b)
     if not na or not nb:
         return False
+    if _names_equivalent_for_perf(a, b):
+        return True
     vk_a = _vaibhav_suryavanshi_family_key(a)
     vk_b = _vaibhav_suryavanshi_family_key(b)
     if vk_a and vk_b:
@@ -464,6 +525,8 @@ def _player_name_matches(a: str, b: str) -> bool:
 
     a_parts = na.split()
     b_parts = nb.split()
+    if _ordered_token_prefix_match(a_parts, b_parts):
+        return True
     a_last = a_parts[-1] if a_parts else ""
     b_last = b_parts[-1] if b_parts else ""
     a_first_i = a_parts[0][0] if a_parts and a_parts[0] else ""
@@ -1407,6 +1470,19 @@ async def _fuzzy_player_performance_doc_by_name(db, nm: str) -> Optional[dict]:
                 {"name": {"$regex": re.escape(big), "$options": "i"}},
                 {"_id": 0},
             ).limit(80).to_list(80)
+        # Short surnames (e.g. Dar): first + last token with optional middle tokens in Mongo name.
+        if not candidates and len(parts) >= 2:
+            first_t = re.escape(parts[0])
+            last_t = re.escape(parts[-1])
+            candidates = await db.player_performance.find(
+                {
+                    "name": {
+                        "$regex": rf"{first_t}\b.*\b{last_t}|{last_t}\b.*\b{first_t}",
+                        "$options": "i",
+                    }
+                },
+                {"_id": 0},
+            ).limit(80).to_list(80)
         if not candidates:
             for tok in sorted(set(parts), key=len, reverse=True):
                 if len(tok) < 4:
@@ -1540,13 +1616,17 @@ async def _load_player_performance_for_xi_from_db(db, xi_players: list) -> dict:
             for v in out.values()
         ):
             continue
-        try:
-            doc = await db.player_performance.find_one(
-                {"name": {"$regex": f"^{re.escape(nm)}$", "$options": "i"}},
-                {"_id": 0},
-            )
-        except Exception:
-            doc = None
+        doc = None
+        for cand in _mongo_exact_name_variants_for_xi(nm):
+            try:
+                doc = await db.player_performance.find_one(
+                    {"name": {"$regex": f"^{re.escape(cand)}$", "$options": "i"}},
+                    {"_id": 0},
+                )
+            except Exception:
+                doc = None
+            if doc:
+                break
         if not doc:
             doc = await _fuzzy_player_performance_doc_by_name(db, nm)
         if not doc:
