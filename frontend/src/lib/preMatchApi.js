@@ -2,12 +2,19 @@ import { API_BASE } from "@/lib/apiBase";
 
 /**
  * Build POST URL for pre-match prediction with optional cache bust and live SportMonks perf.
- */
-export function buildPreMatchPredictUrl(matchId, { force = false, livePlayerPerf = false } = {}) {
+ * @param {object} opts
+ * @param {boolean} [opts.force]
+ * @param {boolean} [opts.livePlayerPerf]
+ * @param {"br_bor_v1"|"classic_bpr_csa"} [opts.formula] — team-strength BatIP/BowlIP model */
+export function buildPreMatchPredictUrl(
+  matchId,
+  { force = false, livePlayerPerf = false, formula } = {},
+) {
   if (!API_BASE || !matchId) return "";
   const p = new URLSearchParams();
   if (force) p.set("force", "true");
   if (livePlayerPerf) p.set("live_player_perf", "true");
+  if (formula && formula !== "br_bor_v1") p.set("formula", formula);
   const q = p.toString();
   return `${API_BASE}/matches/${matchId}/pre-match-predict${q ? `?${q}` : ""}`;
 }
@@ -15,10 +22,11 @@ export function buildPreMatchPredictUrl(matchId, { force = false, livePlayerPerf
 /**
  * POST URL for Claude XI roles + full re-predict (force).
  */
-export function buildFetchXiRolesAndPredictUrl(matchId, { livePlayerPerf = false } = {}) {
+export function buildFetchXiRolesAndPredictUrl(matchId, { livePlayerPerf = false, formula } = {}) {
   if (!API_BASE || !matchId) return "";
   const p = new URLSearchParams();
   if (livePlayerPerf) p.set("live_player_perf", "true");
+  if (formula && formula !== "br_bor_v1") p.set("formula", formula);
   const q = p.toString();
   return `${API_BASE}/matches/${matchId}/fetch-playing-xi-roles-and-predict${q ? `?${q}` : ""}`;
 }

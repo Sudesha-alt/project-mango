@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import CricApiLivePanel from "@/components/CricApiLivePanel";
 import InfoTooltip from "@/components/InfoTooltip";
 import { API_BASE, BACKEND_URL, isApiConfigured } from "@/lib/apiBase";
+import { readImpactFormulaPreference } from "@/lib/impactFormulaPref";
 
 const API = API_BASE;
 
@@ -119,11 +120,14 @@ export default function MatchSelector() {
     // Each run can take 60–120s (SportMonks + MongoDB + enrichment); default axios 30s was hiding results.
     const PREDICT_TIMEOUT_MS = 180000;
 
+    const formula = readImpactFormulaPreference();
+    const formulaQ = formula && formula !== "br_bor_v1" ? `?formula=${encodeURIComponent(formula)}` : "";
+
     for (let i = 0; i < unpredicted.length; i++) {
       const mid = unpredicted[i].matchId;
       try {
         const res = await axios.post(
-          `${API}/matches/${mid}/pre-match-predict`,
+          `${API}/matches/${mid}/pre-match-predict${formulaQ}`,
           {},
           { timeout: PREDICT_TIMEOUT_MS }
         );

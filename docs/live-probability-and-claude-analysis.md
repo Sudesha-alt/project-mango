@@ -187,7 +187,19 @@ If either is present, **algo and Claude weights are scaled by `(1 − gut_weight
 
 ---
 
-## 8. File reference
+## 8. Bench & manual IPL Impact (pre-match UI)
+
+| Endpoint | Role |
+|----------|------|
+| `GET /api/matches/{match_id}/playing-xi/bench?team=team1\|team2` | Full franchise bench list (same pool as below). |
+| `GET /api/matches/{match_id}/playing-xi/impact-search?team=…&q=…` | Type-ahead over that bench (`q` min 2 chars; substring + fuzzy rank). UI uses this for manual Impact selection. |
+| `PUT /api/matches/{match_id}/playing-xi/manual-impact` | Save/clear one bench pick per team; persisted on `playing_xi` (upsert) and mirrored on the prediction doc. |
+
+`GET /api/predictions/upcoming` — **Default** `schedule_upcoming_only=true` (omit or pass explicitly) returns only predictions whose `matchId` is still **active** on **`ipl_schedule`** (upcoming, not started, live, in progress, etc.). Set `schedule_upcoming_only=false` to return every cached pre-match row (e.g. completed-match history).
+
+---
+
+## 9. File reference
 
 | Concern | Primary file(s) |
 |---------|------------------|

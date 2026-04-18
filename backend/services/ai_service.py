@@ -77,6 +77,57 @@ def _impact_hist_team_lines(block: Optional[dict]) -> List[str]:
     return out
 
 
+def format_match_impact_subs_for_prompt(
+    team1: str,
+    team2: str,
+    t1_short: str,
+    t2_short: str,
+    team1_subs: Optional[list],
+    team2_subs: Optional[list],
+) -> str:
+    """This fixture's SportMonks ``substitution=true`` rows (IPL Impact Player / named subs)."""
+
+    def _describe_entries(rows: Optional[list]) -> List[str]:
+        out: List[str] = []
+        for p in rows or []:
+            if not isinstance(p, dict):
+                continue
+            n = (p.get("name") or "").strip()
+            if not n:
+                continue
+            src = (p.get("source") or "").strip()
+            if src == "user_swap_replaced_from_xi":
+                out.append(
+                    f"{n} (user swap: replaced in our Expected XI by the manual Impact pick — treat as out of this XI)"
+                )
+            elif src == "user_selected_impact":
+                rep = (p.get("replaces_xi_player") or "").strip()
+                if rep:
+                    out.append(f"{n} (user-selected Impact; swapped into the 11 for {rep})")
+                else:
+                    out.append(
+                        f"{n} (user-selected Impact; depth / 12th — not counted as a listed XI starter unless model XI says otherwise)"
+                    )
+            else:
+                out.append(n)
+        return out
+
+    n1 = _describe_entries(team1_subs)
+    n2 = _describe_entries(team2_subs)
+    if not n1 and not n2:
+        return ""
+    lines = [
+        "=== NAMED IMPACT / SUBSTITUTE PLAYERS FOR THIS XI SOURCE [SPORTMONKS DATA] ===",
+        "Rows below mix SportMonks substitution=true designations with optional user overrides. "
+        "Squad-listed players may participate under IPL substitution rules. "
+        "User swap lines explicitly state when our Expected XI replaces a starter with a manual Impact pick.",
+        "Do NOT describe API-listed subs as 'not playing' solely because they are missing from the 11 starters.",
+        f"{team1} ({t1_short}): {'; '.join(n1) if n1 else '(none listed in API for this source)'}",
+        f"{team2} ({t2_short}): {'; '.join(n2) if n2 else '(none listed in API for this source)'}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def format_impact_sub_history_for_prompt(
     team1: str,
     team2: str,
@@ -292,8 +343,20 @@ async def claude_infer_playing_xi_roles(team1: str, team2: str, squads: dict) ->
     """
     if not ANTHROPIC_KEY:
         raise ValueError("ANTHROPIC_API_KEY not configured in .env")
-    t1_rows = list(squads.get(team1) or [])[:11]
-    t2_rows = list(squads.get(team2) or [])[:11]
+
+    def _first_eleven_named(rows) -> list:
+        out: List[dict] = []
+        for p in rows or []:
+            if not isinstance(p, dict):
+                continue
+            if (p.get("name") or "").strip():
+                out.append(p)
+            if len(out) >= 11:
+                break
+        return out
+
+    t1_rows = _first_eleven_named(squads.get(team1))
+    t2_rows = _first_eleven_named(squads.get(team2))
     if len(t1_rows) < 11 or len(t2_rows) < 11:
         raise ValueError("Need 11 players per side for role inference")
 
@@ -1164,7 +1227,9 @@ async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_i
                                      squads: dict = None, news: list = None,
                                      algo_prediction: dict = None, player_performance: dict = None,
                                      weather: dict = None, form_data: dict = None,
-                                     impact_sub_history: dict = None) -> dict:
+                                     impact_sub_history: dict = None,
+                                     match_impact_subs: dict = None,
+                                     opus_squad_player_cards_json: str = "") -> dict:
     """
     Claude Opus: Elite 7-layer pre-match analysis.
     Combines actual SportMonks API data (Expected XI, player stats, H2H, algorithm output)
@@ -1195,9 +1260,18 @@ async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_i
                     + "\n"
                 )
 
-    # ── Build player performance stats section ──
+    # ── Build player performance section: prefer full-squad BPR/CSA cards; else legacy XI-only lines ──
     perf_block = ""
-    if player_performance:
+    if opus_squad_player_cards_json and str(opus_squad_player_cards_json).strip():
+        perf_block = f"""
+=== FULL SQUAD — PLAYER INPUT CARDS (same JSON schema for every listed player) [BPR/CSA MODEL + MONGO] ===
+Each object: player, BPR (primary-discipline base rating), CSA (current IPL season form vs base BPR), sample_size_confidence, status, replacement, replacement_BPR, replacement_CSA.
+This covers entire franchise squads (not only the expected XI). replacement* are null unless stated elsewhere — you may infer replacements from news in narrative only.
+For who **starts** this match, the authoritative list is EXPECTED PLAYING XIs above; use these cards for bench depth, injury context, form, and impact-sub options.
+
+{opus_squad_player_cards_json.strip()}
+"""
+    elif player_performance:
         for team_key, label in [("team1", team1), ("team2", team2)]:
             team_perf = player_performance.get(team_key, {})
             if team_perf:
@@ -1302,6 +1376,17 @@ Dew Factor: {impact.get('dew_factor', 'unknown')} | Cricket Impact: {impact.get(
         if news_lines:
             news_section = "\n=== LATEST NEWS ===\n" + "\n".join(news_lines) + "\n"
 
+    match_subs_block = ""
+    if match_impact_subs and isinstance(match_impact_subs, dict):
+        match_subs_block = format_match_impact_subs_for_prompt(
+            team1,
+            team2,
+            t1_short,
+            t2_short,
+            match_impact_subs.get("team1"),
+            match_impact_subs.get("team2"),
+        )
+
     impact_block = format_impact_sub_history_for_prompt(
         team1, team2, t1_short, t2_short, impact_sub_history
     )
@@ -1312,19 +1397,19 @@ Dew Factor: {impact.get('dew_factor', 'unknown')} | Cricket Impact: {impact.get(
 
 ANALYTICAL PHILOSOPHY — NON-NEGOTIABLE RULES:
 1. Every layer gets an ADVANTAGE verdict. No draws, no "both teams are evenly matched." Pick a side and justify it.
-2. Absent players change everything. If a key player is not in the API-returned XI, rebuild team assessments without them.
+2. Absent players change everything — but IPL Impact Player / named substitutes listed under NAMED IMPACT / SUBSTITUTE PLAYERS FOR THIS XI SOURCE are **not** absent; they may enter later. Only treat someone as unavailable if they are missing from both the starting XI and that named-sub list (or news explicitly rules them out).
 3. Stats anchor every claim. Averages, strike rates, economy rates — name the numbers. No vague "good form" without figures.
 4. Recency beats history. Last 4 games outweigh 5-year H2H record. Say so explicitly.
 5. Venue and timing are tactical, not decorative. Every venue point must connect to specific bowler types or batting strategies.
 6. Win probability must reflect genuine asymmetry. Never default to false 50/50.
 7. Algorithm vs analyst tension is a feature. When your prediction diverges from the algorithm, explain why.
 8. Label all SportMonks data clearly with [SPORTMONKS DATA] tags.
-9. EXPECTED PLAYING XI is the only source of who is playing this match. Do not name franchise captains, marquee signings, or players from news unless they appear in those XI lists. If news or algorithm "top performers" mention someone not in the XI, ignore them for lineups and matchups. Injured or rested stars not in the XI must not be described as playing.
+9. EXPECTED PLAYING XI is the only source of who is **starting** this match. FULL SQUAD PLAYER CARDS (when present) list BPR/CSA for every franchise squad member — use them for bench depth, injuries, and impact-sub analysis; never treat a player as a starter unless they appear in the Expected XI. If news or algorithm "top performers" mention someone not in the XI, ignore them for **starting** lineups and matchups.
 10. When IMPACT PLAYER / NAMED SUBSTITUTE HISTORY is present, use it in Layer 7 (impact sub options): cite who has recently been the named sub and tie it to this match's demands. Do not treat substitution flag as proof they played; phrase as "named impact / bench sub on sheet."
 
 STYLE: Sharp, confident, direct. Short sentences. Zero hedging. Write for someone who watches every IPL game. Always name names — never "their opening bowler." Disagreeing with the algorithm is encouraged when contextual case is strong.
 
-CRITICAL DATA CONSTRAINT: Only use IPL 2023-2026 data. Only reference players from the Expected Playing XI — the actual 11, NOT the full squad. Never substitute another team's roster or general IPL narratives for this fixture's XI."""
+CRITICAL DATA CONSTRAINT: Only use IPL 2023-2026 data. Starting XI: only the Expected Playing XI. When FULL SQUAD PLAYER CARDS are provided, you may reference those players for availability, injury, or bench impact — not as starters unless they are in the Expected XI lists."""
     )
 
     prompt = f"""Analyze this IPL 2026 match using the data below. Produce a full 7-layer contextual analysis.
@@ -1335,7 +1420,7 @@ Date: {date_str} | Time (IST): {time_ist}
 
 === EXPECTED PLAYING XIs [SPORTMONKS DATA] ===
 {squad_block}
-{impact_block}{perf_block}
+{match_subs_block}{impact_block}{perf_block}
 {algo_block}
 {h2h_block}
 {weather_block}
@@ -1343,6 +1428,7 @@ Date: {date_str} | Time (IST): {time_ist}
 === END DATA ===
 
 MANDATORY: team1_xi_display and team2_xi_display must list exactly the 11 player names from EXPECTED PLAYING XIs above (same names). Do not add anyone from news, other franchises, or algorithm summaries if they are missing from those lists.
+If NAMED IMPACT / SUBSTITUTE PLAYERS FOR THIS XI SOURCE lists a player, mention them in xi_availability_notes or Layer 7 as a named impact / substitute option — not as "not playing".
 
 Return a JSON object with this EXACT structure:
 {{
@@ -1446,7 +1532,7 @@ Return a JSON object with this EXACT structure:
 
 RULES:
 - All 7 layers MUST have an ADVANTAGE verdict. No ties.
-- Only reference players in the Expected Playing XI.
+- Starters and matchups: only players in the Expected Playing XI. Squad cards may inform injuries, depth, and Layer 7 impact subs.
 - Win probabilities must add to 100.
 - Be opinionated and bold. If one team is structurally superior, reflect it (e.g. 65/35).
 - Every claim needs a stat or specific recent event behind it."""
@@ -1469,6 +1555,7 @@ async def claude_live_analysis(
     sm_data: Optional[dict] = None,
     playing_xi_doc: Optional[dict] = None,
     impact_sub_history: Optional[dict] = None,
+    match_impact_subs: Optional[dict] = None,
 ) -> dict:
     """
     Claude Opus: Generate real-time analysis during a live match.
@@ -1521,7 +1608,7 @@ OPENING BATSMEN: When an "OPENING PARTNERSHIPS" block is present, use its NOMINA
 
 IMPACT SUBS: When "IMPACT PLAYER / NAMED SUBSTITUTE HISTORY" is present, use it for bench / impact-sub context (who has recently been the named sub on official lineups). It does not prove they entered the game.
 
-CRITICAL DATA CONSTRAINT: Only reference cricket data from 2023-2026. Do NOT cite any player stats, records, or historical performances from before 2023. Only reference players from the Expected Playing XI provided — these are the 11 players on the field, not the full squad."""
+CRITICAL DATA CONSTRAINT: Only reference cricket data from 2023-2026. Do NOT cite any player stats, records, or historical performances from before 2023. Primary on-field reference: the Expected Playing XI (11 starters). If NAMED IMPACT / SUBSTITUTE PLAYERS FOR THIS XI SOURCE is present, those players may still participate as IPL Impact Player — do not call them "not playing" or absent solely because they are not in the 11."""
     )
 
     sm_block = ""
@@ -1543,10 +1630,23 @@ Match phase: {phase_line}
     if impact_block:
         impact_block = impact_block + "\n"
 
+    match_subs_block = ""
+    if match_impact_subs and isinstance(match_impact_subs, dict):
+        match_subs_block = format_match_impact_subs_for_prompt(
+            team1,
+            team2,
+            t1_short,
+            t2_short,
+            match_impact_subs.get("team1"),
+            match_impact_subs.get("team2"),
+        )
+    if match_subs_block:
+        match_subs_block = match_subs_block + "\n"
+
     prompt = f"""Analyze this LIVE IPL 2026 match. Give me a real-time prediction update.
 
 {team1} ({t1_short}) vs {team2} ({t2_short})
-{sm_block}{opening_block}{impact_block}=== {team1} EXPECTED PLAYING XI ===
+{sm_block}{opening_block}{match_subs_block}{impact_block}=== {team1} EXPECTED PLAYING XI ===
 {squad1_text}
 
 === {team2} EXPECTED PLAYING XI ===
@@ -1561,7 +1661,7 @@ Match phase: {phase_line}
 === LATEST SCRAPED DATA (rumor / context only if SportMonks snapshot above is present) ===
 {live_scraped[:scrape_limit]}
 
-Consider the Playing XIs above — remaining batting depth, available bowling changes, and each player's IPL form. Only reference these 11 players per team.
+Consider the Playing XIs above — remaining batting depth, available bowling changes, and each player's IPL form. Starters: the 11 per team above; if NAMED IMPACT / SUBSTITUTE PLAYERS block is present, treat those names as available impact options (not "absent").
 
 Return JSON:
 {{

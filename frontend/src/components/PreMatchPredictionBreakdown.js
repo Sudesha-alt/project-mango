@@ -5,6 +5,7 @@ import InfoTooltip from "./InfoTooltip";
 import { API_BASE } from "@/lib/apiBase";
 import PreMatchPlayerPerfToolbar, { readLivePlayerPerfPreference } from "./PreMatchPlayerPerfToolbar";
 import { buildPreMatchPredictUrl, buildFetchXiRolesAndPredictUrl } from "@/lib/preMatchApi";
+import { readImpactFormulaPreference } from "@/lib/impactFormulaPref";
 
 const API = API_BASE;
 
@@ -174,7 +175,8 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
   const handlePredict = async () => {
     setLoading(true);
     try {
-      const url = buildPreMatchPredictUrl(matchId, { force: false, livePlayerPerf });
+      const formula = readImpactFormulaPreference();
+      const url = buildPreMatchPredictUrl(matchId, { force: false, livePlayerPerf, formula });
       const res = await axios.post(url, {}, { timeout: 180000 });
       if (res.data && !res.data.error) {
         setData(res.data);
@@ -187,7 +189,8 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
   const handleRefresh = async () => {
     setLoading(true);
     try {
-      const url = buildPreMatchPredictUrl(matchId, { force: true, livePlayerPerf });
+      const formula = readImpactFormulaPreference();
+      const url = buildPreMatchPredictUrl(matchId, { force: true, livePlayerPerf, formula });
       const res = await axios.post(url, {}, { timeout: 180000 });
       if (res.data && !res.data.error) {
         setData(res.data);
@@ -201,7 +204,8 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
     setXiRolesError(null);
     setXiRolesLoading(true);
     try {
-      const url = buildFetchXiRolesAndPredictUrl(matchId, { livePlayerPerf });
+      const formula = readImpactFormulaPreference();
+      const url = buildFetchXiRolesAndPredictUrl(matchId, { livePlayerPerf, formula });
       const res = await axios.post(url, {}, { timeout: 180000 });
       if (res.data && !res.data.error) {
         setData(res.data);
@@ -270,6 +274,17 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
         phaseDataReady={data.team_strength_metrics?.phase_data_ready}
         onBackgroundPlayerJobStarted={scheduleReloadAfterBackgroundPlayerJob}
       />
+      <p className="text-[9px] text-[#525252] font-mono" data-testid="prematch-impact-formula-note">
+        Team strength formula:{" "}
+        {(data.impact_formula || data.team_strength_metrics?.impact_formula || "br_bor_v1") === "classic_bpr_csa"
+          ? "Classic BPR + CSA"
+          : "BR/BoR v1"}{" "}
+        — matches{" "}
+        <a href="/players" className="text-[#007AFF] hover:underline">
+          Players
+        </a>{" "}
+        preference.
+      </p>
       {data.player_data_signals?.repredict_recommended && (
         <div
           className="rounded-md border border-amber-500/45 bg-amber-500/10 px-3 py-2.5 space-y-1.5"
@@ -536,7 +551,7 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
             <p className="text-[10px] text-[#737373] uppercase tracking-[0.15em] font-semibold flex items-center gap-1">
               <UsersThree weight="fill" className="w-3.5 h-3.5 text-[#7C3AED]" />
               Expected Playing XI
-              <InfoTooltip text={data.playing_xi.xi_lineup_note || "XI from SportMonks when available; roles may be inferred by Claude (tagged) and feed all-rounder depth/strength. impact_points = Lucky 11 card rating."} />
+              <InfoTooltip text={data.playing_xi.xi_lineup_note || "XI from SportMonks when available; roles may be inferred by Claude (tagged) and feed all-rounder depth/strength. impact_points = Lucky 11 card rating. A manual IPL Impact pick (from bench) is included in the model when set in Expected XI + Performance."} />
             </p>
             <div className="flex flex-wrap items-center gap-2 justify-end">
               <button
@@ -591,6 +606,34 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
                   </li>
                 ))}
               </ul>
+              {data.playing_xi.team1_manual_impact_player?.name && (
+                <div className="mt-2 pt-2 border-t border-[#EAB308]/25" data-testid="prematch-team1-manual-impact">
+                  <p className="text-[8px] text-[#EAB308] font-bold uppercase tracking-wider mb-1">Impact player (manual)</p>
+                  <div className="flex items-start justify-between text-[10px] gap-2 rounded border border-dashed border-[#EAB308]/35 bg-[#EAB308]/5 px-2 py-1.5">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[#E5E5E5] truncate">{data.playing_xi.team1_manual_impact_player.name}</div>
+                      <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                        <span className="text-[8px] font-bold uppercase tracking-wider" style={{ color: xiRoleColor(data.playing_xi.team1_manual_impact_player.role) }}>
+                          {data.playing_xi.team1_manual_impact_player.role || "—"}
+                        </span>
+                        {data.playing_xi.team1_manual_impact_player.role_source === "roster" && (
+                          <span className="text-[7px] px-1 py-0 rounded bg-[#525252]/40 text-[#A3A3A3] font-mono uppercase">Bench</span>
+                        )}
+                      </div>
+                    </div>
+                    <span className="text-[#A1A1AA] font-mono flex-shrink-0 self-center">
+                      {data.playing_xi.team1_manual_impact_player.impact_points != null ? (
+                        <span className="text-[#FFCC00] font-bold">{data.playing_xi.team1_manual_impact_player.impact_points}</span>
+                      ) : (
+                        "—"
+                      )}
+                      {data.playing_xi.team1_manual_impact_player.recent_form_impact != null && (
+                        <span className="text-[#525252] ml-1">frm {Math.round(data.playing_xi.team1_manual_impact_player.recent_form_impact)}</span>
+                      )}
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
             <div>
               <p className="text-[9px] font-bold uppercase tracking-wider text-[#FF3B30] mb-1">{t2}</p>
@@ -617,6 +660,34 @@ export default function PreMatchPredictionBreakdown({ matchId, team1, team2, onD
                   </li>
                 ))}
               </ul>
+              {data.playing_xi.team2_manual_impact_player?.name && (
+                <div className="mt-2 pt-2 border-t border-[#EAB308]/25" data-testid="prematch-team2-manual-impact">
+                  <p className="text-[8px] text-[#EAB308] font-bold uppercase tracking-wider mb-1">Impact player (manual)</p>
+                  <div className="flex items-start justify-between text-[10px] gap-2 rounded border border-dashed border-[#EAB308]/35 bg-[#EAB308]/5 px-2 py-1.5">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[#E5E5E5] truncate">{data.playing_xi.team2_manual_impact_player.name}</div>
+                      <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                        <span className="text-[8px] font-bold uppercase tracking-wider" style={{ color: xiRoleColor(data.playing_xi.team2_manual_impact_player.role) }}>
+                          {data.playing_xi.team2_manual_impact_player.role || "—"}
+                        </span>
+                        {data.playing_xi.team2_manual_impact_player.role_source === "roster" && (
+                          <span className="text-[7px] px-1 py-0 rounded bg-[#525252]/40 text-[#A3A3A3] font-mono uppercase">Bench</span>
+                        )}
+                      </div>
+                    </div>
+                    <span className="text-[#A1A1AA] font-mono flex-shrink-0 self-center">
+                      {data.playing_xi.team2_manual_impact_player.impact_points != null ? (
+                        <span className="text-[#FFCC00] font-bold">{data.playing_xi.team2_manual_impact_player.impact_points}</span>
+                      ) : (
+                        "—"
+                      )}
+                      {data.playing_xi.team2_manual_impact_player.recent_form_impact != null && (
+                        <span className="text-[#525252] ml-1">frm {Math.round(data.playing_xi.team2_manual_impact_player.recent_form_impact)}</span>
+                      )}
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

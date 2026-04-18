@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, WebSocket, WebSocketDisconnect, BackgroundTasks, Body, HTTPException
+from fastapi import FastAPI, APIRouter, WebSocket, WebSocketDisconnect, BackgroundTasks, Body, HTTPException, Query
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -58,6 +58,7 @@ from services.sportmonks_service import (
     fetch_fixture_details,
     fetch_recent_fixtures,
     fetch_last_played_xi,
+    fetch_last_played_xi_bundle,
     fetch_playing_xi_from_live,
     fetch_team_recent_performance,
     fetch_playing_xi_from_last_match,
@@ -95,7 +96,16 @@ from services.weather_service import fetch_weather_for_venue
 from services.schedule_data import get_schedule_documents, TEAM_SHORT_CODES, CITY_STADIUMS
 from services.web_scraper import fetch_match_news
 from services.form_service import fetch_team_form, fetch_momentum, generate_expected_xi
-from services.player_impact_bpr_csa import compute_player_impact_profile, claude_impact_fallback_allowed
+from services.player_impact_bpr_csa import (
+    IMPACT_FORMULAS,
+    compute_player_impact_profile,
+    claude_impact_fallback_allowed,
+)
+from services.player_impact_explain import explain_csa_for_perf_row
+from services.claude_opus_player_input import (
+    build_opus_player_cards_for_claude,
+    format_opus_player_cards_for_prompt,
+)
 
 def _require_env(name: str) -> str:
     val = os.environ.get(name, "").strip()
@@ -118,25 +128,183 @@ logger = logging.getLogger(__name__)
 ws_connections: Dict[str, List[WebSocket]] = {}
 live_match_state: Dict[str, Any] = {}
 
+_SEED_SQUADS_IPL: Optional[list] = None
 
-async def _get_squads_for_match(team1: str, team2: str) -> dict:
-    """Fetch both team squads from DB. Returns {team_name: [players]}."""
-    squads = {}
-    for team_name in [team1, team2]:
+
+def _seed_squads_ipl_entries() -> list:
+    """SQUADS from ``seed_squads_2026.py`` when Mongo ``ipl_squads`` has no row."""
+    global _SEED_SQUADS_IPL
+    if _SEED_SQUADS_IPL is not None:
+        return _SEED_SQUADS_IPL
+    try:
+        from seed_squads_2026 import SQUADS  # type: ignore
+        _SEED_SQUADS_IPL = list(SQUADS or [])
+    except ImportError:
+        import importlib.util
+        path = ROOT_DIR / "seed_squads_2026.py"
+        if not path.is_file():
+            _SEED_SQUADS_IPL = []
+        else:
+            spec = importlib.util.spec_from_file_location("_pm_seed_squads_2026", path)
+            mod = importlib.util.module_from_spec(spec)
+            if spec is None or spec.loader is None:
+                _SEED_SQUADS_IPL = []
+            else:
+                spec.loader.exec_module(mod)
+                _SEED_SQUADS_IPL = list(getattr(mod, "SQUADS", []) or [])
+    return _SEED_SQUADS_IPL
+
+
+def _seed_roster_by_team_short(team_short: Optional[str]) -> list:
+    if not team_short or not str(team_short).strip():
+        return []
+    ts = str(team_short).strip().upper()
+    for sq in _seed_squads_ipl_entries():
+        if not isinstance(sq, dict):
+            continue
+        sqs = (sq.get("teamShort") or "").strip().upper()
+        if sqs == ts:
+            pl = sq.get("players") or []
+            return [dict(p) for p in pl if isinstance(p, dict)]
+    return []
+
+
+def _resolve_team_short_for_seed(schedule_label: str, team_short: Optional[str]) -> Optional[str]:
+    ts = (team_short or "").strip() or None
+    if ts:
+        return ts
+    lbl = (schedule_label or "").strip()
+    if not lbl:
+        return None
+    mapped = TEAM_SHORT_CODES.get(lbl)
+    if mapped:
+        return mapped
+    if " " not in lbl and len(lbl) <= 6:
+        return lbl
+    return get_short_name(lbl)
+
+
+async def _fetch_ipl_squad_players_from_db(
+    schedule_label: str,
+    short_opt: Optional[str],
+) -> list:
+    """Single-team roster from Mongo ``ipl_squads`` (same lookup as legacy bench path)."""
+    label = (schedule_label or "").strip()
+    if not label:
+        return []
+    doc = None
+    candidates = []
+    if short_opt and str(short_opt).strip():
+        candidates.append(str(short_opt).strip())
+    if " " not in label and len(label) <= 6:
+        candidates.append(label)
+    for c in candidates:
         doc = await db.ipl_squads.find_one(
-            {"$or": [
-                {"team": {"$regex": team_name.split()[0], "$options": "i"}},
-                {"teamName": {"$regex": team_name.split()[0], "$options": "i"}},
-            ]},
-            {"_id": 0}
+            {"teamShort": {"$regex": f"^{re.escape(c)}$", "$options": "i"}},
+            {"_id": 0},
         )
         if doc:
-            squads[team_name] = doc.get("players", [])
+            break
+    if not doc:
+        doc = await db.ipl_squads.find_one(
+            {"teamName": {"$regex": re.escape(label), "$options": "i"}},
+            {"_id": 0},
+        )
+    if not doc:
+        doc = await db.ipl_squads.find_one(
+            {"team": {"$regex": re.escape(label), "$options": "i"}},
+            {"_id": 0},
+        )
+    if not doc:
+        tok = label.split()[0]
+        if len(tok) >= 2:
+            doc = await db.ipl_squads.find_one(
+                {"$or": [
+                    {"teamName": {"$regex": tok, "$options": "i"}},
+                    {"team": {"$regex": tok, "$options": "i"}},
+                ]},
+                {"_id": 0},
+            )
+    if not doc:
+        return []
+    return list(doc.get("players") or [])
+
+
+def _merge_franchise_rosters(mongo_rows: list, seed_rows: list) -> list:
+    """Union Mongo roster with seed file (dedupe by name). Mongo rows keep SportMonks ids when present."""
+    if not seed_rows:
+        return [dict(p) for p in (mongo_rows or []) if isinstance(p, dict)]
+    if not mongo_rows:
+        return [dict(p) for p in seed_rows if isinstance(p, dict)]
+    out: list = [dict(p) for p in mongo_rows if isinstance(p, dict)]
+    for sp in seed_rows:
+        if not isinstance(sp, dict):
+            continue
+        snm = (sp.get("name") or "").strip()
+        if not snm:
+            continue
+        if any(_player_name_matches(snm, (op.get("name") or "")) for op in out):
+            continue
+        out.append(dict(sp))
+    return out
+
+
+async def _get_full_franchise_squad_players(
+    schedule_team_label: str,
+    team_short: Optional[str],
+) -> list:
+    """~25-player franchise list: Mongo ``ipl_squads`` merged with ``seed_squads_2026.SQUADS`` by teamShort.
+
+    Mongo alone is often XI-sized (~11); merging restores full squads so bench = squad minus XI works."""
+    mongo_rows = await _fetch_ipl_squad_players_from_db(schedule_team_label, team_short)
+    ts = _resolve_team_short_for_seed(schedule_team_label, team_short)
+    seed_rows = _seed_roster_by_team_short(ts)
+    return _merge_franchise_rosters(mongo_rows, seed_rows)
+
+
+async def _get_squads_for_match(
+    team1: str,
+    team2: str,
+    *,
+    team1_short: Optional[str] = None,
+    team2_short: Optional[str] = None,
+) -> dict:
+    """Both team squads. Keys are schedule labels. Mongo first, then ``seed_squads_2026`` fallback."""
+    squads: Dict[str, list] = {}
+    p1 = await _get_full_franchise_squad_players(team1, team1_short)
+    if p1:
+        squads[team1] = p1
+    p2 = await _get_full_franchise_squad_players(team2, team2_short)
+    if p2:
+        squads[team2] = p2
     return squads
 
 
 # Playing XI is mandatory for pre-match and live model+Claude paths
 MIN_PLAYING_XI = 11
+
+# Optional: user swaps manual Impact pick into the 11 (replaces a named starter).
+_MANUAL_IMPACT_SWAP_KEYS = (
+    "team1_manual_impact_swap_out",
+    "team2_manual_impact_swap_out",
+)
+
+
+def _xi_starter_names_for_side(xi_doc: dict, side: str) -> list:
+    """First 11 logical starters: Expected XI rows, then impact subs if needed (same order as squad build)."""
+    if side not in ("team1", "team2"):
+        return []
+    xi_key = "team1_xi" if side == "team1" else "team2_xi"
+    subs_key = "team1_impact_subs" if side == "team1" else "team2_impact_subs"
+    u = _union_xi_and_subs_rows((xi_doc or {}).get(xi_key), (xi_doc or {}).get(subs_key))
+    names: list = []
+    for p in u[:MIN_PLAYING_XI]:
+        if not isinstance(p, dict):
+            continue
+        nm = (p.get("name") or p.get("fullname") or "").strip()
+        if nm:
+            names.append(nm)
+    return names
 
 
 def _xi_named_count(xi: list) -> int:
@@ -152,10 +320,89 @@ def _xi_named_count(xi: list) -> int:
 def _prematch_xi_complete(xi_data: dict) -> bool:
     if not xi_data:
         return False
+    # Prefer XI ∪ named impact subs (11+2 etc. from SportMonks) so we never hard-require subs
+    # to be duplicated inside team*_xi. Fall back to XI-only named count for older caches.
+    u1 = _union_xi_and_subs_rows(xi_data.get("team1_xi"), xi_data.get("team1_impact_subs"))
+    u2 = _union_xi_and_subs_rows(xi_data.get("team2_xi"), xi_data.get("team2_impact_subs"))
+    if len(u1) >= MIN_PLAYING_XI and len(u2) >= MIN_PLAYING_XI:
+        return True
     return (
         _xi_named_count(xi_data.get("team1_xi")) >= MIN_PLAYING_XI
         and _xi_named_count(xi_data.get("team2_xi")) >= MIN_PLAYING_XI
     )
+
+
+async def _playing_xi_merged_for_bench(match_id: str) -> dict:
+    """
+    Merge ``playing_xi`` collection with ``pre_match_predictions.playing_xi`` per side
+    (union by player name so split/stale rows still yield up to a full XI for bench math).
+    """
+    from_coll = await db.playing_xi.find_one({"matchId": match_id}, {"_id": 0}) or {}
+    pred = await db.pre_match_predictions.find_one({"matchId": match_id}, {"_id": 0}) or {}
+    px = pred.get("playing_xi") if isinstance(pred.get("playing_xi"), dict) else {}
+    out = {
+        "team1_xi": _merge_xi_side_lists_for_bench(from_coll.get("team1_xi"), px.get("team1_xi")),
+        "team2_xi": _merge_xi_side_lists_for_bench(from_coll.get("team2_xi"), px.get("team2_xi")),
+    }
+    for k in ("team1_manual_impact_player", "team2_manual_impact_player", *_MANUAL_IMPACT_SWAP_KEYS):
+        if from_coll.get(k) is not None:
+            out[k] = from_coll[k]
+        elif px.get(k) is not None:
+            out[k] = px[k]
+    return out
+
+
+def _playing_xi_overlay_manual(base: dict, manual_src: dict) -> dict:
+    """Attach manual impact fields from ``manual_src`` onto a playing_xi-shaped dict."""
+    out = dict(base)
+    for k in ("team1_manual_impact_player", "team2_manual_impact_player", *_MANUAL_IMPACT_SWAP_KEYS):
+        if manual_src.get(k) is not None:
+            out[k] = manual_src[k]
+    return out
+
+
+async def _playing_xi_document_for_pre_match(match_id: str) -> Optional[dict]:
+    """
+    Full 11+11 Expected XI for pre-match: prefer merged ``playing_xi`` + ``pre_match_predictions``;
+    if merge is short (e.g. only manual impact was $set on ``playing_xi``), fall back to whichever
+    store still has a complete XI so ``pre-match-predict`` does not 400 after saving Impact player.
+    """
+    from_coll = await db.playing_xi.find_one({"matchId": match_id}, {"_id": 0}) or {}
+    pred = await db.pre_match_predictions.find_one({"matchId": match_id}, {"_id": 0}) or {}
+    px = pred.get("playing_xi") if isinstance(pred.get("playing_xi"), dict) else {}
+    merged = await _playing_xi_merged_for_bench(match_id)
+    manual_src = merged if isinstance(merged, dict) else {}
+
+    if _prematch_xi_complete(merged):
+        try:
+            await db.playing_xi.update_one(
+                {"matchId": match_id},
+                {
+                    "$set": {
+                        "matchId": match_id,
+                        "team1_xi": merged.get("team1_xi") or [],
+                        "team2_xi": merged.get("team2_xi") or [],
+                        "team1_manual_impact_player": merged.get("team1_manual_impact_player"),
+                        "team2_manual_impact_player": merged.get("team2_manual_impact_player"),
+                        "team1_manual_impact_swap_out": merged.get("team1_manual_impact_swap_out"),
+                        "team2_manual_impact_swap_out": merged.get("team2_manual_impact_swap_out"),
+                    }
+                },
+                upsert=True,
+            )
+        except Exception as e:
+            logger.warning("playing_xi sync from prediction merge failed for %s: %s", match_id, e)
+        refreshed = await db.playing_xi.find_one({"matchId": match_id}, {"_id": 0})
+        doc = refreshed if refreshed else merged
+        return _playing_xi_overlay_manual(doc, manual_src)
+
+    if _prematch_xi_complete(from_coll):
+        return _playing_xi_overlay_manual(from_coll, manual_src)
+
+    if _prematch_xi_complete(px):
+        return _playing_xi_overlay_manual(px, manual_src)
+
+    return None
 
 
 def _sm_playing_xi_complete(sm: dict) -> bool:
@@ -230,6 +477,80 @@ def _player_name_matches(a: str, b: str) -> bool:
         if SequenceMatcher(None, na, nb).ratio() >= 0.88:
             return True
     return False
+
+
+def _xi_row_display_name(row: dict) -> str:
+    return (row.get("name") or row.get("fullname") or "").strip()
+
+
+def _impact_sub_row_as_dict(p) -> Optional[dict]:
+    """Normalize SportMonks / cache impact-sub entries to a dict with a display name."""
+    if isinstance(p, dict):
+        nm = (p.get("name") or p.get("fullname") or "").strip()
+        if nm:
+            return dict(p)
+        return None
+    if isinstance(p, str) and p.strip():
+        return {"name": p.strip()}
+    return None
+
+
+def _union_xi_and_subs_rows(xi_rows: Optional[list], subs_rows: Optional[list]) -> list:
+    """
+    Ordered, name-deduped rows: Expected XI list first, then named impact subs not already present.
+    Used so pre-match / Claude accept11 starters split across ``team*_xi`` + ``team*_impact_subs``,
+    and so12+ named rows (XI + subs) are not treated as invalid.
+    """
+    out: list = []
+    seen: set = set()
+    for row in xi_rows or []:
+        if not isinstance(row, dict):
+            continue
+        nm = _xi_row_display_name(row)
+        if not nm:
+            continue
+        nk = _normalize_player_name(nm)
+        if nk in seen:
+            continue
+        seen.add(nk)
+        out.append(dict(row))
+    for p in subs_rows or []:
+        d = _impact_sub_row_as_dict(p)
+        if not d:
+            continue
+        nm = _xi_row_display_name(d)
+        nk = _normalize_player_name(nm)
+        if nk in seen:
+            continue
+        seen.add(nk)
+        out.append(d)
+    return out
+
+
+# Max extra players per side after the starting 11 (manual + API subs / union tail) for algo + Claude.
+_MAX_DEPTH_IMPACT_ROWS_PER_SIDE = 4
+
+
+def _merge_xi_side_lists_for_bench(list_a: Optional[list], list_b: Optional[list]) -> list:
+    """Union two Expected-XI lists: ``playing_xi`` rows first, then prediction rows not name-matched."""
+    out: list = []
+    for p in list_a or []:
+        if not isinstance(p, dict):
+            continue
+        nm = _xi_row_display_name(p)
+        if not nm:
+            continue
+        out.append(dict(p))
+    for p in list_b or []:
+        if not isinstance(p, dict):
+            continue
+        nm = _xi_row_display_name(p)
+        if not nm:
+            continue
+        if any(_player_name_matches(nm, _xi_row_display_name(x)) for x in out):
+            continue
+        out.append(dict(p))
+    return out
 
 
 # SportMonks "last match" XI sometimes omits players who are confirmed starters; inject from DB roster.
@@ -309,6 +630,45 @@ def ensure_rr_vaibhav_in_playing_xi_rows(
     return out
 
 
+def _match_impact_subs_from_xi_doc(xi_doc: Optional[dict]) -> dict:
+    """Named IPL Impact / substitute rows (SportMonks) plus optional user-selected bench impact player."""
+
+    def _merge_manual(subs: list, man: Optional[dict], swap_out: Optional[str]) -> list:
+        out = list(subs or [])
+        swap_clean = (swap_out or "").strip() if isinstance(swap_out, str) else ""
+        if not man or not isinstance(man, dict):
+            return out
+        nm = (man.get("name") or "").strip()
+        if not nm:
+            return out
+        if any(_player_name_matches(nm, (x or {}).get("name", "")) for x in out if isinstance(x, dict)):
+            return out
+        entry: dict = {"name": nm, "source": "user_selected_impact"}
+        if swap_clean:
+            entry["replaces_xi_player"] = swap_clean
+        out.append(entry)
+        if swap_clean and not any(
+            _player_name_matches(swap_clean, (x or {}).get("name", "")) for x in out if isinstance(x, dict)
+        ):
+            out.append({"name": swap_clean, "source": "user_swap_replaced_from_xi"})
+        return out
+
+    if not xi_doc or not isinstance(xi_doc, dict):
+        return {"team1": [], "team2": []}
+    return {
+        "team1": _merge_manual(
+            xi_doc.get("team1_impact_subs") or [],
+            xi_doc.get("team1_manual_impact_player"),
+            xi_doc.get("team1_manual_impact_swap_out"),
+        ),
+        "team2": _merge_manual(
+            xi_doc.get("team2_impact_subs") or [],
+            xi_doc.get("team2_manual_impact_player"),
+            xi_doc.get("team2_manual_impact_swap_out"),
+        ),
+    }
+
+
 def _playing_xi_squads_from_doc(
     xi_doc: dict,
     match_squads: dict,
@@ -323,18 +683,8 @@ def _playing_xi_squads_from_doc(
     if not xi_doc or not _prematch_xi_complete(xi_doc):
         return {}
 
-    def _named_rows(rows: list) -> list:
-        out = []
-        for row in rows or []:
-            if not isinstance(row, dict):
-                continue
-            nm = (row.get("name") or row.get("fullname") or "").strip()
-            if nm:
-                out.append(row)
-        return out
-
-    t1_rows = _named_rows(xi_doc.get("team1_xi"))
-    t2_rows = _named_rows(xi_doc.get("team2_xi"))
+    t1_rows = _union_xi_and_subs_rows(xi_doc.get("team1_xi"), xi_doc.get("team1_impact_subs"))
+    t2_rows = _union_xi_and_subs_rows(xi_doc.get("team2_xi"), xi_doc.get("team2_impact_subs"))
     if len(t1_rows) < MIN_PLAYING_XI or len(t2_rows) < MIN_PLAYING_XI:
         return {}
 
@@ -374,11 +724,206 @@ def _playing_xi_squads_from_doc(
     return {team1: t1_final, team2: t2_final}
 
 
+def _prediction_squads_with_manual_impact(
+    xi_doc: dict,
+    match_squads: dict,
+    team1: str,
+    team2: str,
+) -> dict:
+    """
+    Expected XI (11 per side) plus optional user-selected IPL Impact Player from bench.
+    Bench = franchise squad members not among the 11 starters (name-matched).
+    """
+    base = _playing_xi_squads_from_doc(xi_doc, match_squads, team1, team2)
+    if not base:
+        return {}
+
+    def _apply_manual(team_label: str, field_key: str, swap_key: str) -> None:
+        raw = (xi_doc or {}).get(field_key)
+        if not raw or not isinstance(raw, dict):
+            return
+        name = (raw.get("name") or "").strip()
+        if not name:
+            return
+        swap_raw = (xi_doc or {}).get(swap_key)
+        swap_out = swap_raw.strip() if isinstance(swap_raw, str) else ""
+        starters = list(base.get(team_label) or [])
+        starter_keys = {_normalize_player_name(p.get("name", "")) for p in starters if isinstance(p, dict)}
+        nk = _normalize_player_name(name)
+
+        squad_list = (match_squads or {}).get(team_label) or []
+        match_p = next(
+            (p for p in squad_list if _player_name_matches(p.get("name", ""), name)),
+            None,
+        )
+        if match_p:
+            row = dict(match_p)
+        else:
+            row = {
+                "name": name,
+                "role": raw.get("role") or "Batsman",
+                "isCaptain": False,
+                "isOverseas": bool(raw.get("isOverseas")),
+            }
+        row["role"] = normalize_primary_cricket_role(row.get("role"))
+        row["role_source"] = "roster"
+        row["is_manual_impact"] = True
+
+        if swap_out:
+            idx = None
+            for i, p in enumerate(starters[:MIN_PLAYING_XI]):
+                if not isinstance(p, dict):
+                    continue
+                if _player_name_matches(swap_out, (p.get("name") or p.get("fullname") or "")):
+                    idx = i
+                    break
+            if idx is not None:
+                new_starters = list(starters)
+                new_starters[idx] = row
+                base[team_label] = new_starters[:MIN_PLAYING_XI]
+                return
+            logger.warning(
+                "manual_impact_swap_out not found in Expected XI for %s (falling back to 12th): %s",
+                team_label,
+                swap_out,
+            )
+
+        if nk in starter_keys:
+            return
+        base[team_label] = starters + [row]
+
+    _apply_manual(team1, "team1_manual_impact_player", "team1_manual_impact_swap_out")
+    _apply_manual(team2, "team2_manual_impact_player", "team2_manual_impact_swap_out")
+    _append_depth_impact_rows_from_doc(xi_doc, base, team1, team2, match_squads)
+    return base
+
+
+def _append_depth_impact_rows_from_doc(
+    xi_doc: dict,
+    base: dict,
+    team1: str,
+    team2: str,
+    match_squads: dict,
+) -> None:
+    """
+    Add12+ players for the algo / Claude paths: union tail after the first11, plus any subs
+    not yet on the side (so impact subs are not silently dropped when only present in ``team*_impact_subs``).
+    """
+    for sched, side in ((team1, "team1"), (team2, "team2")):
+        xi_key = f"{side}_xi"
+        subs_key = f"{side}_impact_subs"
+        full_u = _union_xi_and_subs_rows(xi_doc.get(xi_key), xi_doc.get(subs_key))
+        rows = list(base.get(sched) or [])
+        have = {_normalize_player_name(p.get("name", "")) for p in rows if isinstance(p, dict)}
+        added = 0
+
+        def _append_one_row(src: dict) -> None:
+            nonlocal added
+            if added >= _MAX_DEPTH_IMPACT_ROWS_PER_SIDE:
+                return
+            name = _xi_row_display_name(src)
+            if not name:
+                return
+            nk = _normalize_player_name(name)
+            if nk in have:
+                return
+            squad_list = (match_squads or {}).get(sched) or []
+            match_p = next(
+                (p for p in squad_list if _player_name_matches(p.get("name", ""), name)),
+                None,
+            )
+            if match_p:
+                row = dict(match_p)
+            else:
+                row = {
+                    "name": name,
+                    "role": src.get("role") or "Batsman",
+                    "isCaptain": bool(src.get("isCaptain") or src.get("is_captain")),
+                    "isOverseas": bool(src.get("isOverseas") or src.get("is_overseas")),
+                }
+            row["role"] = normalize_primary_cricket_role(row.get("role"))
+            row["role_source"] = row.get("role_source") or "roster"
+            row["is_depth_impact_sub"] = True
+            rows.append(row)
+            have.add(nk)
+            added += 1
+
+        for raw in full_u[MIN_PLAYING_XI:]:
+            if isinstance(raw, dict):
+                _append_one_row(raw)
+
+        base[sched] = rows
+
+
+def _bench_players_for_side(
+    xi_doc: dict,
+    match_squads: dict,
+    team1: str,
+    team2: str,
+    side: str,
+) -> list:
+    """Franchise squad players not among the 11 Expected XI starters (manual Impact Player picker)."""
+    if side not in ("team1", "team2"):
+        return []
+    sched = team1 if side == "team1" else team2
+    xi_key = "team1_xi" if side == "team1" else "team2_xi"
+    subs_key = "team1_impact_subs" if side == "team1" else "team2_impact_subs"
+    u = _union_xi_and_subs_rows((xi_doc or {}).get(xi_key), (xi_doc or {}).get(subs_key))
+    starters: list = []
+    for p in u[:MIN_PLAYING_XI]:
+        if isinstance(p, dict):
+            nm = (p.get("name") or p.get("fullname") or "").strip()
+            if nm:
+                starters.append(nm)
+    out = []
+    for p in (match_squads or {}).get(sched) or []:
+        if not isinstance(p, dict):
+            continue
+        nm = (p.get("name") or "").strip()
+        if not nm:
+            continue
+        if any(_player_name_matches(nm, s) for s in starters):
+            continue
+        out.append({
+            "name": nm,
+            "role": p.get("role") or "Batsman",
+            "isOverseas": bool(p.get("isOverseas")),
+        })
+    out.sort(key=lambda x: (x.get("name") or "").lower())
+    return out
+
+
+def _filter_bench_by_name_query(bench: list, q: str, *, limit: int = 15) -> list:
+    """Rank bench rows by substring / fuzzy match for type-ahead impact player search."""
+    qt = _normalize_player_name(q)
+    if not qt or len(qt) < 2:
+        return []
+    scored: list = []
+    for b in bench or []:
+        if not isinstance(b, dict):
+            continue
+        nm = (b.get("name") or "").strip()
+        if not nm:
+            continue
+        nt = _normalize_player_name(nm)
+        if not nt:
+            continue
+        if qt in nt:
+            score = 100.0 + (25.0 if nt.startswith(qt) else 0.0) - min(len(nt), 48) * 0.02
+            scored.append((score, b))
+            continue
+        r = SequenceMatcher(None, qt, nt).ratio()
+        if r >= 0.52:
+            scored.append((r * 72.0, b))
+    scored.sort(key=lambda x: -x[0])
+    return [x[1] for x in scored[:limit]]
+
+
 def _xi_roles_fingerprint(prediction_squads: dict, team1: str, team2: str) -> str:
     t1 = prediction_squads.get(team1) or []
     t2 = prediction_squads.get(team2) or []
-    n1 = tuple(_normalize_player_name(p.get("name", "")) for p in t1[:MIN_PLAYING_XI])
-    n2 = tuple(_normalize_player_name(p.get("name", "")) for p in t2[:MIN_PLAYING_XI])
+    n1 = tuple(_normalize_player_name(p.get("name", "")) for p in t1)
+    n2 = tuple(_normalize_player_name(p.get("name", "")) for p in t2)
     raw = json.dumps({"t1": n1, "t2": n2}, sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -631,6 +1176,11 @@ async def _ensure_claude_playing_xi_roles(
     if not mandatory and cached.get("fingerprint") == fp and _cache_has_both_sides(cached):
         role_map = _role_map_from_claude_xi_cache(cached)
         _apply_role_map_to_prediction_squads(prediction_squads, team1, team2, role_map)
+        for tk in (team1, team2):
+            for p in prediction_squads.get(tk) or []:
+                if isinstance(p, dict) and (p.get("is_manual_impact") or p.get("is_depth_impact_sub")):
+                    p["role"] = normalize_primary_cricket_role(p.get("role", "Batsman"))
+                    p["role_source"] = p.get("role_source") or "roster"
         return
 
     try:
@@ -653,6 +1203,16 @@ async def _ensure_claude_playing_xi_roles(
         return
 
     role_map = _role_map_from_claude_infer_payload_fuzzy(payload, prediction_squads, team1, team2)
+    for tk in (team1, team2):
+        for p in prediction_squads.get(tk) or []:
+            if not isinstance(p, dict) or not (
+                p.get("is_manual_impact") or p.get("is_depth_impact_sub")
+            ):
+                continue
+            nn = _normalize_player_name(p.get("name", ""))
+            if nn:
+                role_map[nn] = normalize_primary_cricket_role(p.get("role", "Batsman"))
+
     missing: list = []
     for tk in (team1, team2):
         for p in prediction_squads.get(tk) or []:
@@ -669,7 +1229,7 @@ async def _ensure_claude_playing_xi_roles(
                 status_code=502,
                 detail={
                     "error": "claude_xi_roles_incomplete",
-                    "message": "Claude did not return a role for every Expected XI player.",
+                    "message": "Claude did not return a role for every starting XI player (first 11 per side).",
                     "missing_names": [m for m in missing if m],
                 },
             )
@@ -679,14 +1239,37 @@ async def _ensure_claude_playing_xi_roles(
     t1_rows = _merge_roles_into_stored_xi_rows(xi_doc.get("team1_xi"), role_map)
     t2_rows = _merge_roles_into_stored_xi_rows(xi_doc.get("team2_xi"), role_map)
     blob = _claude_xi_roles_cache_blob(fp, prediction_squads, team1, team2)
+
+    def _manual_persist_row(team_label: str, field_key: str) -> Optional[dict]:
+        rows = prediction_squads.get(team_label) or []
+        mp = next(
+            (p for p in rows if isinstance(p, dict) and p.get("is_manual_impact")),
+            None,
+        )
+        if not isinstance(mp, dict):
+            return None
+        return {
+            "name": (mp.get("name") or "").strip(),
+            "role": normalize_primary_cricket_role(mp.get("role")),
+            "role_source": mp.get("role_source") or "roster",
+            "isOverseas": bool(mp.get("isOverseas") or mp.get("is_overseas")),
+        }
+
+    manual_t1 = _manual_persist_row(team1, "team1_manual_impact_player")
+    manual_t2 = _manual_persist_row(team2, "team2_manual_impact_player")
     try:
+        set_doc = {
+            "claude_xi_roles": blob,
+            "team1_xi": t1_rows,
+            "team2_xi": t2_rows,
+        }
+        if manual_t1:
+            set_doc["team1_manual_impact_player"] = manual_t1
+        if manual_t2:
+            set_doc["team2_manual_impact_player"] = manual_t2
         await db.playing_xi.update_one(
             {"matchId": match_id},
-            {"$set": {
-                "claude_xi_roles": blob,
-                "team1_xi": t1_rows,
-                "team2_xi": t2_rows,
-            }},
+            {"$set": set_doc},
         )
     except Exception as e:
         logger.warning(f"Could not persist Claude XI roles for {match_id}: {e}")
@@ -705,7 +1288,7 @@ async def _bg_infer_claude_xi_roles(match_id: str, team1: str, team2: str) -> No
         if not xi_doc or not _prematch_xi_complete(xi_doc):
             return
         match_squads = await _get_squads_for_match(team1, team2)
-        prediction_squads = _playing_xi_squads_from_doc(xi_doc, match_squads, team1, team2)
+        prediction_squads = _prediction_squads_with_manual_impact(xi_doc, match_squads, team1, team2)
         if not prediction_squads:
             return
         await _ensure_claude_playing_xi_roles(
@@ -769,10 +1352,59 @@ def _mongo_doc_to_perf_row(doc: dict) -> dict:
         "by_season": dict(doc.get("by_season") or {}),
         "last5_bat_innings": list(doc.get("last5_bat_innings") or []),
         "last5_bowl_spells": list(doc.get("last5_bowl_spells") or []),
+        "recent_bat_innings": list(doc.get("recent_bat_innings") or []),
+        "recent_bowl_spells": list(doc.get("recent_bowl_spells") or []),
+        "csa_season_bat_innings": list(doc.get("csa_season_bat_innings") or []),
+        "csa_season_bowl_spells": list(doc.get("csa_season_bowl_spells") or []),
         "phases": dict(doc.get("phases") or {}),
         "api_profile": doc.get("api_profile"),
     }
     return row
+
+
+async def _opus_squad_cards_json_for_match(
+    match_id: str,
+    team1: str,
+    team2: str,
+    match_info: dict,
+    match_squads: dict,
+    playing_xi_squads: dict,
+    *,
+    xi_doc: Optional[dict] = None,
+) -> str:
+    """JSON string of full-squad BPR/CSA cards for Claude Opus 7-layer input."""
+    xd = xi_doc
+    if xd is None:
+        try:
+            xd = await db.playing_xi.find_one({"matchId": match_id}, {"_id": 0})
+        except Exception:
+            xd = None
+    manual: Dict[str, str] = {}
+    for lab, fld in (
+        (team1, "team1_manual_impact_player"),
+        (team2, "team2_manual_impact_player"),
+    ):
+        block = (xd or {}).get(fld)
+        if isinstance(block, dict):
+            nm = (block.get("name") or "").strip()
+            if nm:
+                manual[lab] = nm
+    try:
+        raw = await build_opus_player_cards_for_claude(
+            db,
+            team1=team1,
+            team2=team2,
+            team1_short=match_info.get("team1Short", get_short_name(team1)),
+            team2_short=match_info.get("team2Short", get_short_name(team2)),
+            match_id=match_id,
+            match_squads=match_squads,
+            playing_xi_squads=playing_xi_squads,
+            manual_impact_by_team=manual or None,
+        )
+        return format_opus_player_cards_for_prompt(raw)
+    except Exception as e:
+        logger.warning(f"Opus full-squad player cards failed for {match_id}: {e}")
+        return ""
 
 
 async def _load_player_performance_for_xi_from_db(db, xi_players: list) -> dict:
@@ -956,11 +1588,13 @@ async def _build_team_strength_inputs(
     team2: str,
     prediction_squads: dict,
     player_performance: dict,
+    *,
+    impact_formula: str = "br_bor_v1",
 ) -> dict:
     """
-    Build per-player impact for team metrics (BPR + CSA hybrid).
+    Build per-player impact for team metrics (BR / BoR / AR v1 + CSA form delta).
 
-    Priority: DB cache (explicit BatIP/BowlIP) -> BPR/CSA from SportMonks aggregates + STAR prior
+    Priority: DB cache (explicit BatIP/BowlIP) -> BR/BoR from Mongo aggregates + phases + STAR prior
     -> optional Claude numeric fallback only if ALLOW_CLAUDE_PLAYER_IMPACT_FALLBACK=true (not recommended).
     """
     team_rows: Dict[str, list] = {"team1": [], "team2": []}
@@ -978,7 +1612,7 @@ async def _build_team_strength_inputs(
         xi = prediction_squads.get(team_label, []) or []
         perf_side = player_performance.get(side, {}) if isinstance(player_performance, dict) else {}
         cached_players = cached_docs.get(side, {}).get("players", {}) if isinstance(cached_docs.get(side), dict) else {}
-        for idx, p in enumerate(xi[:11], start=1):
+        for idx, p in enumerate(xi[:12], start=1):
             name = (p.get("name") or "").strip()
             if not name:
                 continue
@@ -1016,7 +1650,14 @@ async def _build_team_strength_inputs(
                 ),
                 None,
             )
-            profile = compute_player_impact_profile(perf_match, role_code, base_rating)
+            profile = compute_player_impact_profile(
+                perf_match,
+                role_code,
+                base_rating,
+                batting_position=idx,
+                bowling_style=(p.get("bowling_style") or None),
+                formula=impact_formula,
+            )
             if bat_ip is None:
                 bat_ip = profile["BatIP"]
             if bowl_ip is None:
@@ -1026,7 +1667,7 @@ async def _build_team_strength_inputs(
             elif had_cached_bat or had_cached_bowl:
                 source = "db_partial_bpr_csa"
             elif perf_match is not None:
-                source = "sportmonks_bpr_csa"
+                source = "sportmonks_br_bor"
             else:
                 source = "star_bpr_csa"
 
@@ -1082,7 +1723,7 @@ async def _build_team_strength_inputs(
         if claude_rows:
             for side in ("team1", "team2"):
                 for row in team_rows[side]:
-                    if row.get("_source") == "sportmonks_bpr_csa":
+                    if row.get("_source") == "sportmonks_br_bor":
                         continue
                     nm = row.get("name", "")
                     est = next(
@@ -1097,7 +1738,12 @@ async def _build_team_strength_inputs(
 
     metrics = compute_strength_metrics_for_match(team_rows, n_bat=5, m_bowl=4, alpha=0.5)
     metrics["team_inputs"] = team_rows
-    metrics["impact_architecture"] = "bpr_csa_sportmonks_star_opus_interpret_only"
+    metrics["impact_formula"] = impact_formula
+    if isinstance(metrics.get("config"), dict):
+        metrics["config"]["impact_formula"] = impact_formula
+    metrics["impact_architecture"] = (
+        f"{impact_formula}_phases_csa_sportmonks_star_opus_interpret_only"
+    )
     return metrics
 
 
@@ -1296,6 +1942,37 @@ async def _enrich_playing_xi_with_impact(
     merged = dict(xi_data)
     merged["team1_xi"] = stamp(t1_e)
     merged["team2_xi"] = stamp(t2_e)
+
+    async def _stamp_one_manual(row: Optional[dict], team_label: str) -> Optional[dict]:
+        if not row or not isinstance(row, dict) or not (row.get("name") or "").strip():
+            return row
+        perf_side = "team1" if team_label == team1 else "team2"
+        try:
+            enriched = await fetch_player_season_stats_for_xi(
+                [dict(row)],
+                team_label,
+                5,
+                team_stats_override=player_performance.get(perf_side),
+            )
+            if enriched:
+                return stamp(enriched)[0]
+        except Exception:
+            pass
+        d = dict(row)
+        nm = (d.get("name") or "").strip()
+        d["impact_points"] = int(resolve_star_player_rating(nm))
+        d["role"] = normalize_primary_cricket_role(d.get("role"))
+        d["is_captain"] = bool(d.get("isCaptain") or d.get("is_captain"))
+        d["is_overseas"] = bool(d.get("isOverseas") or d.get("is_overseas"))
+        return d
+
+    m1 = await _stamp_one_manual(merged.get("team1_manual_impact_player"), team1)
+    m2 = await _stamp_one_manual(merged.get("team2_manual_impact_player"), team2)
+    if m1 is not None:
+        merged["team1_manual_impact_player"] = m1
+    if m2 is not None:
+        merged["team2_manual_impact_player"] = m2
+
     merged["stats_lookback_matches"] = 5
     merged["xi_lineup_note"] = (
         "XI from SportMonks (live fixture if in progress, otherwise each side's last completed IPL match). "
@@ -2039,6 +2716,79 @@ async def api_get_player_performance(
     }
 
 
+@api_router.get("/player-impact/csa-explain")
+async def api_player_impact_csa_explain(
+    player_id: Optional[int] = None,
+    name: Optional[str] = None,
+    q: Optional[str] = None,
+    formula: Optional[str] = Query("br_bor_v1"),
+    batting_position: Optional[int] = None,
+):
+    """
+    Step-by-step CSA (and BPR) math for one Mongo `player_performance` row — same inputs as the Players directory.
+
+    Query: `player_id` and/or exact `name` (case-insensitive), or substring `q` (e.g. `q=samson`) if exact not found.
+    `formula`: `br_bor_v1` or `classic_bpr_csa`. Optional `batting_position` for BR/BoR phase tweaks.
+    """
+    spec = (formula or "br_bor_v1").strip()
+    if spec not in IMPACT_FORMULAS:
+        spec = "br_bor_v1"
+
+    doc = None
+    if player_id is not None:
+        try:
+            doc = await db.player_performance.find_one({"player_id": player_id}, {"_id": 0})
+        except Exception as e:
+            logger.warning(f"csa-explain find by id failed: {e}")
+            doc = None
+    if not doc and name and str(name).strip():
+        try:
+            doc = await db.player_performance.find_one(
+                {"name": {"$regex": f"^{re.escape(name.strip())}$", "$options": "i"}},
+                {"_id": 0},
+            )
+        except Exception as e:
+            logger.warning(f"csa-explain find by name failed: {e}")
+            doc = None
+    if not doc and q and str(q).strip():
+        try:
+            doc = await db.player_performance.find_one(
+                {"name": {"$regex": re.escape(q.strip()), "$options": "i"}},
+                {"_id": 0},
+            )
+        except Exception as e:
+            logger.warning(f"csa-explain find by q failed: {e}")
+            doc = None
+
+    if not doc:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "not_found",
+                "message": "No player_performance row for player_id / name / q.",
+                "hint": "Try ?q=samson or exact ?name=Sanju Samson after Sync player stats.",
+            },
+        )
+
+    perf = _mongo_doc_to_perf_row(doc)
+    nm = (perf.get("name") or "").strip()
+    star = float(resolve_star_player_rating(nm))
+    role_code = _infer_role_code_for_directory(perf)
+    try:
+        pos = int(batting_position) if batting_position is not None else None
+    except (TypeError, ValueError):
+        pos = None
+
+    return explain_csa_for_perf_row(
+        perf,
+        star_rating=star,
+        role_code=role_code,
+        batting_position=pos,
+        bowling_style=None,
+        formula=spec,
+    )
+
+
 def _infer_role_code_for_directory(perf_row: dict) -> str:
     """BAT / BOWL / AR for BPR+CSA profile (AR = no down-weight in compute_player_impact_profile)."""
     bat = perf_row.get("batting") or {}
@@ -2120,14 +2870,14 @@ def _directory_role_from_squad_or_perf(squad_role: Optional[str], perf_row: dict
 
 
 def _impact_points_for_directory_role(display_role: str, prof: dict) -> dict:
-    """Expose only metrics relevant to primary role; others null."""
+    """Expose role-relevant IP/BPR; CSA bat+bowl always from profile (same perf row) for the table."""
     out = {
         "BatIP": None,
         "BowlIP": None,
         "BPR_bat": None,
         "BPR_bowl": None,
-        "CSA_bat": None,
-        "CSA_bowl": None,
+        "CSA_bat": prof.get("CSA_bat"),
+        "CSA_bowl": prof.get("CSA_bowl"),
         "batting_confidence": None,
         "bowling_confidence": None,
     }
@@ -2136,7 +2886,6 @@ def _impact_points_for_directory_role(display_role: str, prof: dict) -> dict:
             {
                 "BatIP": prof["BatIP"],
                 "BPR_bat": prof["BPR_bat"],
-                "CSA_bat": prof["CSA_bat"],
                 "batting_confidence": prof.get("batting_confidence"),
             }
         )
@@ -2145,7 +2894,6 @@ def _impact_points_for_directory_role(display_role: str, prof: dict) -> dict:
             {
                 "BowlIP": prof["BowlIP"],
                 "BPR_bowl": prof["BPR_bowl"],
-                "CSA_bowl": prof["CSA_bowl"],
                 "bowling_confidence": prof.get("bowling_confidence"),
             }
         )
@@ -2156,12 +2904,13 @@ def _impact_points_for_directory_role(display_role: str, prof: dict) -> dict:
                 "BowlIP": prof["BowlIP"],
                 "BPR_bat": prof["BPR_bat"],
                 "BPR_bowl": prof["BPR_bowl"],
-                "CSA_bat": prof["CSA_bat"],
-                "CSA_bowl": prof["CSA_bowl"],
                 "batting_confidence": prof.get("batting_confidence"),
                 "bowling_confidence": prof.get("bowling_confidence"),
             }
         )
+    est = prof.get("impact_estimates")
+    if isinstance(est, list) and est:
+        out["impact_estimates"] = est
     return out
 
 
@@ -2195,9 +2944,11 @@ async def api_players_directory(
     skip: int = 0,
     team_short: Optional[str] = None,
     q: Optional[str] = None,
+    formula: Optional[str] = "br_bor_v1",
 ):
     """
-    All players with Mongo `player_performance` rows, plus BPR/CSA impact from the pre-match pipeline.
+    All players with Mongo `player_performance` rows, plus impact from the selected formula.
+    `formula`: `br_bor_v1` (default, full BR/BoR model) or `classic_bpr_csa` (0.3/0.5/0.2 blend BPR + last-5 CSA).
     `primary_role` is Batsman | Bowler | Wicketkeeper | All-rounder (squad role when present, else inferred).
     `impact_points` only fills fields for that role; the rest are null.
     Team comes from `ipl_squads` when ids/names match.
@@ -2206,6 +2957,9 @@ async def api_players_directory(
     sk = max(0, int(skip))
     team_filt = (team_short or "").strip().upper() or None
     qf = (q or "").strip().lower() or None
+    impact_formula = (formula or "br_bor_v1").strip()
+    if impact_formula not in IMPACT_FORMULAS:
+        impact_formula = "br_bor_v1"
 
     try:
         total_db = await db.player_performance.count_documents({})
@@ -2244,7 +2998,7 @@ async def api_players_directory(
             squad_role if isinstance(squad_role, str) else None, perf
         )
         star = float(resolve_star_player_rating(name))
-        prof = compute_player_impact_profile(perf, compute_code, star)
+        prof = compute_player_impact_profile(perf, compute_code, star, formula=impact_formula)
         impact_points = _impact_points_for_directory_role(primary_role, prof)
 
         filtered.append(
@@ -2314,6 +3068,12 @@ async def api_players_directory(
                 }
             )
 
+    note = (
+        "Formula br_bor_v1: full BR/BoR + CSA. classic_bpr_csa: 0.3/0.5/0.2 career/L3/current BPR "
+        "× SR or economy/wicket indices × log sample; CSA = recency-weighted form vs BPR using every innings/spell "
+        "from the current IPL season (Mongo csa_season_* after Sync player stats). "
+        "Team = squad id/name/fuzzy match."
+    )
     return {
         "total_in_db": total_db,
         "total_loaded": len(all_docs),
@@ -2323,7 +3083,8 @@ async def api_players_directory(
         "returned": len(page),
         "players": page,
         "teams": teams_out,
-        "note": "Impact points use BPR+CSA (same as pre-match). Team = IPL squad match by SportMonks id, exact name, or fuzzy name vs squad list.",
+        "impact_formula": impact_formula,
+        "note": note,
     }
 
 
@@ -3720,13 +4481,14 @@ async def api_pre_match_predict(
     match_id: str,
     force: bool = False,
     live_player_perf: bool = False,
+    formula: Optional[str] = Query(None),
 ):
     """
     Predict upcoming match winner using 8-category algorithm.
 
-    Strict gate: Expected Playing XI must already exist in the playing_xi collection
-    (11 named players per side from “Fetch Playing XI”). Inline SportMonks lineup
-    fetch is not used here — only the generated cache drives the XI.
+    Strict gate: at least 11 named players per side must exist in the playing_xi / pre-match
+    cache (Expected XI rows and/or named ``team*_impact_subs`` from “Fetch Playing XI”).
+    Inline SportMonks lineup fetch is not used here — only the generated cache drives the XI.
 
     Playing XI primary roles (Batsman/Bowler/All-rounder/Wicketkeeper) are always
     inferred via Claude on this path (ANTHROPIC_API_KEY required); prediction fails if that step fails.
@@ -3735,11 +4497,22 @@ async def api_pre_match_predict(
     ``POST /api/sync-player-stats``. Pass ``live_player_perf=true`` or set env
     ``PREMATCH_LIVE_PLAYER_PERF=true`` to pull last-5-match aggregates from SportMonks on this request.
 
+    ``formula``: ``br_bor_v1`` (default) or ``classic_bpr_csa`` — drives per-player BatIP/BowlIP for
+    team strength (same as ``GET /api/players/directory?formula=``).
+
     Auto-refreshes stale predictions (>6 hours old) to keep data fresh, or sooner if
     cached playing_xi rows lack Claude-assigned roles.
     """
+    impact_formula = (formula or "br_bor_v1").strip()
+    if impact_formula not in IMPACT_FORMULAS:
+        impact_formula = "br_bor_v1"
+
     cached = await db.pre_match_predictions.find_one({"matchId": match_id}, {"_id": 0})
     if cached and not force:
+        cached_formula = (cached.get("impact_formula") or "br_bor_v1").strip()
+        if cached_formula not in IMPACT_FORMULAS:
+            cached_formula = "br_bor_v1"
+        formula_mismatch = cached_formula != impact_formula
         # Check staleness — auto-refresh if older than 6 hours
         computed_at = cached.get("computed_at", "")
         is_stale = False
@@ -3752,13 +4525,20 @@ async def api_pre_match_predict(
                     logger.info(f"Prediction for {match_id} is {age_hours:.1f}h old — auto-refreshing")
             except (ValueError, TypeError):
                 pass
-        if not is_stale and not _playing_xi_needs_claude_roles(cached):
+        if formula_mismatch and not is_stale:
+            logger.info(
+                "Prediction cache for %s uses impact_formula=%s but request asks for %s — recomputing",
+                match_id,
+                cached_formula,
+                impact_formula,
+            )
+        if not is_stale and not formula_mismatch and not _playing_xi_needs_claude_roles(cached):
             out = dict(cached)
             if out.get("playing_xi"):
                 _sanitize_playing_xi_payload(out["playing_xi"])
             await _attach_player_data_signals(db, match_id, out)
             return out
-        if not is_stale and _playing_xi_needs_claude_roles(cached):
+        if not is_stale and not formula_mismatch and _playing_xi_needs_claude_roles(cached):
             logger.info(
                 "Prediction cache for %s is fresh but Playing XI lacks Claude roles — recomputing",
                 match_id,
@@ -3798,23 +4578,28 @@ async def api_pre_match_predict(
         logger.warning(f"Failed to fetch match time from SportMonks: {e}")
 
     # Fetch squads from DB (user-provided IPL 2026 rosters)
-    match_squads = await _get_squads_for_match(team1, team2)
+    match_squads = await _get_squads_for_match(
+        team1,
+        team2,
+        team1_short=t1_short,
+        team2_short=t2_short,
+    )
 
-    # ── Strict: Expected XI must come from generated playing_xi cache (Fetch Playing XI) ──
-    xi_doc = await db.playing_xi.find_one({"matchId": match_id}, {"_id": 0})
+    # ── Expected XI: ``playing_xi`` if complete, else merge from ``pre_match_predictions`` and back-fill ──
+    xi_doc = await _playing_xi_document_for_pre_match(match_id)
     if not xi_doc or not _prematch_xi_complete(xi_doc):
         raise HTTPException(
             status_code=400,
             detail={
                 "error": "playing_xi_required",
                 "message": (
-                    "Expected Playing XI (11 named players per side) must be generated before pre-match prediction. "
-                    "Run “Fetch Playing XI” for this match, wait until it completes, then try again."
+                    "At least 11 named players per side are required (Expected XI and/or named impact subs). "
+                    "Run “Fetch Playing XI”, or ensure a full lineup exists in pre-match cache, then try again."
                 ),
             },
         )
 
-    prediction_squads = _playing_xi_squads_from_doc(xi_doc, match_squads, team1, team2)
+    prediction_squads = _prediction_squads_with_manual_impact(xi_doc, match_squads, team1, team2)
     if not prediction_squads:
         raise HTTPException(
             status_code=400,
@@ -3822,7 +4607,7 @@ async def api_pre_match_predict(
                 "error": "playing_xi_invalid",
                 "message": (
                     "Could not build Playing XI from cache. Re-run “Fetch Playing XI” for this match "
-                    "and ensure both teams have 11 named players."
+                    "and ensure both teams have 11 named players across XI + impact subs."
                 ),
             },
         )
@@ -3831,33 +4616,35 @@ async def api_pre_match_predict(
         match_id, team1, team2, prediction_squads, xi_doc, mandatory=True,
     )
 
+    def _xi_row_public(p: dict) -> dict:
+        return {
+            "name": p.get("name"),
+            "role": normalize_primary_cricket_role(p.get("role")),
+            "isCaptain": p.get("isCaptain", False),
+            "isOverseas": p.get("isOverseas", False),
+            "role_source": p.get("role_source") or "claude",
+        }
+
+    t1_sq = prediction_squads.get(team1) or []
+    t2_sq = prediction_squads.get(team2) or []
     xi_data = {
-        "team1_xi": [
-            {
-                "name": p.get("name"),
-                "role": normalize_primary_cricket_role(p.get("role")),
-                "isCaptain": p.get("isCaptain", False),
-                "isOverseas": p.get("isOverseas", False),
-                "role_source": p.get("role_source") or "claude",
-            }
-            for p in prediction_squads.get(team1, [])
-        ],
-        "team2_xi": [
-            {
-                "name": p.get("name"),
-                "role": normalize_primary_cricket_role(p.get("role")),
-                "isCaptain": p.get("isCaptain", False),
-                "isOverseas": p.get("isOverseas", False),
-                "role_source": p.get("role_source") or "claude",
-            }
-            for p in prediction_squads.get(team2, [])
-        ],
+        "team1_xi": [_xi_row_public(p) for p in t1_sq[:MIN_PLAYING_XI]],
+        "team2_xi": [_xi_row_public(p) for p in t2_sq[:MIN_PLAYING_XI]],
+        "team1_manual_impact_player": None,
+        "team2_manual_impact_player": None,
+        "team1_manual_impact_swap_out": xi_doc.get("team1_manual_impact_swap_out"),
+        "team2_manual_impact_swap_out": xi_doc.get("team2_manual_impact_swap_out"),
         "source": xi_doc.get("source", "last_match"),
         "confidence": xi_doc.get("confidence", "api-verified"),
     }
+    m1 = next((p for p in t1_sq if isinstance(p, dict) and p.get("is_manual_impact")), None)
+    m2 = next((p for p in t2_sq if isinstance(p, dict) and p.get("is_manual_impact")), None)
+    if m1:
+        xi_data["team1_manual_impact_player"] = _xi_row_public(m1)
+    if m2:
+        xi_data["team2_manual_impact_player"] = _xi_row_public(m2)
     logger.info(
-        f"Pre-match using cached Expected XI only: {len(prediction_squads.get(team1, []))}+"
-        f"{len(prediction_squads.get(team2, []))} players (matchId={match_id})"
+        f"Pre-match using cached Expected XI only: {len(t1_sq)}+{len(t2_sq)} players (matchId={match_id})"
     )
 
     # Fetch weather for venue (Open-Meteo, free)
@@ -3899,7 +4686,13 @@ async def api_pre_match_predict(
         logger.warning(f"Failed to load player performance: {e}")
 
     player_performance = _filter_player_performance_to_playing_xi(player_performance, prediction_squads)
-    strength_metrics = await _build_team_strength_inputs(team1, team2, prediction_squads, player_performance)
+    strength_metrics = await _build_team_strength_inputs(
+        team1,
+        team2,
+        prediction_squads,
+        player_performance,
+        impact_formula=impact_formula,
+    )
 
     # Fetch form data from DB completed matches + player performance
     form_data = await fetch_team_form(db, team1, team2, player_performance=player_performance)
@@ -3985,6 +4778,7 @@ async def api_pre_match_predict(
         "dateTimeGMT": match_info.get("dateTimeGMT", ""),
         "timeIST": match_info.get("timeIST", ""),
         "match_number": match_info.get("match_number"),
+        "impact_formula": impact_formula,
         "prediction": prediction,
         "playing_xi": xi_data,
         "weather": prematch_weather,
@@ -4002,11 +4796,12 @@ async def api_pre_match_predict(
             "team1": strength_metrics.get("team1", {}),
             "team2": strength_metrics.get("team2", {}),
             "phase_data_ready": bool(strength_metrics.get("phase_data_ready")),
+            "impact_formula": strength_metrics.get("impact_formula", impact_formula),
             "impact_architecture": strength_metrics.get("impact_architecture"),
             "player_impact_profiles": strength_metrics.get("team_inputs", {}),
             "source_priority": [
                 "db",
-                "sportmonks_bpr_csa",
+                "sportmonks_br_bor",
                 "star_bpr_csa",
                 "claude_fallback",
             ],
@@ -4031,6 +4826,7 @@ async def api_pre_match_predict(
 async def api_fetch_playing_xi_roles_and_predict(
     match_id: str,
     live_player_perf: bool = False,
+    formula: Optional[str] = Query(None),
 ):
     """
     One click: infer Expected XI roles via Claude (mandatory), then run a full pre-match
@@ -4040,6 +4836,7 @@ async def api_fetch_playing_xi_roles_and_predict(
         match_id,
         force=True,
         live_player_perf=live_player_perf,
+        formula=formula,
     )
 
 
@@ -4134,10 +4931,40 @@ async def api_predict_upcoming(force: bool = False):
 
 
 @api_router.get("/predictions/upcoming")
-async def api_get_upcoming_predictions():
-    """Get all stored pre-match predictions for upcoming matches."""
+async def api_get_upcoming_predictions(
+    schedule_upcoming_only: bool = Query(
+        True,
+        description=(
+            "If true (default), only predictions for matches that are still active on ipl_schedule "
+            "(upcoming, not started, live / in progress — not completed). Set false to return all cached predictions."
+        ),
+    ),
+):
+    """Get stored pre-match predictions; by default only fixtures not yet completed on the schedule."""
+    upcoming_ids: Optional[List[str]] = None
+    if schedule_upcoming_only:
+        upcoming_ids = []
+        # Align with MatchSelector / live cards: include live and in-progress, exclude completed-like rows.
+        async for row in db.ipl_schedule.find(
+            {
+                "status": {
+                    "$regex": (
+                        r"upcoming|not started|scheduled|\bns\b|live|in progress|"
+                        r"1st innings|2nd innings|innings break|int\."
+                    ),
+                    "$options": "i",
+                },
+            },
+            {"_id": 0, "matchId": 1},
+        ).sort("match_number", 1):
+            mid = row.get("matchId")
+            if mid:
+                upcoming_ids.append(mid)
+        if not upcoming_ids:
+            return {"predictions": [], "count": 0}
     predictions = []
-    async for doc in db.pre_match_predictions.find({}, {"_id": 0}).sort("match_number", 1):
+    query = {"matchId": {"$in": upcoming_ids}} if upcoming_ids is not None else {}
+    async for doc in db.pre_match_predictions.find(query, {"_id": 0}).sort("match_number", 1):
         d = dict(doc)
         mid = d.get("matchId")
         if mid and _playing_xi_needs_claude_roles(d):
@@ -4222,9 +5049,14 @@ async def _background_repredict_all():
                 logger.warning(f"[RePredict] Skipping Claude for {mid} (pre-match did not complete)")
             else:
                 xi_doc_r = await db.playing_xi.find_one({"matchId": mid}, {"_id": 0})
-                match_squads = await _get_squads_for_match(team1, team2)
+                match_squads = await _get_squads_for_match(
+                    team1,
+                    team2,
+                    team1_short=t1_short,
+                    team2_short=t2_short,
+                )
                 playing_xi_squads = (
-                    _playing_xi_squads_from_doc(xi_doc_r, match_squads, team1, team2)
+                    _prediction_squads_with_manual_impact(xi_doc_r, match_squads, team1, team2)
                     if xi_doc_r
                     else {}
                 )
@@ -4271,11 +5103,17 @@ async def _background_repredict_all():
                         algo_pred, playing_xi_squads, team1, team2
                     )
 
+                    opus_cards_json = await _opus_squad_cards_json_for_match(
+                        mid, team1, team2, match, match_squads, playing_xi_squads, xi_doc=xi_doc_r
+                    )
+
                     try:
                         analysis = await claude_deep_match_analysis(
                             team1, team2, venue, match, squads=playing_xi_squads, news=news_for_claude,
                             algo_prediction=algo_for_claude, player_performance=player_perf,
                             weather=weather_data, form_data=form_data,
+                            match_impact_subs=_match_impact_subs_from_xi_doc(xi_doc_r),
+                            opus_squad_player_cards_json=opus_cards_json,
                         )
                         if analysis and "error" not in analysis:
                             await db.claude_analysis.update_one(
@@ -4374,9 +5212,14 @@ async def _background_claude_rerun_all():
             await db.claude_analysis.delete_one({"matchId": mid})
 
             xi_doc_r = await db.playing_xi.find_one({"matchId": mid}, {"_id": 0})
-            match_squads = await _get_squads_for_match(team1, team2)
+            match_squads = await _get_squads_for_match(
+                team1,
+                team2,
+                team1_short=t1_short,
+                team2_short=t2_short,
+            )
             playing_xi_squads = (
-                _playing_xi_squads_from_doc(xi_doc_r, match_squads, team1, team2)
+                _prediction_squads_with_manual_impact(xi_doc_r, match_squads, team1, team2)
                 if xi_doc_r
                 else {}
             )
@@ -4428,10 +5271,16 @@ async def _background_claude_rerun_all():
                 algo_pred, playing_xi_squads, team1, team2
             )
 
+            opus_cards_json = await _opus_squad_cards_json_for_match(
+                mid, team1, team2, match, match_squads, playing_xi_squads, xi_doc=xi_doc_r
+            )
+
             analysis = await claude_deep_match_analysis(
                 team1, team2, venue, match, squads=playing_xi_squads, news=news_for_claude,
                 algo_prediction=algo_for_claude, player_performance=player_perf,
                 weather=weather_data, form_data=form_data,
+                match_impact_subs=_match_impact_subs_from_xi_doc(xi_doc_r),
+                opus_squad_player_cards_json=opus_cards_json,
             )
 
             # Yield after the heavy Claude call
@@ -4602,12 +5451,20 @@ async def _bg_fetch_playing_xi(match_id: str, team1: str, team2: str, venue: str
     Falls back to squad-based estimate only if API returns no data."""
     playing_xi_tasks[match_id] = {"status": "running", "progress": "Fetching Playing XI from SportMonks API..."}
     try:
+        sched_row = await db.ipl_schedule.find_one({"matchId": match_id}, {"team1Short": 1, "team2Short": 1, "_id": 0})
+        t1_short_sq = (sched_row or {}).get("team1Short") or get_short_name(team1)
+        t2_short_sq = (sched_row or {}).get("team2Short") or get_short_name(team2)
+
         # ── Step 1: Try API-verified Playing XI from last completed match ──
         from services.sportmonks_service import _season_fixtures_cache
         _season_fixtures_cache.clear()  # Fresh data on refresh
 
-        t1_xi_raw = await fetch_last_played_xi(team1)
-        t2_xi_raw = await fetch_last_played_xi(team2)
+        t1_bundle = await fetch_last_played_xi_bundle(team1)
+        t2_bundle = await fetch_last_played_xi_bundle(team2)
+        t1_xi_raw = t1_bundle.get("xi") or []
+        t2_xi_raw = t2_bundle.get("xi") or []
+        t1_impact_subs = t1_bundle.get("impact_subs") or []
+        t2_impact_subs = t2_bundle.get("impact_subs") or []
 
         xi_data = {}
         source = "api-verified"
@@ -4616,7 +5473,9 @@ async def _bg_fetch_playing_xi(match_id: str, team1: str, team2: str, venue: str
         min_xi = 5
         if t1_xi_raw and len(t1_xi_raw) >= min_xi and t2_xi_raw and len(t2_xi_raw) >= min_xi:
             # Prefer DB squads for role/buzz fields when names match; never drop SportMonks XI if squads missing or matching fails
-            match_squads = await _get_squads_for_match(team1, team2)
+            match_squads = await _get_squads_for_match(
+                team1, team2, team1_short=t1_short_sq, team2_short=t2_short_sq
+            )
             xi_sm_data = {"team1_playing_xi": t1_xi_raw, "team2_playing_xi": t2_xi_raw}
             filtered = (
                 _filter_squads_to_playing_xi(match_squads, xi_sm_data, team1, team2)
@@ -4634,6 +5493,8 @@ async def _bg_fetch_playing_xi(match_id: str, team1: str, team2: str, venue: str
             xi_data = {
                 "team1_xi": t1_use,
                 "team2_xi": t2_use,
+                "team1_impact_subs": t1_impact_subs,
+                "team2_impact_subs": t2_impact_subs,
                 "confidence": "api-verified",
                 "source": "last_match",
             }
@@ -4644,7 +5505,9 @@ async def _bg_fetch_playing_xi(match_id: str, team1: str, team2: str, venue: str
         else:
             # Fallback: generate from full squad roster
             playing_xi_tasks[match_id]["progress"] = "API data insufficient, generating from squad roster..."
-            match_squads = await _get_squads_for_match(team1, team2)
+            match_squads = await _get_squads_for_match(
+                team1, team2, team1_short=t1_short_sq, team2_short=t2_short_sq
+            )
             squad_names = list(match_squads.keys()) if match_squads else []
 
             if len(squad_names) >= 2:
@@ -4655,6 +5518,8 @@ async def _bg_fetch_playing_xi(match_id: str, team1: str, team2: str, venue: str
                 xi_data = {
                     "team1_xi": t1_xi,
                     "team2_xi": t2_xi,
+                    "team1_impact_subs": [],
+                    "team2_impact_subs": [],
                     "confidence": "squad-based",
                     "source": "squad_estimate",
                 }
@@ -4663,6 +5528,50 @@ async def _bg_fetch_playing_xi(match_id: str, team1: str, team2: str, venue: str
             else:
                 playing_xi_tasks[match_id] = {"status": "error", "error": "Squad data not available for both teams."}
                 return
+
+        # Keep user-selected manual Impact players if they are still off the new XI
+        try:
+            prev_doc = await db.playing_xi.find_one(
+                {"matchId": match_id},
+                {
+                    "team1_manual_impact_player": 1,
+                    "team2_manual_impact_player": 1,
+                    "team1_manual_impact_swap_out": 1,
+                    "team2_manual_impact_swap_out": 1,
+                    "_id": 0,
+                },
+            )
+            if prev_doc:
+                s1 = {
+                    _normalize_player_name((p.get("name") or p.get("fullname") or "").strip())
+                    for p in (xi_data.get("team1_xi") or [])
+                    if isinstance(p, dict)
+                }
+                s2 = {
+                    _normalize_player_name((p.get("name") or p.get("fullname") or "").strip())
+                    for p in (xi_data.get("team2_xi") or [])
+                    if isinstance(p, dict)
+                }
+                m1 = prev_doc.get("team1_manual_impact_player")
+                m2 = prev_doc.get("team2_manual_impact_player")
+                if m1 and isinstance(m1, dict) and (m1.get("name") or "").strip():
+                    n1 = _normalize_player_name(m1["name"])
+                    if n1 and n1 not in s1:
+                        xi_data["team1_manual_impact_player"] = m1
+                        sw1 = prev_doc.get("team1_manual_impact_swap_out")
+                        xi_data["team1_manual_impact_swap_out"] = (
+                            sw1.strip() if isinstance(sw1, str) and sw1.strip() else None
+                        )
+                if m2 and isinstance(m2, dict) and (m2.get("name") or "").strip():
+                    n2 = _normalize_player_name(m2["name"])
+                    if n2 and n2 not in s2:
+                        xi_data["team2_manual_impact_player"] = m2
+                        sw2 = prev_doc.get("team2_manual_impact_swap_out")
+                        xi_data["team2_manual_impact_swap_out"] = (
+                            sw2.strip() if isinstance(sw2, str) and sw2.strip() else None
+                        )
+        except Exception as e:
+            logger.warning("Preserve manual impact after XI refresh failed: %s", e)
 
         xi_data["matchId"] = match_id
         xi_data["venue"] = venue
@@ -4676,14 +5585,22 @@ async def _bg_fetch_playing_xi(match_id: str, team1: str, team2: str, venue: str
         )
 
         # Also update in cached prediction
+        pred_playing_patch = {
+            "playing_xi.team1_xi": xi_data.get("team1_xi", []),
+            "playing_xi.team2_xi": xi_data.get("team2_xi", []),
+            "playing_xi.team1_impact_subs": xi_data.get("team1_impact_subs", []),
+            "playing_xi.team2_impact_subs": xi_data.get("team2_impact_subs", []),
+            "playing_xi.team1_manual_impact_player": xi_data.get("team1_manual_impact_player"),
+            "playing_xi.team2_manual_impact_player": xi_data.get("team2_manual_impact_player"),
+            "playing_xi.confidence": xi_data.get("confidence", source),
+            "playing_xi.source": xi_data.get("source", "last_match"),
+        }
+        for sk in _MANUAL_IMPACT_SWAP_KEYS:
+            if sk in xi_data:
+                pred_playing_patch[f"playing_xi.{sk}"] = xi_data[sk]
         await db.pre_match_predictions.update_one(
             {"matchId": match_id},
-            {"$set": {
-                "playing_xi.team1_xi": xi_data.get("team1_xi", []),
-                "playing_xi.team2_xi": xi_data.get("team2_xi", []),
-                "playing_xi.confidence": xi_data.get("confidence", source),
-                "playing_xi.source": xi_data.get("source", "last_match"),
-            }}
+            {"$set": pred_playing_patch},
         )
 
         playing_xi_tasks[match_id] = {"status": "done", "data": xi_data}
@@ -4738,6 +5655,320 @@ async def api_playing_xi_status(match_id: str):
             return cached
         return {"status": "idle"}
 
+
+@api_router.get("/matches/{match_id}/playing-xi/bench")
+async def api_playing_xi_bench(match_id: str, team: str = Query(..., description="team1 or team2")):
+    """Bench players (full franchise squad minus Expected XI starters) for manual IPL Impact selection.
+
+    Franchise list = Mongo ``ipl_squads`` merged with ``seed_squads_2026``. Starters = first 11 named
+    rows per side when available (from merged ``playing_xi`` + prediction cache). Does not require 11+11
+    to be stored — missing XI names simply yield a larger bench list.
+    """
+    match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
+    if not match_info:
+        raise HTTPException(status_code=404, detail="Match not found")
+    team1 = match_info.get("team1", "")
+    team2 = match_info.get("team2", "")
+    if team not in ("team1", "team2"):
+        raise HTTPException(status_code=400, detail="team must be team1 or team2")
+    xi_doc = await _playing_xi_merged_for_bench(match_id)
+    match_squads = await _get_squads_for_match(
+        team1,
+        team2,
+        team1_short=match_info.get("team1Short") or get_short_name(team1),
+        team2_short=match_info.get("team2Short") or get_short_name(team2),
+    )
+    bench = _bench_players_for_side(xi_doc, match_squads, team1, team2, team)
+    current = xi_doc.get("team1_manual_impact_player" if team == "team1" else "team2_manual_impact_player")
+    current_swap = xi_doc.get("team1_manual_impact_swap_out" if team == "team1" else "team2_manual_impact_swap_out")
+    sched = team1 if team == "team1" else team2
+    squad_n = len((match_squads or {}).get(sched) or [])
+    xi_n = _xi_named_count(xi_doc.get("team1_xi" if team == "team1" else "team2_xi"))
+    warnings: list = []
+    if squad_n == 0:
+        warnings.append("no_franchise_squad_found_for_team")
+    if xi_n < MIN_PLAYING_XI:
+        warnings.append("expected_xi_incomplete_bench_may_include_starters")
+    return {
+        "matchId": match_id,
+        "team": team,
+        "bench": bench,
+        "current_manual_impact": current,
+        "current_manual_impact_swap_out": current_swap,
+        "expected_xi_named_count": xi_n,
+        "franchise_squad_size": squad_n,
+        "warnings": warnings,
+    }
+
+
+@api_router.get("/matches/{match_id}/playing-xi/impact-search")
+async def api_playing_xi_impact_search(
+    match_id: str,
+    team: str = Query(..., description="team1 or team2"),
+    q: str = Query("", description="Name fragment (min 2 chars); searches franchise bench list"),
+):
+    """Type-ahead: franchise players not in Expected XI (same pool as bench), filtered by ``q``."""
+    match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
+    if not match_info:
+        raise HTTPException(status_code=404, detail="Match not found")
+    if team not in ("team1", "team2"):
+        raise HTTPException(status_code=400, detail="team must be team1 or team2")
+    team1 = match_info.get("team1", "")
+    team2 = match_info.get("team2", "")
+    xi_doc = await _playing_xi_merged_for_bench(match_id)
+    match_squads = await _get_squads_for_match(
+        team1,
+        team2,
+        team1_short=match_info.get("team1Short") or get_short_name(team1),
+        team2_short=match_info.get("team2Short") or get_short_name(team2),
+    )
+    bench = _bench_players_for_side(xi_doc, match_squads, team1, team2, team)
+    matches = _filter_bench_by_name_query(bench, q, limit=20)
+    return {
+        "matchId": match_id,
+        "team": team,
+        "query": (q or "").strip(),
+        "matches": matches,
+    }
+
+
+@api_router.put("/matches/{match_id}/playing-xi/complete-xi-slot")
+async def api_complete_playing_xi_slot(match_id: str, body: dict = Body(...)):
+    """Append one named player to Expected ``team*_xi`` when that side has fewer than 11 named rows.
+
+    Player must be on the franchise bench (not already among current Expected XI names). Persists to
+    ``playing_xi`` and ``pre_match_predictions.playing_xi`` so pre-match + Claude see a full 11.
+    """
+    match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
+    if not match_info:
+        raise HTTPException(status_code=404, detail="Match not found")
+    team1 = match_info.get("team1", "")
+    team2 = match_info.get("team2", "")
+    side = (body.get("team") or "").strip().lower()
+    if side == "team1":
+        xi_key = "team1_xi"
+        sched = team1
+    elif side == "team2":
+        xi_key = "team2_xi"
+        sched = team2
+    else:
+        raise HTTPException(status_code=400, detail='body.team must be "team1" or "team2"')
+
+    raw_name = body.get("player_name") if body.get("player_name") is not None else body.get("name")
+    if not raw_name or not str(raw_name).strip():
+        raise HTTPException(status_code=400, detail="player_name is required")
+
+    xi_doc = await _playing_xi_merged_for_bench(match_id)
+    match_squads = await _get_squads_for_match(
+        team1,
+        team2,
+        team1_short=match_info.get("team1Short") or get_short_name(team1),
+        team2_short=match_info.get("team2Short") or get_short_name(team2),
+    )
+
+    rows = list(xi_doc.get(xi_key) or [])
+    if _xi_named_count(rows) >= MIN_PLAYING_XI:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "xi_already_complete",
+                "message": f"Expected XI already has {MIN_PLAYING_XI}+ named players for this team.",
+            },
+        )
+
+    want = str(raw_name).strip()
+    bench = _bench_players_for_side(xi_doc, match_squads, team1, team2, side)
+    ok = any(_player_name_matches(want, b.get("name", "")) for b in bench)
+    if not ok:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "invalid_xi_fill",
+                "message": f"Player must be on the bench (not already in the Expected XI) for {sched}.",
+            },
+        )
+    match_p = next(
+        (b for b in bench if _player_name_matches(want, b.get("name", ""))),
+        None,
+    )
+    row = {
+        "name": (match_p or {}).get("name") or want,
+        "role": normalize_primary_cricket_role((match_p or {}).get("role") or "Batsman"),
+        "isCaptain": False,
+        "isOverseas": bool((match_p or {}).get("isOverseas")) if match_p else False,
+    }
+
+    new_side_rows = rows + [row]
+    set_doc: Dict[str, Any] = {
+        "matchId": match_id,
+        "team1_xi": list(xi_doc.get("team1_xi") or []),
+        "team2_xi": list(xi_doc.get("team2_xi") or []),
+        xi_key: new_side_rows,
+        "team1_manual_impact_player": xi_doc.get("team1_manual_impact_player"),
+        "team2_manual_impact_player": xi_doc.get("team2_manual_impact_player"),
+        "team1_manual_impact_swap_out": xi_doc.get("team1_manual_impact_swap_out"),
+        "team2_manual_impact_swap_out": xi_doc.get("team2_manual_impact_swap_out"),
+    }
+
+    await db.playing_xi.update_one(
+        {"matchId": match_id},
+        {"$set": set_doc},
+        upsert=True,
+    )
+    try:
+        pred_patch: Dict[str, Any] = {
+            f"playing_xi.{xi_key}": new_side_rows,
+            "playing_xi.team1_manual_impact_player": xi_doc.get("team1_manual_impact_player"),
+            "playing_xi.team2_manual_impact_player": xi_doc.get("team2_manual_impact_player"),
+            "playing_xi.team1_manual_impact_swap_out": xi_doc.get("team1_manual_impact_swap_out"),
+            "playing_xi.team2_manual_impact_swap_out": xi_doc.get("team2_manual_impact_swap_out"),
+        }
+        await db.pre_match_predictions.update_one({"matchId": match_id}, {"$set": pred_patch})
+    except Exception:
+        pass
+    try:
+        await _playing_xi_document_for_pre_match(match_id)
+    except Exception as e:
+        logger.warning("playing_xi back-fill after XI slot fill failed for %s: %s", match_id, e)
+
+    return {
+        "status": "ok",
+        "matchId": match_id,
+        "team": side,
+        "xi_key": xi_key,
+        "added": row,
+        "named_count": _xi_named_count(new_side_rows),
+    }
+
+
+@api_router.put("/matches/{match_id}/playing-xi/manual-impact")
+async def api_set_playing_xi_manual_impact(match_id: str, body: dict = Body(...)):
+    """Set or clear one manual Impact Player per team (must be on bench, not in the 11).
+
+    Optional ``swap_out_player_name``: a starter from the Expected XI this Impact pick replaces
+    (virtual swap for model + Claude). Omit or empty to keep the pick as 12th / depth only.
+    """
+    match_info = await db.ipl_schedule.find_one({"matchId": match_id}, {"_id": 0})
+    if not match_info:
+        raise HTTPException(status_code=404, detail="Match not found")
+    team1 = match_info.get("team1", "")
+    team2 = match_info.get("team2", "")
+    side = (body.get("team") or "").strip().lower()
+    if side == "team1":
+        field = "team1_manual_impact_player"
+        swap_field = "team1_manual_impact_swap_out"
+        sched = team1
+    elif side == "team2":
+        field = "team2_manual_impact_player"
+        swap_field = "team2_manual_impact_swap_out"
+        sched = team2
+    else:
+        raise HTTPException(status_code=400, detail='body.team must be "team1" or "team2"')
+
+    raw_name = body.get("player_name") if body.get("player_name") is not None else body.get("name")
+    xi_doc = await _playing_xi_merged_for_bench(match_id)
+
+    match_squads = await _get_squads_for_match(
+        team1,
+        team2,
+        team1_short=match_info.get("team1Short") or get_short_name(team1),
+        team2_short=match_info.get("team2Short") or get_short_name(team2),
+    )
+    if not raw_name or not str(raw_name).strip():
+        await db.playing_xi.update_one(
+            {"matchId": match_id},
+            {"$set": {field: None, swap_field: None}, "$setOnInsert": {"matchId": match_id}},
+            upsert=True,
+        )
+        try:
+            await db.pre_match_predictions.update_one(
+                {"matchId": match_id},
+                {"$set": {f"playing_xi.{field}": None, f"playing_xi.{swap_field}": None}},
+            )
+        except Exception:
+            pass
+        try:
+            await _playing_xi_document_for_pre_match(match_id)
+        except Exception as e:
+            logger.warning("playing_xi back-fill after manual impact clear failed for %s: %s", match_id, e)
+        return {"status": "cleared", "field": field, "matchId": match_id}
+
+    want = str(raw_name).strip()
+    bench = _bench_players_for_side(xi_doc, match_squads, team1, team2, side)
+    ok = any(_player_name_matches(want, b.get("name", "")) for b in bench)
+    if not ok:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "invalid_manual_impact",
+                "message": f"Player must be on the bench (not in the 11) for {sched}.",
+            },
+        )
+    match_p = next(
+        (b for b in bench if _player_name_matches(want, b.get("name", ""))),
+        None,
+    )
+    row = {"name": (match_p or {}).get("name") or want}
+    if match_p:
+        row["role"] = match_p.get("role") or "Batsman"
+        row["isOverseas"] = bool(match_p.get("isOverseas"))
+
+    swap_raw = body.get("swap_out_player_name")
+    if swap_raw is None:
+        swap_raw = body.get("swap_out_name")
+    swap_val: Optional[str] = None
+    if swap_raw is not None and str(swap_raw).strip():
+        starters = _xi_starter_names_for_side(xi_doc, side)
+        if len(starters) < MIN_PLAYING_XI:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_swap_out",
+                    "message": "Expected XI must have 11 named players before choosing a swap target.",
+                },
+            )
+        sw = str(swap_raw).strip()
+        matched = next((s for s in starters if _player_name_matches(sw, s)), None)
+        if not matched:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_swap_out",
+                    "message": f"Swap target must be one of the 11 Expected XI starters for {sched}.",
+                },
+            )
+        if _player_name_matches(matched, row["name"]):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_swap_out",
+                    "message": "Impact player and swap target must be different players.",
+                },
+            )
+        swap_val = matched
+
+    # Never overwrite Expected XI with [] or a short merge — that breaks pre-match predict (400).
+    set_doc: Dict[str, Any] = {"matchId": match_id, field: row, swap_field: swap_val}
+    if _prematch_xi_complete(xi_doc):
+        set_doc["team1_xi"] = xi_doc.get("team1_xi") or []
+        set_doc["team2_xi"] = xi_doc.get("team2_xi") or []
+    await db.playing_xi.update_one(
+        {"matchId": match_id},
+        {"$set": set_doc},
+        upsert=True,
+    )
+    try:
+        await db.pre_match_predictions.update_one(
+            {"matchId": match_id},
+            {"$set": {f"playing_xi.{field}": row, f"playing_xi.{swap_field}": swap_val}},
+        )
+    except Exception:
+        pass
+    try:
+        await _playing_xi_document_for_pre_match(match_id)
+    except Exception as e:
+        logger.warning("playing_xi back-fill after manual impact save failed for %s: %s", match_id, e)
+    return {"status": "ok", "matchId": match_id, "field": field, "manual_impact": row, "manual_impact_swap_out": swap_val}
 
 
 # ─── CONSULTANT ENGINE ──────────────────────────────────────
@@ -4886,21 +6117,26 @@ async def api_claude_analysis(match_id: str, background_tasks: BackgroundTasks =
     team2 = match_info.get("team2", "")
     venue = match_info.get("venue", "")
 
-    # ── 1. Strict Expected XI from playing_xi collection (same gate as pre-match predict) ──
-    xi_doc = await db.playing_xi.find_one({"matchId": match_id}, {"_id": 0})
+    # ── 1. Expected XI (same resolver as pre-match predict: DB + prediction merge + back-fill) ──
+    xi_doc = await _playing_xi_document_for_pre_match(match_id)
     if not xi_doc or not _prematch_xi_complete(xi_doc):
         raise HTTPException(
             status_code=400,
             detail={
                 "error": "playing_xi_required",
                 "message": (
-                    "Claude pre-match analysis requires Expected Playing XI (11 per side). "
-                    "Run “Fetch Playing XI”, then pre-match prediction, then try again."
+                    "Claude pre-match needs 11+ named players per side (XI and/or impact subs). "
+                    "Run “Fetch Playing XI” or complete lineup in cache, then try again."
                 ),
             },
         )
-    match_squads = await _get_squads_for_match(team1, team2)
-    playing_xi_squads = _playing_xi_squads_from_doc(xi_doc, match_squads, team1, team2)
+    match_squads = await _get_squads_for_match(
+        team1,
+        team2,
+        team1_short=match_info.get("team1Short") or get_short_name(team1),
+        team2_short=match_info.get("team2Short") or get_short_name(team2),
+    )
+    playing_xi_squads = _prediction_squads_with_manual_impact(xi_doc, match_squads, team1, team2)
     if not playing_xi_squads:
         raise HTTPException(
             status_code=400,
@@ -4988,7 +6224,13 @@ async def api_claude_analysis(match_id: str, background_tasks: BackgroundTasks =
     except Exception as e:
         logger.warning(f"Impact sub history fetch for Claude pre-match failed: {e}")
 
-    # ── 7. Run Claude 7-layer analysis ──
+    opus_cards_json = await _opus_squad_cards_json_for_match(
+        match_id, team1, team2, match_info, match_squads, playing_xi_squads, xi_doc=xi_doc
+    )
+
+    match_impact_subs_for_claude = _match_impact_subs_from_xi_doc(xi_doc)
+
+    # ── 7. Run Claude 7-layer analysis (same 7-layer JSON output; input includes full squads) ──
     analysis = await claude_deep_match_analysis(
         team1, team2, venue, match_info,
         squads=playing_xi_squads,
@@ -4998,6 +6240,8 @@ async def api_claude_analysis(match_id: str, background_tasks: BackgroundTasks =
         weather=weather,
         form_data=form_data,
         impact_sub_history=impact_sub_history,
+        match_impact_subs=match_impact_subs_for_claude,
+        opus_squad_player_cards_json=opus_cards_json,
     )
 
     # Cache in DB
@@ -5014,12 +6258,17 @@ async def api_claude_analysis(match_id: str, background_tasks: BackgroundTasks =
         "data_sources": {
             "has_algo": bool(algo_prediction),
             "has_player_perf": bool(player_performance.get("team1") or player_performance.get("team2")),
+            "has_opus_full_squad_cards": bool(opus_cards_json and str(opus_cards_json).strip()),
             "has_weather": bool(weather and weather.get("available")),
             "has_form": bool(form_data),
             "has_news": bool(match_news),
             "has_impact_sub_history": bool(
                 (impact_sub_history.get("team1") or {}).get("fixtures")
                 or (impact_sub_history.get("team2") or {}).get("fixtures")
+            ),
+            "has_match_impact_subs": bool(
+                (match_impact_subs_for_claude.get("team1") or [])
+                or (match_impact_subs_for_claude.get("team2") or [])
             ),
         }
     }
@@ -5111,6 +6360,7 @@ async def api_claude_live(match_id: str):
         sm_data=sm_data if isinstance(sm_data, dict) else None,
         playing_xi_doc=xi_for_live,
         impact_sub_history=impact_sub_history,
+        match_impact_subs=_match_impact_subs_from_xi_doc(xi_for_live),
     )
 
     return {

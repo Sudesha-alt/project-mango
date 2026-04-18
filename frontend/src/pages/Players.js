@@ -4,6 +4,7 @@ import axios from "axios";
 import { UsersThree, Spinner, ArrowLeft, CaretUp, CaretDown } from "@phosphor-icons/react";
 import { API_BASE } from "@/lib/apiBase";
 import { buildPlayersDirectoryUrl } from "@/lib/playersApi";
+import { IMPACT_FORMULA_STORAGE_KEY, readImpactFormulaPreference } from "@/lib/impactFormulaPref";
 
 const API = API_BASE;
 
@@ -18,6 +19,14 @@ function fmtImpactPt(v) {
   return Number(v).toFixed(1);
 }
 
+/** CSA: fractional delta vs BR/BoR baseline (last-5 form); show as signed %. */
+function fmtCsa(v) {
+  if (v == null || Number.isNaN(Number(v))) return "—";
+  const pct = Number(v) * 100;
+  const sign = pct > 0 ? "+" : "";
+  return `${sign}${pct.toFixed(1)}%`;
+}
+
 export default function Players() {
   const [rows, setRows] = useState([]);
   const [meta, setMeta] = useState(null);
@@ -28,6 +37,8 @@ export default function Players() {
   const [sortKey, setSortKey] = useState("BatIP");
   const [sortDir, setSortDir] = useState("desc");
   const [squadShorts, setSquadShorts] = useState([]);
+  const [impactFormula, setImpactFormula] = useState(() => readImpactFormulaPreference());
+  const [csaSyncStatus, setCsaSyncStatus] = useState(null);
 
   useEffect(() => {
     if (!API) return;
@@ -40,25 +51,35 @@ export default function Players() {
       .catch(() => setSquadShorts([]));
   }, []);
 
-  const load = useCallback(async () => {
-    if (!API) {
+  const load = useCallback(
+    async (opts = {}) => {
+      if (!API) {
+        setLoading(false);
+        return;
+      }
+      setLoading(true);
+      setError(null);
+      try {
+        const url = buildPlayersDirectoryUrl({
+          limit: 5000,
+          skip: 0,
+          teamShort: teamFilter,
+          q: search,
+          formula: impactFormula,
+          cacheBust: opts.cacheBust || "",
+        });
+        const res = await axios.get(url, { timeout: 120000 });
+        setRows(res.data.players || []);
+        setMeta(res.data);
+      } catch (e) {
+        setError(e?.response?.data?.detail || e?.message || "Failed to load players");
+        setRows([]);
+        setMeta(null);
+      }
       setLoading(false);
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      const url = buildPlayersDirectoryUrl({ limit: 5000, skip: 0, teamShort: teamFilter, q: search });
-      const res = await axios.get(url, { timeout: 120000 });
-      setRows(res.data.players || []);
-      setMeta(res.data);
-    } catch (e) {
-      setError(e?.response?.data?.detail || e?.message || "Failed to load players");
-      setRows([]);
-      setMeta(null);
-    }
-    setLoading(false);
-  }, [teamFilter, search]);
+    },
+    [teamFilter, search, impactFormula]
+  );
 
   useEffect(() => {
     const t = window.setTimeout(() => {
@@ -66,6 +87,23 @@ export default function Players() {
     }, 320);
     return () => window.clearTimeout(t);
   }, [load]);
+
+  const handleSyncCsaInputs = useCallback(async () => {
+    if (!API) return;
+    setCsaSyncStatus(null);
+    try {
+      await axios.post(`${API}/sync-player-stats`, {}, { timeout: 20000 });
+      setCsaSyncStatus({
+        ok: true,
+        text: "Player sync started in the background. When it finishes (often 1–3 min), press Refresh — CSA uses every batting innings and bowling spell from the current IPL season (recency-weighted), stored as csa_season_* in Mongo.",
+      });
+    } catch (e) {
+      setCsaSyncStatus({
+        ok: false,
+        text: e?.response?.data?.message || e?.message || "Could not start sync",
+      });
+    }
+  }, []);
 
   const sortPlayerList = useCallback((list) => {
     const copy = [...(list || [])];
@@ -215,16 +253,17 @@ export default function Players() {
                 Players
               </h1>
               <p className="text-[10px] text-[#737373] font-mono">
-                Squad role (Batsman / Bowler / WK / All-rounder) · impact columns match role; unused metrics are —
+                Choose scoring formula below · Classic = 0.3/0.5/0.2 career/L3/current BPR + weighted last-5 CSA · Default = full BR/BoR model
               </p>
             </div>
           </div>
         </div>
         {meta && (
           <p className="text-[10px] text-[#525252] font-mono">
+            Formula: <span className="text-[#A3A3A3]">{meta.impact_formula || impactFormula}</span>
             {meta.teams?.length
-              ? `${meta.total_matching} players in ${meta.teams.length} groups · ${meta.total_in_db} docs in DB`
-              : `Showing ${meta.returned} of ${meta.total_matching} matching · ${meta.total_in_db} docs in DB`}
+              ? ` · ${meta.total_matching} players in ${meta.teams.length} groups · ${meta.total_in_db} docs in DB`
+              : ` · Showing ${meta.returned} of ${meta.total_matching} matching · ${meta.total_in_db} docs in DB`}
           </p>
         )}
       </div>
@@ -251,15 +290,65 @@ export default function Players() {
             </option>
           ))}
         </select>
+        <select
+          value={impactFormula}
+          onChange={(e) => {
+            const v = e.target.value;
+            setImpactFormula(v);
+            try {
+              window.localStorage.setItem(IMPACT_FORMULA_STORAGE_KEY, v);
+            } catch {
+              /* ignore */
+            }
+          }}
+          className="rounded-md border border-[#262626] bg-[#141414] px-3 py-2 text-xs text-[#E5E5E5] max-w-[200px]"
+          title="BPR/CSA calculation"
+          data-testid="players-formula"
+        >
+          <option value="br_bor_v1">Default (BR/BoR v1)</option>
+          <option value="classic_bpr_csa">Classic BPR + CSA</option>
+        </select>
         <button
           type="button"
-          onClick={load}
+          onClick={() => load()}
           disabled={loading}
           className="text-[10px] font-bold uppercase tracking-wider px-3 py-2 rounded-md border border-[#22D3EE]/40 text-[#A5F3FC] hover:bg-[#22D3EE]/10 disabled:opacity-50"
         >
           Refresh
         </button>
+        <button
+          type="button"
+          onClick={() => load({ cacheBust: Date.now() })}
+          disabled={loading}
+          className="text-[10px] font-bold uppercase tracking-wider px-3 py-2 rounded-md border border-[#737373]/50 text-[#A3A3A3] hover:bg-[#262626] disabled:opacity-50"
+          title="Bypass browser/CDN caches with a fresh request; recomputes from Mongo"
+          data-testid="players-recalculate-clear-cache"
+        >
+          Clear cache &amp; recalc
+        </button>
+        <button
+          type="button"
+          onClick={handleSyncCsaInputs}
+          className="text-[10px] font-bold uppercase tracking-wider px-3 py-2 rounded-md border border-[#34C759]/45 text-[#86EFAC] hover:bg-[#34C759]/10"
+          title="Re-runs SportMonks bulk sync so Mongo gets extended recent innings (50) with season_year; CSA then uses only current IPL season rows."
+          data-testid="players-sync-csa-inputs"
+        >
+          Sync current IPL for CSA
+        </button>
       </div>
+
+      {csaSyncStatus && (
+        <p
+          className={`text-[10px] rounded-md px-3 py-2 border ${
+            csaSyncStatus.ok
+              ? "border-[#34C759]/40 bg-[#34C759]/10 text-[#BBF7D0]"
+              : "border-[#FF3B30]/40 bg-[#FF3B30]/10 text-[#FCA5A5]"
+          }`}
+          data-testid="players-csa-sync-status"
+        >
+          {csaSyncStatus.text}
+        </p>
+      )}
 
       {meta?.note && (
         <p className="text-[10px] text-[#525252] border border-[#262626] rounded-md px-3 py-2 bg-[#0A0A0A]">{meta.note}</p>
@@ -326,8 +415,30 @@ export default function Players() {
                       <th className="px-3 py-2 text-right">Bat R/I</th>
                       <th className="px-3 py-2 text-right">Bowl W/I</th>
                       <th className="px-3 py-2">Conf</th>
-                      <th className="px-3 py-2 text-right">BPR bat</th>
-                      <th className="px-3 py-2 text-right">BPR bowl</th>
+                      <th
+                        className="px-3 py-2 text-right"
+                        title="Base batting rating (BR) before CSA × confidence"
+                      >
+                        BPR bat
+                      </th>
+                      <th
+                        className="px-3 py-2 text-right"
+                        title="Base bowling rating (BoR) before CSA × confidence"
+                      >
+                        BPR bowl
+                      </th>
+                      <th
+                        className="px-3 py-2 text-right"
+                        title="Current-season last innings vs BR (fraction → %); — if no innings tagged for this IPL year in DB"
+                      >
+                        CSA bat
+                      </th>
+                      <th
+                        className="px-3 py-2 text-right"
+                        title="Current-season last spells vs BoR (fraction → %); — if none in DB"
+                      >
+                        CSA bowl
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -353,6 +464,8 @@ export default function Players() {
                         </td>
                         <td className="px-3 py-2 text-right font-mono text-[#525252]">{fmtImpactPt(r.impact_points?.BPR_bat)}</td>
                         <td className="px-3 py-2 text-right font-mono text-[#525252]">{fmtImpactPt(r.impact_points?.BPR_bowl)}</td>
+                        <td className="px-3 py-2 text-right font-mono text-[#A3A3A3]">{fmtCsa(r.impact_points?.CSA_bat)}</td>
+                        <td className="px-3 py-2 text-right font-mono text-[#A3A3A3]">{fmtCsa(r.impact_points?.CSA_bowl)}</td>
                       </tr>
                     ))}
                   </tbody>
