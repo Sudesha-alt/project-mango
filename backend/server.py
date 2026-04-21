@@ -2329,6 +2329,24 @@ async def _invalidate_team_predictions(team1: str, team2: str) -> int:
     return invalidated
 
 
+def _schedule_post_match_learning(match_id: str) -> None:
+    """Compare stored pre-match + last live snapshot to the final result; may enqueue calibration proposals."""
+    if not match_id:
+        return
+    from services.prediction_learning import record_live_match_learning, record_match_outcome
+
+    async def _run() -> None:
+        try:
+            await record_match_outcome(db, match_id)
+            await record_live_match_learning(db, match_id, force=False)
+        except Exception as e:
+            logger.warning("post_match_learning: %s", e)
+
+    try:
+        asyncio.create_task(_run())
+    except Exception as e:
+        logger.warning("post_match_learning schedule: %s", e)
+
 
 # ─── HEALTH & STATUS ─────────────────────────────────────────
 
@@ -2787,6 +2805,7 @@ async def sync_results_from_sportmonks():
                     )
                     updated += 1
                     logger.info(f"Synced result: {match.get('matchId')} -> winner: {db_winner}")
+                    _schedule_post_match_learning(match.get("matchId", ""))
 
                     # ── Invalidate stale pre-match predictions ──
                     invalidated = await _invalidate_team_predictions(
@@ -3978,13 +3997,14 @@ async def refresh_claude_prediction(match_id: str, body: RefreshClaudeRequest = 
         cached["claudePrediction"] = claude_prediction
         cached["probabilities"] = new_probs
         live_match_state[match_id] = cached
-
-        # Persist
-        await db.live_snapshots.update_one(
-            {"matchId": match_id},
-            {"$set": {"claudePrediction": claude_prediction, "probabilities": new_probs,
-                      "updatedAt": datetime.now(timezone.utc).isoformat()}}
-        )
+    else:
+        if not isinstance(claude_prediction, dict):
+            claude_prediction = {}
+        if not claude_prediction.get("error"):
+            claude_prediction["error"] = claude_prediction.get("message") or "claude_failed"
+        claude_prediction["persistedAt"] = datetime.now(timezone.utc).isoformat()
+        cached["claudePrediction"] = claude_prediction
+        live_match_state[match_id] = cached
 
     # Recompute weighted prediction with new Claude factors (6-factor model)
     pre_match_cached = await db.pre_match_predictions.find_one({"matchId": match_id}, {"_id": 0})
@@ -4020,15 +4040,35 @@ async def refresh_claude_prediction(match_id: str, body: RefreshClaudeRequest = 
         cached["combinedPrediction"] = combined_pred
         live_match_state[match_id] = cached
 
-    await db.live_snapshots.update_one(
-        {"matchId": match_id},
-        {"$set": {
-            "weightedPrediction": weighted_pred,
-            "combinedPrediction": combined_pred,
-            "updatedAt": datetime.now(timezone.utc).isoformat(),
-        }},
-        upsert=False,
-    )
+    _now = datetime.now(timezone.utc).isoformat()
+    _persist_live: Dict[str, Any] = {
+        "weightedPrediction": weighted_pred,
+        "combinedPrediction": combined_pred,
+        "updatedAt": _now,
+    }
+    for _k in ("claudePrediction", "probabilities", "historicalPrediction", "preMatchComputedAt"):
+        _v = cached.get(_k)
+        if _v is not None:
+            _persist_live[_k] = _v
+    _on_insert = {
+        "matchId": match_id,
+        "team1": match_info.get("team1"),
+        "team2": match_info.get("team2"),
+        "team1Short": cached.get("team1Short"),
+        "team2Short": cached.get("team2Short"),
+        "venue": cached.get("venue") or match_info.get("venue"),
+        "sportmonks": sm_data,
+        "liveData": cached["liveData"] if isinstance(cached.get("liveData"), dict) else {},
+    }
+    try:
+        await db.live_snapshots.update_one(
+            {"matchId": match_id},
+            {"$set": _persist_live, "$setOnInsert": _on_insert},
+            upsert=True,
+        )
+    except Exception as e:
+        logger.error("live_snapshots persist failed after refresh-claude for %s: %s", match_id, e)
+        raise
 
     return {
         "matchId": match_id,
@@ -4072,6 +4112,7 @@ async def check_match_status(match_id: str):
             update["score"] = sm_score
         await db.ipl_schedule.update_one({"matchId": match_id}, {"$set": update})
         logger.info(f"Match {match_id} marked completed: {result.get('note')}")
+        _schedule_post_match_learning(match_id)
     elif result.get("is_live"):
         await db.ipl_schedule.update_one({"matchId": match_id}, {"$set": {
             "status": "live",
@@ -5809,7 +5850,8 @@ async def _bg_fetch_playing_xi(match_id: str, team1: str, team2: str, venue: str
                 pred_playing_patch[f"playing_xi.{sk}"] = xi_data[sk]
         await db.pre_match_predictions.update_one(
             {"matchId": match_id},
-            {"$set": pred_playing_patch},
+            {"$set": pred_playing_patch, "$setOnInsert": {"matchId": match_id}},
+            upsert=True,
         )
 
         playing_xi_tasks[match_id] = {"status": "done", "data": xi_data}
@@ -6032,7 +6074,11 @@ async def api_complete_playing_xi_slot(match_id: str, body: dict = Body(...)):
             "playing_xi.team1_manual_impact_swap_out": xi_doc.get("team1_manual_impact_swap_out"),
             "playing_xi.team2_manual_impact_swap_out": xi_doc.get("team2_manual_impact_swap_out"),
         }
-        await db.pre_match_predictions.update_one({"matchId": match_id}, {"$set": pred_patch})
+        await db.pre_match_predictions.update_one(
+            {"matchId": match_id},
+            {"$set": pred_patch, "$setOnInsert": {"matchId": match_id}},
+            upsert=True,
+        )
     except Exception:
         pass
     try:
@@ -6092,7 +6138,11 @@ async def api_set_playing_xi_manual_impact(match_id: str, body: dict = Body(...)
         try:
             await db.pre_match_predictions.update_one(
                 {"matchId": match_id},
-                {"$set": {f"playing_xi.{field}": None, f"playing_xi.{swap_field}": None}},
+                {
+                    "$set": {f"playing_xi.{field}": None, f"playing_xi.{swap_field}": None},
+                    "$setOnInsert": {"matchId": match_id},
+                },
+                upsert=True,
             )
         except Exception:
             pass
@@ -6169,7 +6219,11 @@ async def api_set_playing_xi_manual_impact(match_id: str, body: dict = Body(...)
     try:
         await db.pre_match_predictions.update_one(
             {"matchId": match_id},
-            {"$set": {f"playing_xi.{field}": row, f"playing_xi.{swap_field}": swap_val}},
+            {
+                "$set": {f"playing_xi.{field}": row, f"playing_xi.{swap_field}": swap_val},
+                "$setOnInsert": {"matchId": match_id},
+            },
+            upsert=True,
         )
     except Exception:
         pass
@@ -6496,6 +6550,104 @@ async def api_clear_claude_analysis(match_id: str):
     return {"status": "cleared"}
 
 
+# ─── POST-MATCH LEARNING (calibration proposals, human-approved) ─
+
+@api_router.get("/learning/calibration")
+async def api_learning_calibration():
+    """Current on-disk weight overrides and Claude prompt addendum from approved learnings."""
+    from services.prematch_calibration import load_calibration
+
+    return load_calibration()
+
+
+@api_router.get("/learning/outcomes")
+async def api_learning_outcomes(limit: int = Query(30, ge=1, le=100)):
+    from services.prediction_learning import list_recent_outcomes
+
+    return {"outcomes": await list_recent_outcomes(db, limit=limit)}
+
+
+@api_router.get("/learning/proposals/pending")
+async def api_learning_proposals_pending():
+    from services.prediction_learning import list_pending_proposals
+
+    return {"proposals": await list_pending_proposals(db)}
+
+
+@api_router.post("/learning/proposals/{proposal_id}/approve")
+async def api_learning_proposal_approve(proposal_id: str):
+    from services.prediction_learning import approve_proposal
+
+    r = await approve_proposal(db, proposal_id)
+    if r.get("error"):
+        raise HTTPException(status_code=400, detail=r)
+    return r
+
+
+@api_router.post("/learning/proposals/{proposal_id}/dismiss")
+async def api_learning_proposal_dismiss(proposal_id: str):
+    from services.prediction_learning import dismiss_proposal
+
+    r = await dismiss_proposal(db, proposal_id)
+    if r.get("error"):
+        raise HTTPException(status_code=400, detail=r)
+    return r
+
+
+@api_router.post("/learning/record-outcome/{match_id}")
+async def api_learning_record_outcome_manual(match_id: str):
+    """Re-run outcome capture (e.g. if schedule was completed before this feature shipped)."""
+    from services.prediction_learning import record_match_outcome
+
+    await record_match_outcome(db, match_id)
+    return {"status": "ok", "matchId": match_id}
+
+
+@api_router.post("/learning/live-record/{match_id}")
+async def api_learning_live_record(match_id: str, force: bool = Query(False)):
+    """Compare last ``live_snapshots`` Claude/combined probs to the final result; store + maybe propose."""
+    from services.prediction_learning import record_live_match_learning
+
+    return await record_live_match_learning(db, match_id, force=force)
+
+
+@api_router.post("/learning/live-backfill")
+async def api_learning_live_backfill(
+    limit: int = Query(500, ge=1, le=2000),
+    force: bool = Query(False),
+):
+    """Batch: all completed schedule rows — last live prediction vs actual scores/result."""
+    from services.prediction_learning import batch_live_match_learning
+
+    return await batch_live_match_learning(db, limit=limit, force=force)
+
+
+@api_router.get("/learning/live-outcomes")
+async def api_learning_live_outcomes(limit: int = Query(50, ge=1, le=200)):
+    from services.prediction_learning import list_live_learning_outcomes
+
+    return {"outcomes": await list_live_learning_outcomes(db, limit=limit)}
+
+
+@api_router.get("/learning/completed-report")
+async def api_learning_completed_report(limit: int = Query(500, ge=1, le=2000)):
+    """Completed fixtures: pre-match %, live combined %, scores, winner, learnings, pending proposal ids."""
+    from services.prediction_learning import completed_matches_learning_report
+
+    return await completed_matches_learning_report(db, limit=limit)
+
+
+@api_router.post("/learning/sync-completed")
+async def api_learning_sync_completed(
+    limit: int = Query(500, ge=1, le=2000),
+    force_live: bool = Query(False),
+):
+    """Backfill pre-match outcomes + live learning rows/proposals for all completed schedule fixtures (idempotent)."""
+    from services.prediction_learning import batch_sync_completed_learning
+
+    return await batch_sync_completed_learning(db, limit=limit, force_live=force_live)
+
+
 # ─── CLAUDE LIVE ANALYSIS ENDPOINT ───────────────────────────
 
 @api_router.post("/matches/{match_id}/claude-live")
@@ -6572,10 +6724,31 @@ async def api_claude_live(match_id: str):
         match_impact_subs=_match_impact_subs_from_xi_doc(xi_for_live),
     )
 
+    _cla_now = datetime.now(timezone.utc).isoformat()
+    claude_live_payload = {
+        "analysis": analysis,
+        "generatedAt": _cla_now,
+        "model": "claude-opus-4.5",
+    }
+    try:
+        if isinstance(live_state, dict):
+            live_state["claudeLiveAnalysis"] = claude_live_payload
+            live_match_state[match_id] = live_state
+        await db.live_snapshots.update_one(
+            {"matchId": match_id},
+            {
+                "$set": {"claudeLiveAnalysis": claude_live_payload, "updatedAt": _cla_now},
+                "$setOnInsert": {"matchId": match_id},
+            },
+            upsert=True,
+        )
+    except Exception as e:
+        logger.warning("Persist claudeLiveAnalysis to live_snapshots failed for %s: %s", match_id, e)
+
     return {
         "matchId": match_id,
         "analysis": analysis,
-        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "generatedAt": _cla_now,
         "model": "claude-opus-4.5",
     }
 
@@ -7098,6 +7271,7 @@ async def auto_sync_results_and_invalidate():
                         synced += 1
                         await _invalidate_team_predictions(match.get("team1", ""), match.get("team2", ""))
                         logger.info(f"[Auto-Sync] Synced {match.get('matchId')} winner: {db_winner}")
+                        _schedule_post_match_learning(match.get("matchId", ""))
                     break
 
         if synced > 0:

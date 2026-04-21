@@ -10,6 +10,7 @@ import PostMatch from "@/pages/PostMatch";
 import Analysis from "@/pages/Analysis";
 import ComparisonDashboard from "@/pages/ComparisonDashboard";
 import Players from "@/pages/Players";
+import ModelLearning from "@/pages/ModelLearning";
 
 function App() {
   const [selectedMatch, setSelectedMatch] = useState(null);
@@ -29,6 +30,7 @@ function App() {
             <Route path="/analysis" element={<Analysis />} />
             <Route path="/compare" element={<ComparisonDashboard />} />
             <Route path="/players" element={<Players />} />
+            <Route path="/model-learning" element={<ModelLearning />} />
           </Routes>
         </main>
       </BrowserRouter>

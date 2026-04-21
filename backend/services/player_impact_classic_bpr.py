@@ -25,6 +25,7 @@ from services.player_impact_br_bor import (
     _csa_bowl_entry_source,
     _csa_entries_ipl_year_only,
 )
+from services.player_impact_csa_two_layer import apply_csa_two_layer_bat, apply_csa_two_layer_bowl
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
@@ -210,8 +211,11 @@ def compute_classic_player_impact_profile(
     if bpr_bowl_core > 1e-6 and form_bowl_core is not None:
         csa_bowl = _clamp((form_bowl_core - bpr_bowl_core) / bpr_bowl_core, -0.45, 0.45)
 
-    bat_ip = _clamp(bpr_bat * (1.0 + float(csa_bat or 0.0)), 0.0, 100.0)
-    bowl_ip = _clamp(bpr_bowl * (1.0 + float(csa_bowl or 0.0)), 0.0, 100.0)
+    eff_bat, _, meta_tl_bat = apply_csa_two_layer_bat(csa_bat, last5b_cs, doc, conf_bat, bpr_bat)
+    eff_bowl, _, meta_tl_bowl = apply_csa_two_layer_bowl(csa_bowl, last5o_cs, doc, conf_bowl, bpr_bowl)
+
+    bat_ip = _clamp(bpr_bat * (1.0 + float(eff_bat if eff_bat is not None else 0.0)), 0.0, 100.0)
+    bowl_ip = _clamp(bpr_bowl * (1.0 + float(eff_bowl if eff_bowl is not None else 0.0)), 0.0, 100.0)
 
     if role_code == "BAT":
         bowl_ip *= 0.55
@@ -228,6 +232,9 @@ def compute_classic_player_impact_profile(
         "BPR_bowl": round(bpr_bowl, 4),
         "CSA_bat": None if csa_bat is None else round(csa_bat, 4),
         "CSA_bowl": None if csa_bowl is None else round(csa_bowl, 4),
+        "CSA_effective_bat": None if eff_bat is None else round(eff_bat, 4),
+        "CSA_effective_bowl": None if eff_bowl is None else round(eff_bowl, 4),
+        "csa_two_layer": {"bat": meta_tl_bat, "bowl": meta_tl_bowl},
         "batting_confidence": b_lbl,
         "batting_confidence_mult": round(conf_bat, 4),
         "batting_innings_sample": inn_c,

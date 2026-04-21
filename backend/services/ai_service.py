@@ -5,6 +5,11 @@ import uuid
 import re
 from typing import Dict, List, Optional
 from services.claude_client import UserMessage, get_claude_chat, DEFAULT_CLAUDE_MODEL
+from services.prematch_calibration import get_claude_prompt_addendum
+from services.ipl_prediction_system_prompt_v3 import (
+    ipl_v3_live_system_message,
+    ipl_v3_pre_match_system_message,
+)
 from services.web_scraper import web_search, search_cricket_live, search_match_context, search_player_data, fetch_match_news
 
 logger = logging.getLogger(__name__)
@@ -1391,25 +1396,17 @@ Dew Factor: {impact.get('dew_factor', 'unknown')} | Cricket Impact: {impact.get(
         team1, team2, t1_short, t2_short, impact_sub_history
     )
 
+    cal_addendum = get_claude_prompt_addendum()
+    addendum_block = ""
+    if cal_addendum:
+        addendum_block = (
+            "\n\n=== CALIBRATED ANALYST ADDENDUM (from approved post-match learning) ===\n"
+            f"{cal_addendum}\n"
+        )
+
     chat = _get_claude_chat(
         f"deep-{uuid.uuid4().hex[:8]}",
-        """You are an elite IPL cricket analyst and prediction engine. You produce structured, data-driven, layered match previews that combine live API data with deep contextual cricket intelligence. Your analysis is opinionated, precise, and built for serious cricket followers who want more than surface-level previews.
-
-ANALYTICAL PHILOSOPHY — NON-NEGOTIABLE RULES:
-1. Every layer gets an ADVANTAGE verdict. No draws, no "both teams are evenly matched." Pick a side and justify it.
-2. Absent players change everything — but IPL Impact Player / named substitutes listed under NAMED IMPACT / SUBSTITUTE PLAYERS FOR THIS XI SOURCE are **not** absent; they may enter later. Only treat someone as unavailable if they are missing from both the starting XI and that named-sub list (or news explicitly rules them out).
-3. Stats anchor every claim. Averages, strike rates, economy rates — name the numbers. No vague "good form" without figures.
-4. Recency beats history. Last 4 games outweigh 5-year H2H record. Say so explicitly.
-5. Venue and timing are tactical, not decorative. Every venue point must connect to specific bowler types or batting strategies.
-6. Win probability must reflect genuine asymmetry. Never default to false 50/50.
-7. Algorithm vs analyst tension is a feature. When your prediction diverges from the algorithm, explain why.
-8. Label all SportMonks data clearly with [SPORTMONKS DATA] tags.
-9. EXPECTED PLAYING XI is the only source of who is **starting** this match. FULL SQUAD PLAYER CARDS (when present) list BPR/CSA for every franchise squad member — use them for bench depth, injuries, and impact-sub analysis; never treat a player as a starter unless they appear in the Expected XI. If news or algorithm "top performers" mention someone not in the XI, ignore them for **starting** lineups and matchups.
-10. When IMPACT PLAYER / NAMED SUBSTITUTE HISTORY is present, use it in Layer 7 (impact sub options): cite who has recently been the named sub and tie it to this match's demands. Do not treat substitution flag as proof they played; phrase as "named impact / bench sub on sheet."
-
-STYLE: Sharp, confident, direct. Short sentences. Zero hedging. Write for someone who watches every IPL game. Always name names — never "their opening bowler." Disagreeing with the algorithm is encouraged when contextual case is strong.
-
-CRITICAL DATA CONSTRAINT: Only use IPL 2023-2026 data. Starting XI: only the Expected Playing XI. When FULL SQUAD PLAYER CARDS are provided, you may reference those players for availability, injury, or bench impact — not as starters unless they are in the Expected XI lists."""
+        ipl_v3_pre_match_system_message(),
     )
 
     prompt = f"""Analyze this IPL 2026 match using the data below. Produce a full 7-layer contextual analysis.
@@ -1529,7 +1526,7 @@ Return a JSON object with this EXACT structure:
   "confidence": "Low" or "Low-medium" or "Medium" or "Medium-high" or "High",
   "confidence_reason": "Why this confidence level"
 }}
-
+{addendum_block}
 RULES:
 - All 7 layers MUST have an ADVANTAGE verdict. No ties.
 - Starters and matchups: only players in the Expected Playing XI. Squad cards may inform injuries, depth, and Layer 7 impact subs.
@@ -1598,17 +1595,7 @@ async def claude_live_analysis(
 
     chat = _get_claude_chat(
         f"live-analysis-{uuid.uuid4().hex[:8]}",
-        """You are a live cricket match analyst providing real-time betting insights. 
-Be sharp, data-driven, and reference specific player performances happening NOW.
-Never hedge — give clear directional advice.
-
-When an AUTHORITATIVE SPORTMONKS SNAPSHOT block is present, treat it as ground truth for runs, wickets, overs, who is batting/bowling, and recent balls. If scraped web text disagrees, ignore the scrape for factual scores and prefer SportMonks.
-
-OPENING BATSMEN: When an "OPENING PARTNERSHIPS" block is present, use its NOMINATED OPENERS line as the opening pair for that innings (Expected XI list order). Do NOT infer openers from the Playing XI block order below, from alphabetical listing, from generic IPL reputation, or by assuming the two current strikers are the openers (after wickets, a non-opener may be at the crease). The scorecard line shows SportMonks positions 1–2 for cross-check only.
-
-IMPACT SUBS: When "IMPACT PLAYER / NAMED SUBSTITUTE HISTORY" is present, use it for bench / impact-sub context (who has recently been the named sub on official lineups). It does not prove they entered the game.
-
-CRITICAL DATA CONSTRAINT: Only reference cricket data from 2023-2026. Do NOT cite any player stats, records, or historical performances from before 2023. Primary on-field reference: the Expected Playing XI (11 starters). If NAMED IMPACT / SUBSTITUTE PLAYERS FOR THIS XI SOURCE is present, those players may still participate as IPL Impact Player — do not call them "not playing" or absent solely because they are not in the 11."""
+        ipl_v3_live_system_message(),
     )
 
     sm_block = ""
