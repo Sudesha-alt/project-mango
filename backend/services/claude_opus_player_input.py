@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from services.ai_service import normalize_primary_cricket_role
 from services.player_impact_bpr_csa import IMPACT_FORMULAS, compute_player_impact_profile
+from services.player_impact_br_bor import CURRENT_IPL_YEAR
 from services.pre_match_predictor import resolve_star_player_rating
 
 logger = logging.getLogger(__name__)
@@ -155,6 +156,57 @@ def _primary_bpr_number(prof: dict, role_code: str) -> float:
     if role_code == "BAT":
         return round(bb, 1)
     return round((bb + bo) / 2.0, 1)
+
+
+def _pct(v: Optional[float]) -> Optional[float]:
+    if v is None:
+        return None
+    try:
+        return round(float(v) * 100.0, 2)
+    except (TypeError, ValueError):
+        return None
+
+
+def _primary_csa_numbers(prof: dict, role_code: str) -> Dict[str, Optional[float]]:
+    out_bat = _pct(prof.get("CSA_bat"))
+    out_bowl = _pct(prof.get("CSA_bowl"))
+    eff_bat = _pct(prof.get("CSA_effective_bat"))
+    eff_bowl = _pct(prof.get("CSA_effective_bowl"))
+    if role_code == "BAT":
+        return {
+            "primary_output_pct": out_bat,
+            "primary_effective_pct": eff_bat,
+            "bat_output_pct": out_bat,
+            "bat_effective_pct": eff_bat,
+            "bowl_output_pct": out_bowl,
+            "bowl_effective_pct": eff_bowl,
+        }
+    if role_code == "BOWL":
+        return {
+            "primary_output_pct": out_bowl,
+            "primary_effective_pct": eff_bowl,
+            "bat_output_pct": out_bat,
+            "bat_effective_pct": eff_bat,
+            "bowl_output_pct": out_bowl,
+            "bowl_effective_pct": eff_bowl,
+        }
+    # AR: primary is blended effective signal when available.
+    pe = None
+    vals = [x for x in (eff_bat, eff_bowl) if x is not None]
+    if vals:
+        pe = round(sum(vals) / len(vals), 2)
+    po = None
+    vals2 = [x for x in (out_bat, out_bowl) if x is not None]
+    if vals2:
+        po = round(sum(vals2) / len(vals2), 2)
+    return {
+        "primary_output_pct": po,
+        "primary_effective_pct": pe,
+        "bat_output_pct": out_bat,
+        "bat_effective_pct": eff_bat,
+        "bowl_output_pct": out_bowl,
+        "bowl_effective_pct": eff_bowl,
+    }
 
 
 def _manual_impact_name_matches(selected: str, card_name: str) -> bool:
@@ -324,11 +376,27 @@ async def build_opus_player_cards_for_claude(
                 csa = _fmt_csa_line(prof, role_code)
                 csa_flags = _fmt_csa_category_flags(prof, role_code)
                 sample = _fmt_sample_size(prof, role_code)
+                csa_nums = _primary_csa_numbers(prof, role_code)
+                csa_scope = "current_ipl_season_all_rows"
+                est = prof.get("impact_estimates") or []
+                if "csa_last5_legacy_no_season_year" in est:
+                    csa_scope = "legacy_last5_proxy_no_season_year"
+                elif "csa_no_rows_for_ipl_year" in est:
+                    csa_scope = "no_current_ipl_year_rows"
             else:
                 bpr = round(star, 1)
                 csa = "— (no Mongo player_performance row — run Sync player stats)"
                 csa_flags = None
                 sample = "UNKNOWN (no DB row)"
+                csa_nums = {
+                    "primary_output_pct": None,
+                    "primary_effective_pct": None,
+                    "bat_output_pct": None,
+                    "bat_effective_pct": None,
+                    "bowl_output_pct": None,
+                    "bowl_effective_pct": None,
+                }
+                csa_scope = "no_player_performance_row"
 
             in_xi = nk in xi_names
             st = _status_line(
@@ -343,9 +411,23 @@ async def build_opus_player_cards_for_claude(
                 {
                     "player": nm,
                     "BPR": bpr,
+                    "BPR_primary": bpr,
+                    "BPR_bat": round(float(prof.get("BPR_bat") or bpr), 2) if doc else bpr,
+                    "BPR_bowl": round(float(prof.get("BPR_bowl") or bpr), 2) if doc else bpr,
                     "CSA": csa,
+                    "CSA_primary_output_pct": csa_nums["primary_output_pct"],
+                    "CSA_primary_effective_pct": csa_nums["primary_effective_pct"],
+                    "CSA_bat_output_pct": csa_nums["bat_output_pct"],
+                    "CSA_bat_effective_pct": csa_nums["bat_effective_pct"],
+                    "CSA_bowl_output_pct": csa_nums["bowl_output_pct"],
+                    "CSA_bowl_effective_pct": csa_nums["bowl_effective_pct"],
+                    "csa_scope": csa_scope,
                     "csa_category_flags": csa_flags or None,
                     "csa_two_layer": prof.get("csa_two_layer") if doc else None,
+                    "current_season_sample": {
+                        "bat_innings": len(_csa_entries_ipl_year_only(_csa_bat_entry_source(doc), CURRENT_IPL_YEAR)[0]) if doc else 0,
+                        "bowl_spells": len(_csa_entries_ipl_year_only(_csa_bowl_entry_source(doc), CURRENT_IPL_YEAR)[0]) if doc else 0,
+                    },
                     "sample_size_confidence": sample,
                     "status": st,
                     "replacement": None,

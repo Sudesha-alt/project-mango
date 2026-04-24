@@ -1346,7 +1346,12 @@ async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_i
     if opus_squad_player_cards_json and str(opus_squad_player_cards_json).strip():
         perf_block = f"""
 === FULL SQUAD — PLAYER INPUT CARDS (same JSON schema for every listed player) [BPR/CSA MODEL + MONGO] ===
-Each object: player, BPR (primary-discipline base rating), CSA (current IPL season form vs base BPR), sample_size_confidence, status, replacement, replacement_BPR, replacement_CSA.
+Each object includes BOTH baseline and season-form numerics:
+- BPR_primary, BPR_bat, BPR_bowl (baseline quality)
+- CSA_primary_output_pct / CSA_primary_effective_pct and discipline splits (form vs BPR)
+- csa_scope + current_season_sample (CSA rows used from current IPL season)
+Use BPR+CSA together (correlation), not CSA in isolation.
+CSA is scoped to current IPL season rows from Mongo sync (full available season set, recency-weighted), with explicit legacy/no-row flags when incomplete.
 This covers entire franchise squads (not only the expected XI). replacement* are null unless stated elsewhere — you may infer replacements from news in narrative only.
 For who **starts** this match, the authoritative list is EXPECTED PLAYING XIs above; use these cards for bench depth, injury context, form, and impact-sub options.
 
