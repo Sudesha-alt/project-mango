@@ -1348,10 +1348,12 @@ async def claude_deep_match_analysis(team1: str, team2: str, venue: str, match_i
 === FULL SQUAD — PLAYER INPUT CARDS (same JSON schema for every listed player) [BPR/CSA MODEL + MONGO] ===
 Each object includes BOTH baseline and season-form numerics:
 - BPR_primary, BPR_bat, BPR_bowl (baseline quality)
+- BatIP, BowlIP (post-CSA impact points used for team strength construction)
 - CSA_primary_output_pct / CSA_primary_effective_pct and discipline splits (form vs BPR)
 - csa_scope + current_season_sample (CSA rows used from current IPL season)
 Use BPR+CSA together (correlation), not CSA in isolation.
 CSA is scoped to current IPL season rows from Mongo sync (full available season set, recency-weighted), with explicit legacy/no-row flags when incomplete.
+Use team1_strength_from_ip / team2_strength_from_ip (batting_strength, bowling_strength, allrounder_strength) as the primary numeric summary for strength calls.
 This covers entire franchise squads (not only the expected XI). replacement* are null unless stated elsewhere — you may infer replacements from news in narrative only.
 For who **starts** this match, the authoritative list is EXPECTED PLAYING XIs above; use these cards for bench depth, injury context, form, and impact-sub options.
 
