@@ -220,6 +220,33 @@ def _manual_impact_name_matches(selected: str, card_name: str) -> bool:
     return SequenceMatcher(None, sa, sb).ratio() >= 0.88
 
 
+def _is_expected_xi_card(card: dict) -> bool:
+    st = str(card.get("status") or "").lower()
+    return "expected xi" in st or "swapped into expected xi" in st
+
+
+def _team_strength_from_cards(cards: List[dict], *, alpha: float = 0.5) -> Dict[str, float]:
+    """
+    Team strengths from BatIP/BowlIP over expected XI cards.
+    """
+    xi = [c for c in cards if isinstance(c, dict) and _is_expected_xi_card(c)]
+    if not xi:
+        return {"batting_strength": 0.0, "bowling_strength": 0.0, "allrounder_strength": 0.0}
+    bat = [max(0.0, min(100.0, float(c.get("BatIP") or 0.0))) for c in xi]
+    bowl = [max(0.0, min(100.0, float(c.get("BowlIP") or 0.0))) for c in xi]
+    ar = [
+        alpha * max(0.0, min(100.0, float(c.get("BatIP") or 0.0)))
+        + (1.0 - alpha) * max(0.0, min(100.0, float(c.get("BowlIP") or 0.0)))
+        for c in xi
+        if str(c.get("player_role", "")).upper() == "AR"
+    ]
+    return {
+        "batting_strength": round(sum(bat) / len(bat), 2) if bat else 0.0,
+        "bowling_strength": round(sum(bowl) / len(bowl), 2) if bowl else 0.0,
+        "allrounder_strength": round(sum(ar) / len(ar), 2) if ar else 0.0,
+    }
+
+
 def _status_line(
     name_key: str,
     in_xi: bool,
@@ -410,10 +437,13 @@ async def build_opus_player_cards_for_claude(
             rows_out.append(
                 {
                     "player": nm,
+                    "player_role": role_code,
                     "BPR": bpr,
                     "BPR_primary": bpr,
                     "BPR_bat": round(float(prof.get("BPR_bat") or bpr), 2) if doc else bpr,
                     "BPR_bowl": round(float(prof.get("BPR_bowl") or bpr), 2) if doc else bpr,
+                    "BatIP": round(float(prof.get("BatIP") or 0.0), 2) if doc else round(bpr, 2),
+                    "BowlIP": round(float(prof.get("BowlIP") or 0.0), 2) if doc else round(bpr, 2),
                     "CSA": csa,
                     "CSA_primary_output_pct": csa_nums["primary_output_pct"],
                     "CSA_primary_effective_pct": csa_nums["primary_effective_pct"],
@@ -439,11 +469,16 @@ async def build_opus_player_cards_for_claude(
 
     team1_cards = await cards_for_side(team1, xi_t1)
     team2_cards = await cards_for_side(team2, xi_t2)
+    team1_strength = _team_strength_from_cards(team1_cards)
+    team2_strength = _team_strength_from_cards(team2_cards)
 
     return {
         "formula": f,
         "team1_short": team1_short,
         "team2_short": team2_short,
+        "strength_basis": "expected_xi_batip_bowlip",
+        "team1_strength_from_ip": team1_strength,
+        "team2_strength_from_ip": team2_strength,
         "team1_players": team1_cards,
         "team2_players": team2_cards,
     }
