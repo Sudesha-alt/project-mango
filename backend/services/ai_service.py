@@ -5,6 +5,11 @@ import uuid
 import re
 from typing import Dict, List, Optional
 from services.claude_client import UserMessage, get_claude_chat, DEFAULT_CLAUDE_MODEL
+from services.prematch_calibration import get_claude_prompt_addendum
+from services.ipl_prediction_system_prompt_v3 import (
+    ipl_v3_live_system_message,
+    ipl_v3_pre_match_system_message,
+)
 from services.web_scraper import web_search, search_cricket_live, search_match_context, search_player_data, fetch_match_news
 
 logger = logging.getLogger(__name__)
@@ -290,6 +295,82 @@ def _extract_json(text):
                 break
         cleaned = cleaned[:end]
     return json.loads(cleaned)
+
+
+def _to_float_or_none(v) -> Optional[float]:
+    try:
+        if v is None:
+            return None
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _validate_pre_match_opus_payload(
+    payload: dict,
+    *,
+    algo_prediction: Optional[dict],
+    team1_short: str,
+    team2_short: str,
+) -> None:
+    """
+    Hard-validate critical guardrails for pre-match Opus JSON.
+    Raises ValueError with concise violations when output is non-compliant.
+    """
+    violations: List[str] = []
+    if not isinstance(payload, dict):
+        raise ValueError("pre_match_payload_not_object")
+
+    t1 = _to_float_or_none(payload.get("team1_win_pct"))
+    t2 = _to_float_or_none(payload.get("team2_win_pct"))
+    if t1 is None or t2 is None:
+        violations.append("missing_team_win_pct")
+    else:
+        if abs((t1 + t2) - 100.0) > 0.2:
+            violations.append("team_win_pct_not_100")
+        if t1 < 0 or t2 < 0 or t1 > 100 or t2 > 100:
+            violations.append("team_win_pct_out_of_bounds")
+
+    conf_raw = str(payload.get("confidence", "") or "").strip().lower()
+    conf_norm = conf_raw.replace("_", "-").replace(" ", "-")
+    maxp = max(t1 or 0.0, t2 or 0.0)
+    if conf_norm:
+        if 50.0 <= maxp < 55.0 and conf_norm != "low":
+            violations.append("confidence_band_50_54_must_low")
+        elif 55.0 <= maxp < 62.0 and conf_norm != "medium":
+            violations.append("confidence_band_55_61_must_medium")
+        elif maxp >= 62.0 and conf_norm not in {"medium", "medium-high"}:
+            violations.append("confidence_band_62_plus_must_medium_or_medium_high")
+        if "high" in conf_norm and maxp < 62.0:
+            violations.append("high_confidence_below_62")
+    else:
+        violations.append("missing_confidence")
+
+    algo_t1 = None
+    pred = (algo_prediction or {}).get("prediction") if isinstance(algo_prediction, dict) else None
+    if isinstance(pred, dict):
+        algo_t1 = _to_float_or_none(pred.get("team1_win_prob"))
+    if algo_t1 is None and isinstance(algo_prediction, dict):
+        algo_t1 = _to_float_or_none(algo_prediction.get("team1_win_prob"))
+
+    if algo_t1 is not None and t1 is not None:
+        if abs(t1 - algo_t1) > 5.0:
+            div_note = payload.get("algo_divergence_note")
+            txt = str(div_note or "").strip()
+            if len(txt) < 24:
+                violations.append("algo_divergence_note_required_gt5")
+            else:
+                ltxt = txt.lower()
+                if not any(k in ltxt for k in ("algorithm", "algo", "miss", "baseline")):
+                    violations.append("algo_divergence_note_not_specific")
+
+    deciding_logic = str(payload.get("deciding_logic", "") or "")
+    for marker in ("BOWLING_SWING_CAP_CHECK:", "BATTING_COLLAPSE_GATE:", "VENUE_CORRECTION_CHECK:"):
+        if marker not in deciding_logic:
+            violations.append(f"missing_marker_{marker[:-1].lower()}")
+
+    if violations:
+        raise ValueError("pre_match_contract_violation: " + ", ".join(violations[:12]))
 
 
 async def _claude_json(prompt: str, system_msg: str = "You are a precise data parser. Output ONLY valid JSON with no markdown formatting, no code blocks, no explanation.") -> dict:
@@ -1391,25 +1472,17 @@ Dew Factor: {impact.get('dew_factor', 'unknown')} | Cricket Impact: {impact.get(
         team1, team2, t1_short, t2_short, impact_sub_history
     )
 
+    cal_addendum = get_claude_prompt_addendum()
+    addendum_block = ""
+    if cal_addendum:
+        addendum_block = (
+            "\n\n=== CALIBRATED ANALYST ADDENDUM (from approved post-match learning) ===\n"
+            f"{cal_addendum}\n"
+        )
+
     chat = _get_claude_chat(
         f"deep-{uuid.uuid4().hex[:8]}",
-        """You are an elite IPL cricket analyst and prediction engine. You produce structured, data-driven, layered match previews that combine live API data with deep contextual cricket intelligence. Your analysis is opinionated, precise, and built for serious cricket followers who want more than surface-level previews.
-
-ANALYTICAL PHILOSOPHY — NON-NEGOTIABLE RULES:
-1. Every layer gets an ADVANTAGE verdict. No draws, no "both teams are evenly matched." Pick a side and justify it.
-2. Absent players change everything — but IPL Impact Player / named substitutes listed under NAMED IMPACT / SUBSTITUTE PLAYERS FOR THIS XI SOURCE are **not** absent; they may enter later. Only treat someone as unavailable if they are missing from both the starting XI and that named-sub list (or news explicitly rules them out).
-3. Stats anchor every claim. Averages, strike rates, economy rates — name the numbers. No vague "good form" without figures.
-4. Recency beats history. Last 4 games outweigh 5-year H2H record. Say so explicitly.
-5. Venue and timing are tactical, not decorative. Every venue point must connect to specific bowler types or batting strategies.
-6. Win probability must reflect genuine asymmetry. Never default to false 50/50.
-7. Algorithm vs analyst tension is a feature. When your prediction diverges from the algorithm, explain why.
-8. Label all SportMonks data clearly with [SPORTMONKS DATA] tags.
-9. EXPECTED PLAYING XI is the only source of who is **starting** this match. FULL SQUAD PLAYER CARDS (when present) list BPR/CSA for every franchise squad member — use them for bench depth, injuries, and impact-sub analysis; never treat a player as a starter unless they appear in the Expected XI. If news or algorithm "top performers" mention someone not in the XI, ignore them for **starting** lineups and matchups.
-10. When IMPACT PLAYER / NAMED SUBSTITUTE HISTORY is present, use it in Layer 7 (impact sub options): cite who has recently been the named sub and tie it to this match's demands. Do not treat substitution flag as proof they played; phrase as "named impact / bench sub on sheet."
-
-STYLE: Sharp, confident, direct. Short sentences. Zero hedging. Write for someone who watches every IPL game. Always name names — never "their opening bowler." Disagreeing with the algorithm is encouraged when contextual case is strong.
-
-CRITICAL DATA CONSTRAINT: Only use IPL 2023-2026 data. Starting XI: only the Expected Playing XI. When FULL SQUAD PLAYER CARDS are provided, you may reference those players for availability, injury, or bench impact — not as starters unless they are in the Expected XI lists."""
+        ipl_v3_pre_match_system_message(),
     )
 
     prompt = f"""Analyze this IPL 2026 match using the data below. Produce a full 7-layer contextual analysis.
@@ -1523,23 +1596,33 @@ Return a JSON object with this EXACT structure:
   }},
   "deciding_factor": "One paragraph. What is THE single variable that determines this match? State it plainly and explain what happens if it goes each way.",
   "first_6_overs_signal": "Name exactly what to watch in the powerplay — a specific player/matchup that tells you how the match unfolds.",
-  "deciding_logic": "3-5 sentences — your complete reasoning chain for the final probability.",
+  "deciding_logic": "3-7 sentences — your complete reasoning chain for the final probability. Must include these exact marker lines: 'BOWLING_SWING_CAP_CHECK: ...', 'BATTING_COLLAPSE_GATE: ...', 'VENUE_CORRECTION_CHECK: ...'.",
   "prediction_summary": "1-2 sentence bold prediction with percentage",
-  "algo_divergence_note": "If your prediction differs from the algorithm by >10%, explain why in 2-3 sentences. Otherwise null.",
-  "confidence": "Low" or "Low-medium" or "Medium" or "Medium-high" or "High",
+  "algo_divergence_note": "If your prediction differs from the algorithm by >5%, mandatory 2-3 sentence reconciliation with specific misses in algorithm. Otherwise null.",
+  "confidence": "Low" or "Medium" or "Medium-high",
   "confidence_reason": "Why this confidence level"
 }}
-
+{addendum_block}
 RULES:
 - All 7 layers MUST have an ADVANTAGE verdict. No ties.
 - Starters and matchups: only players in the Expected Playing XI. Squad cards may inform injuries, depth, and Layer 7 impact subs.
 - Win probabilities must add to 100.
+- Confidence bands are strict: 50-54 => Low; 55-61 => Medium; 62+ => Medium-high allowed.
+- If |team1_win_pct - algo_team1_win_pct| > 5, algo_divergence_note is mandatory and specific.
+- Include deciding_logic markers exactly: BOWLING_SWING_CAP_CHECK, BATTING_COLLAPSE_GATE, VENUE_CORRECTION_CHECK.
 - Be opinionated and bold. If one team is structurally superior, reflect it (e.g. 65/35).
 - Every claim needs a stat or specific recent event behind it."""
 
     try:
         response = await chat.send_message(UserMessage(text=prompt))
-        return _extract_json(response)
+        parsed = _extract_json(response)
+        _validate_pre_match_opus_payload(
+            parsed,
+            algo_prediction=algo_prediction,
+            team1_short=t1_short,
+            team2_short=t2_short,
+        )
+        return parsed
     except Exception as e:
         logger.error(f"Claude deep analysis error: {e}")
         return {"error": str(e), "team1_win_pct": 50, "team2_win_pct": 50, "layers": [], "headline": "Analysis unavailable"}
@@ -1598,17 +1681,7 @@ async def claude_live_analysis(
 
     chat = _get_claude_chat(
         f"live-analysis-{uuid.uuid4().hex[:8]}",
-        """You are a live cricket match analyst providing real-time betting insights. 
-Be sharp, data-driven, and reference specific player performances happening NOW.
-Never hedge — give clear directional advice.
-
-When an AUTHORITATIVE SPORTMONKS SNAPSHOT block is present, treat it as ground truth for runs, wickets, overs, who is batting/bowling, and recent balls. If scraped web text disagrees, ignore the scrape for factual scores and prefer SportMonks.
-
-OPENING BATSMEN: When an "OPENING PARTNERSHIPS" block is present, use its NOMINATED OPENERS line as the opening pair for that innings (Expected XI list order). Do NOT infer openers from the Playing XI block order below, from alphabetical listing, from generic IPL reputation, or by assuming the two current strikers are the openers (after wickets, a non-opener may be at the crease). The scorecard line shows SportMonks positions 1–2 for cross-check only.
-
-IMPACT SUBS: When "IMPACT PLAYER / NAMED SUBSTITUTE HISTORY" is present, use it for bench / impact-sub context (who has recently been the named sub on official lineups). It does not prove they entered the game.
-
-CRITICAL DATA CONSTRAINT: Only reference cricket data from 2023-2026. Do NOT cite any player stats, records, or historical performances from before 2023. Primary on-field reference: the Expected Playing XI (11 starters). If NAMED IMPACT / SUBSTITUTE PLAYERS FOR THIS XI SOURCE is present, those players may still participate as IPL Impact Player — do not call them "not playing" or absent solely because they are not in the 11."""
+        ipl_v3_live_system_message(),
     )
 
     sm_block = ""

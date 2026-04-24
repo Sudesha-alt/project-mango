@@ -73,30 +73,66 @@ def _normalize_name_key(name: str) -> str:
 def _fmt_csa_line(prof: dict, role_code: str) -> str:
     cb = prof.get("CSA_bat")
     co = prof.get("CSA_bowl")
+    ce_b = prof.get("CSA_effective_bat")
+    ce_o = prof.get("CSA_effective_bowl")
     parts: List[str] = []
 
-    def one(label: str, v: Optional[float]) -> None:
-        if v is None:
+    def one(label: str, v: Optional[float], eff: Optional[float]) -> None:
+        if v is None and eff is None:
             return
-        pct = float(v) * 100.0
-        if v > 0.02:
-            adj = "better than base BPR this IPL season"
-        elif v < -0.02:
-            adj = "below base BPR this IPL season"
-        else:
-            adj = "in line with base BPR this IPL season"
-        parts.append(f"{label} {pct:+.1f}% ({adj})")
+        if v is not None:
+            pct = float(v) * 100.0
+            if v > 0.02:
+                adj = "better than base BPR this IPL season (output CSA)"
+            elif v < -0.02:
+                adj = "below base BPR this IPL season (output CSA)"
+            else:
+                adj = "in line with base BPR (output CSA)"
+            seg = f"{label} output {pct:+.1f}% ({adj})"
+            if eff is not None and abs(float(eff) - float(v)) > 0.004:
+                seg += f"; effective {float(eff) * 100.0:+.1f}% (60% output + 40% input CSA + category blend)"
+            parts.append(seg)
+        elif eff is not None:
+            parts.append(f"{label} effective {float(eff) * 100.0:+.1f}% (two-layer)")
 
     if role_code == "BOWL":
-        one("bowl", co)
+        one("bowl", co, ce_o)
     elif role_code == "BAT":
-        one("bat", cb)
+        one("bat", cb, ce_b)
     else:
-        one("bat", cb)
-        one("bowl", co)
+        one("bat", cb, ce_b)
+        one("bowl", co, ce_o)
     if not parts:
         return "— (no current-season CSA — sync player stats or insufficient IPL 2026 rows)"
     return " | ".join(parts)
+
+
+def _fmt_csa_category_flags(prof: dict, role_code: str) -> str:
+    """Compact Category 1–4 + mean reversion for Opus."""
+    tl = prof.get("csa_two_layer") or {}
+    keys = []
+    if role_code == "BAT":
+        keys = ["bat"]
+    elif role_code == "BOWL":
+        keys = ["bowl"]
+    else:
+        keys = ["bat", "bowl"]
+    bits: List[str] = []
+    for k in keys:
+        m = tl.get(k)
+        if not isinstance(m, dict):
+            continue
+        cat = m.get("category")
+        lab = m.get("category_label")
+        if cat is None:
+            continue
+        fl = m.get("floor_weight")
+        ce = m.get("ceiling_weight")
+        seg = f"{k.upper()} CAT{cat} ({lab}) floor/cap {fl}/{ce}"
+        if m.get("mean_reversion_candidate"):
+            seg += " MEAN_REVERSION_CANDIDATE"
+        bits.append(seg)
+    return " · ".join(bits) if bits else ""
 
 
 def _fmt_sample_size(prof: dict, role_code: str) -> str:
@@ -286,10 +322,12 @@ async def build_opus_player_cards_for_claude(
                 )
                 bpr = _primary_bpr_number(prof, role_code)
                 csa = _fmt_csa_line(prof, role_code)
+                csa_flags = _fmt_csa_category_flags(prof, role_code)
                 sample = _fmt_sample_size(prof, role_code)
             else:
                 bpr = round(star, 1)
                 csa = "— (no Mongo player_performance row — run Sync player stats)"
+                csa_flags = None
                 sample = "UNKNOWN (no DB row)"
 
             in_xi = nk in xi_names
@@ -306,6 +344,8 @@ async def build_opus_player_cards_for_claude(
                     "player": nm,
                     "BPR": bpr,
                     "CSA": csa,
+                    "csa_category_flags": csa_flags or None,
+                    "csa_two_layer": prof.get("csa_two_layer") if doc else None,
                     "sample_size_confidence": sample,
                     "status": st,
                     "replacement": None,

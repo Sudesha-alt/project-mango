@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from services.cricket_phase_utils import PHASE_DEATH, PHASE_PP, PHASE_MID
 from services.sportmonks_service import IPL_SEASON_IDS
+from services.player_impact_csa_two_layer import apply_csa_two_layer_bat, apply_csa_two_layer_bowl
 
 CURRENT_IPL_YEAR = max(IPL_SEASON_IDS.keys())
 # Recency weights by seasons before CURRENT_IPL_YEAR (0 = current)
@@ -787,8 +788,11 @@ def compute_player_impact_profile(
     cm_bat *= pen_b
     cm_bowl *= pen_o
 
-    bat_ip = _effective_ip(br, float(csa_bat if csa_bat is not None else 0.0), cm_bat)
-    bowl_ip = _effective_ip(bor, float(csa_bowl if csa_bowl is not None else 0.0), cm_bowl)
+    eff_bat, cm_bat_adj, meta_tl_bat = apply_csa_two_layer_bat(csa_bat, last5b_cs, doc, cm_bat, br)
+    eff_bowl, cm_bowl_adj, meta_tl_bowl = apply_csa_two_layer_bowl(csa_bowl, last5o_cs, doc, cm_bowl, bor)
+
+    bat_ip = _effective_ip(br, float(eff_bat if eff_bat is not None else 0.0), cm_bat_adj)
+    bowl_ip = _effective_ip(bor, float(eff_bowl if eff_bowl is not None else 0.0), cm_bowl_adj)
 
     if role_code == "BAT":
         bowl_ip *= 0.55
@@ -803,11 +807,14 @@ def compute_player_impact_profile(
         "BPR_bowl": round(bor, 4),
         "CSA_bat": None if csa_bat is None else round(csa_bat, 4),
         "CSA_bowl": None if csa_bowl is None else round(csa_bowl, 4),
+        "CSA_effective_bat": None if eff_bat is None else round(eff_bat, 4),
+        "CSA_effective_bowl": None if eff_bowl is None else round(eff_bowl, 4),
+        "csa_two_layer": {"bat": meta_tl_bat, "bowl": meta_tl_bowl},
         "batting_confidence": b_label,
-        "batting_confidence_mult": round(cm_bat, 4),
+        "batting_confidence_mult": round(cm_bat_adj, 4),
         "batting_innings_sample": inn_c,
         "bowling_confidence": o_label,
-        "bowling_confidence_mult": round(cm_bowl, 4),
+        "bowling_confidence_mult": round(cm_bowl_adj, 4),
         "bowling_overs_sample": round(overs, 2),
         "impact_model": "br_bor_v1",
         "impact_estimates": list(dict.fromkeys(br_est + bor_est + csa_notes)),

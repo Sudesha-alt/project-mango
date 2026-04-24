@@ -1,5 +1,5 @@
 import { Link, useLocation } from "react-router-dom";
-import { Pulse, ChartLine, Target, Crosshair, UsersThree } from "@phosphor-icons/react";
+import { Pulse, ChartLine, Target, Crosshair, UsersThree, Brain } from "@phosphor-icons/react";
 
 export default function Header({ selectedMatch }) {
   const location = useLocation();
@@ -10,6 +10,7 @@ export default function Header({ selectedMatch }) {
     { path: "/live", label: "LIVE", icon: Pulse },
     { path: "/players", label: "PLAYERS", icon: UsersThree },
     { path: "/analysis", label: "ANALYSIS", icon: ChartLine },
+    { path: "/model-learning", label: "LEARN", icon: Brain },
   ];
 
   return (
@@ -34,7 +35,8 @@ export default function Header({ selectedMatch }) {
             const isActive =
               path === item.path ||
               (item.path === "/live" && path.startsWith("/live")) ||
-              (item.path === "/players" && path.startsWith("/players"));
+              (item.path === "/players" && path.startsWith("/players")) ||
+              (item.path === "/model-learning" && path.startsWith("/model-learning"));
             return (
               <Link
                 key={item.path}

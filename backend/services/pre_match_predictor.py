@@ -21,6 +21,7 @@ from difflib import SequenceMatcher
 from typing import Dict, Optional, Tuple, List
 
 from services.cricket_phase_utils import team_phase_quality
+from services.prematch_calibration import get_effective_weights
 
 logger = logging.getLogger(__name__)
 _RATINGS_OVERRIDE: contextvars.ContextVar = contextvars.ContextVar("ratings_override", default=None)
@@ -1165,6 +1166,7 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
     player_performance = player_performance or {}
     web_context = web_context or {}
     team_strength_metrics = team_strength_metrics or {}
+    w_param = get_effective_weights(WEIGHTS)
 
     team1 = match_info.get("team1", "")
     team2 = match_info.get("team2", "")
@@ -1423,11 +1425,11 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
     _RATINGS_OVERRIDE.reset(rtok)
 
     combined_logit = (
-        WEIGHTS["batting_quality"] * batting_quality_logit
-        + WEIGHTS["bowling_quality"] * bowling_quality_logit
-        + WEIGHTS["allrounder_balance"] * allrounder_balance_logit
-        + WEIGHTS["venue_baseline"] * venue_baseline_logit
-        + WEIGHTS["h2h_squad_adjusted"] * h2h_squad_adjusted_logit
+        w_param["batting_quality"] * batting_quality_logit
+        + w_param["bowling_quality"] * bowling_quality_logit
+        + w_param["allrounder_balance"] * allrounder_balance_logit
+        + w_param["venue_baseline"] * venue_baseline_logit
+        + w_param["h2h_squad_adjusted"] * h2h_squad_adjusted_logit
     )
 
     quality_sources = {
@@ -1458,10 +1460,10 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
         "venue_baseline": venue_baseline_logit,
         "h2h_squad_adjusted": h2h_squad_adjusted_logit,
     }
-    weighted_contribs = {k: WEIGHTS[k] * raw_logits[k] for k in WEIGHTS}
+    weighted_contribs = {k: w_param[k] * raw_logits[k] for k in w_param}
     is_t1_fav = team1_win_prob >= 50.0
-    aligned = {k: (weighted_contribs[k] if is_t1_fav else -weighted_contribs[k]) for k in WEIGHTS}
-    driver_key = max(WEIGHTS, key=lambda k: aligned[k])
+    aligned = {k: (weighted_contribs[k] if is_t1_fav else -weighted_contribs[k]) for k in w_param}
+    driver_key = max(w_param, key=lambda k: aligned[k])
     driver_aligned = aligned[driver_key]
     t1n, t2n = team1 or "Team 1", team2 or "Team 2"
     fav_name = t1n if is_t1_fav else t2n
@@ -1557,11 +1559,12 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
             "logits_team1_minus_team2": {k: round(v, 4) for k, v in raw_logits.items()},
             "h2h_raw_logit_team1_minus_team2": round(h2h_raw_logit, 4),
             "h2h_squad_parity": round(squad_parity, 4),
+            "effective_weights": {k: round(v, 4) for k, v in w_param.items()},
         },
         "factors": {
             "batting_quality": {
-                "weight": WEIGHTS["batting_quality"],
-                "logit_contribution": round(WEIGHTS["batting_quality"] * batting_quality_logit, 4),
+                "weight": w_param["batting_quality"],
+                "logit_contribution": round(w_param["batting_quality"] * batting_quality_logit, 4),
                 "raw_logit": round(batting_quality_logit, 4),
                 "team1_batting": t1_rating["batting"],
                 "team2_batting": t2_rating["batting"],
@@ -1572,8 +1575,8 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
                 **t2_squad_detail,
             },
             "bowling_quality": {
-                "weight": WEIGHTS["bowling_quality"],
-                "logit_contribution": round(WEIGHTS["bowling_quality"] * bowling_quality_logit, 4),
+                "weight": w_param["bowling_quality"],
+                "logit_contribution": round(w_param["bowling_quality"] * bowling_quality_logit, 4),
                 "raw_logit": round(bowling_quality_logit, 4),
                 "team1_bowling": t1_rating.get("bowling", 50),
                 "team2_bowling": t2_rating.get("bowling", 50),
@@ -1582,8 +1585,8 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
                 "source": "bpr_csa_bowlip" if has_impact_strength else "xi_roles_fallback",
             },
             "allrounder_balance": {
-                "weight": WEIGHTS["allrounder_balance"],
-                "logit_contribution": round(WEIGHTS["allrounder_balance"] * allrounder_balance_logit, 4),
+                "weight": w_param["allrounder_balance"],
+                "logit_contribution": round(w_param["allrounder_balance"] * allrounder_balance_logit, 4),
                 "raw_logit": round(allrounder_balance_logit, 4),
                 "blend": {"strength_weight": 0.55, "depth_weight": 0.45},
                 "strength_logit": round(allrounder_strength_logit, 4),
@@ -1599,14 +1602,14 @@ def compute_prediction(squad_data: Dict = None, match_info: Dict = None,
                 "source": "bpr_csa_arip" if has_impact_strength else "xi_roles_fallback",
             },
             "venue_baseline": {
-                "weight": WEIGHTS["venue_baseline"],
-                "logit_contribution": round(WEIGHTS["venue_baseline"] * venue_baseline_logit, 4),
+                "weight": w_param["venue_baseline"],
+                "logit_contribution": round(w_param["venue_baseline"] * venue_baseline_logit, 4),
                 "raw_logit": round(venue_baseline_logit, 4),
                 **venue_baseline_detail,
             },
             "h2h_squad_adjusted": {
-                "weight": WEIGHTS["h2h_squad_adjusted"],
-                "logit_contribution": round(WEIGHTS["h2h_squad_adjusted"] * h2h_squad_adjusted_logit, 4),
+                "weight": w_param["h2h_squad_adjusted"],
+                "logit_contribution": round(w_param["h2h_squad_adjusted"] * h2h_squad_adjusted_logit, 4),
                 "raw_logit": round(h2h_squad_adjusted_logit, 4),
                 "h2h_raw_logit": round(h2h_raw_logit, 4),
                 "squad_parity": round(squad_parity, 4),

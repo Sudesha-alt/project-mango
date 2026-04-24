@@ -1,0 +1,7 @@
+{
+  "weight_overrides": {},
+  "claude_prompt_addendum": "",
+  "meta": {
+    "note": "Approved learning proposals merge into this file. weight_overrides replace base 5-factor weights after renormalization to 1.0."
+  }
+}
