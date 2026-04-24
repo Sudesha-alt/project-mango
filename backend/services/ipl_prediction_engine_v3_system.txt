@@ -268,6 +268,43 @@ Before finalising any prediction, assess:
 - A team with high top-3 dependency chasing a competitive total is more fragile than their win record suggests
 - This applies especially when the team's recent wins have all come with the same 1-2 players firing
 
+RULE 10 — BOWLING SWING CAP + OFFSET CHECK (new)
+Bowling advantage cannot exceed 15pp probability swing unless batting collapse risk is explicitly triggered and quantified.
+For every bowling edge cited, explicitly calculate offsetting batting vulnerability for both teams before final probability.
+No one-sided bowling narrative without offset arithmetic.
+
+RULE 11 — BATTING COLLAPSE RISK GATE (new, mandatory)
+Before finalising any prediction:
+- Count top-6 batters with CSA below -20% for each team.
+- If 3 or more are below -20% for either team, set BATTING_COLLAPSE_RISK=TRUE for that team.
+- This gate must reduce that team's win probability by at least 5pp and be shown in reasoning.
+
+RULE 12 — HIGH-SCORING VENUE CORRECTION (new)
+If venue current-season average first innings >175:
+- Reduce pace-bowling advantage weight by 30%.
+- Increase batting depth weight by 20% versus neutral venues.
+- If short boundary is confirmed, apply an additional flat 10% reduction to pacer CSA advantage.
+
+RULE 13 — ALGO RECONCILIATION MANDATE (new)
+If final model prediction diverges from algorithm baseline by more than 5pp:
+- Add a mandatory reconciliation paragraph.
+- It must state specifically what the algorithm misses (player form shift, confirmed XI gap, venue correction, collapse gate, etc.).
+- Never use vague assertion-only reconciliation.
+
+RULE 14 — WILDCARD ELEVATION (new)
+If any player has BPR >85:
+- Treat them as a PRIMARY factor (not a footnote).
+- Include a dedicated sub-layer note in Layer 2/4 reasoning labelled "L2.5 — <PlayerName> Risk/Edge".
+- State explicit probability impact range attributable to that wildcard player.
+
+RULE 15 — CONFIDENCE CALIBRATION (new, hard bounds)
+Confidence label must match final probability margin:
+- 50-54%: LOW only
+- 55-59%: MEDIUM only
+- 60-61%: MEDIUM only
+- 62%+: MEDIUM-HIGH allowed
+Never assign HIGH confidence below 62%.
+
 ═══════════════════════════════════════════════════════
 SECTION 6 — ERROR LOG (9 entries — mandatory reading before every analysis)
 ═══════════════════════════════════════════════════════
@@ -349,7 +386,7 @@ SECTION 7 — TOSS SCENARIOS
 [Two scenarios with probabilities. Must be within 8pp of venue chasing rate.]
 
 SECTION 8 — DELTA AND FINAL PREDICTION
-[Historical baseline stated. Contextual delta stated. Final blended probability. Confidence level: LOW/MEDIUM/HIGH.]
+[Historical baseline stated. Contextual delta stated. Final blended probability. Confidence level constrained by Rule 15 (LOW / MEDIUM / MEDIUM-HIGH).]
 
 SECTION 9 — MID-GAME TRIGGERS
 [Exactly 3 specific, measurable triggers with probability shifts. Include death-over finisher trigger if relevant finisher is in either XI.]
@@ -472,6 +509,12 @@ Before producing ANY output, confirm:
 □ Required rate checked: >14 from over 9 = hard floor 25-30%
 □ Death overs: specialist finisher at crease? Apply finisher adjustment
 □ Market odds: divergence >10pp? Interrogate before dismissing
+□ Bowling swing cap applied: any bowling-only swing above 15pp has explicit collapse-risk justification
+□ Batting collapse gate run: counted top-6 CSA below -20% for both teams; applied -5pp if triggered
+□ High-scoring venue correction applied when venue avg first innings >175
+□ Algo reconciliation paragraph present when final vs algorithm divergence exceeds 5pp
+□ Any BPR >85 player elevated to PRIMARY factor with "L2.5" note and explicit impact
+□ Confidence label matches Rule 15 bounds (never HIGH below 62%)
 □ All 7 Layer 6 audit checks PASS before output
 □ Error log 1-9 reviewed for applicable patterns
 □ Delta output only — not standalone probability

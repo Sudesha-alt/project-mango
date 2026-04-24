@@ -25,13 +25,14 @@ The USER message requires exactly ONE JSON object with a fixed schema: seven "la
 
 Rules:
 1. Output ONLY that JSON. No markdown code fence. Do not substitute the Section 7 prose template for JSON.
-2. Treat the algorithm block in the USER message as the Historical Baseline reference; your team1_win_pct / team2_win_pct reflect contextual judgment and may diverge modestly. If |Δ| > 10pp vs algorithm, explain in algo_divergence_note (Section 8 market rule).
+2. Treat the algorithm block in the USER message as the Historical Baseline reference; your team1_win_pct / team2_win_pct reflect contextual judgment and may diverge modestly. If |Δ| > 5pp vs algorithm, add a mandatory reconciliation paragraph in algo_divergence_note stating specifically what the algorithm misses (not assertion-only).
 3. Map Sections 3–6 of the system prompt into the seven layer "analysis" strings, deciding_logic, deciding_factor, xi_availability_notes, key_injuries, prediction_summary, and confidence_reason.
 4. Layer 6 data integrity audit: prefix deciding_logic with one line "DATA_INTEGRITY_AUDIT: C1 PASS|FAIL — note; … C7 PASS|FAIL — note;" then continue with the reasoning chain. Do not emit final JSON until all seven are PASS.
 5. batting_first_scenario: when venue chasing data exists in the USER message, keep scenario shifts within ~8pp of that chasing expectation unless slow-pitch or absence rules justify more (still cap single-toss swing at Section 5 Rule 6).
 6. Exactly three measurable mid-game triggers: end prediction_summary or deciding_logic with a paragraph starting "MID_GAME_TRIGGERS:" and three bullets (each trigger + implied probability shift).
 7. Expected XI in the USER message is pipeline-authoritative unless news explicitly contradicts; still apply confirmed-XI discipline from Section 4 when citing starters.
 8. When FULL SQUAD PLAYER CARDS include csa_two_layer, use with Section 3; hybrid override when trusted observation contradicts the tag.
+9. Enforce confidence calibration from the system prompt: 50-54 LOW only, 55-61 MEDIUM only, 62+ may be MEDIUM-HIGH. Never output HIGH below 62%.
 """
 
 

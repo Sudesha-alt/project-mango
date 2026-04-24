@@ -297,6 +297,82 @@ def _extract_json(text):
     return json.loads(cleaned)
 
 
+def _to_float_or_none(v) -> Optional[float]:
+    try:
+        if v is None:
+            return None
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _validate_pre_match_opus_payload(
+    payload: dict,
+    *,
+    algo_prediction: Optional[dict],
+    team1_short: str,
+    team2_short: str,
+) -> None:
+    """
+    Hard-validate critical guardrails for pre-match Opus JSON.
+    Raises ValueError with concise violations when output is non-compliant.
+    """
+    violations: List[str] = []
+    if not isinstance(payload, dict):
+        raise ValueError("pre_match_payload_not_object")
+
+    t1 = _to_float_or_none(payload.get("team1_win_pct"))
+    t2 = _to_float_or_none(payload.get("team2_win_pct"))
+    if t1 is None or t2 is None:
+        violations.append("missing_team_win_pct")
+    else:
+        if abs((t1 + t2) - 100.0) > 0.2:
+            violations.append("team_win_pct_not_100")
+        if t1 < 0 or t2 < 0 or t1 > 100 or t2 > 100:
+            violations.append("team_win_pct_out_of_bounds")
+
+    conf_raw = str(payload.get("confidence", "") or "").strip().lower()
+    conf_norm = conf_raw.replace("_", "-").replace(" ", "-")
+    maxp = max(t1 or 0.0, t2 or 0.0)
+    if conf_norm:
+        if 50.0 <= maxp < 55.0 and conf_norm != "low":
+            violations.append("confidence_band_50_54_must_low")
+        elif 55.0 <= maxp < 62.0 and conf_norm != "medium":
+            violations.append("confidence_band_55_61_must_medium")
+        elif maxp >= 62.0 and conf_norm not in {"medium", "medium-high"}:
+            violations.append("confidence_band_62_plus_must_medium_or_medium_high")
+        if "high" in conf_norm and maxp < 62.0:
+            violations.append("high_confidence_below_62")
+    else:
+        violations.append("missing_confidence")
+
+    algo_t1 = None
+    pred = (algo_prediction or {}).get("prediction") if isinstance(algo_prediction, dict) else None
+    if isinstance(pred, dict):
+        algo_t1 = _to_float_or_none(pred.get("team1_win_prob"))
+    if algo_t1 is None and isinstance(algo_prediction, dict):
+        algo_t1 = _to_float_or_none(algo_prediction.get("team1_win_prob"))
+
+    if algo_t1 is not None and t1 is not None:
+        if abs(t1 - algo_t1) > 5.0:
+            div_note = payload.get("algo_divergence_note")
+            txt = str(div_note or "").strip()
+            if len(txt) < 24:
+                violations.append("algo_divergence_note_required_gt5")
+            else:
+                ltxt = txt.lower()
+                if not any(k in ltxt for k in ("algorithm", "algo", "miss", "baseline")):
+                    violations.append("algo_divergence_note_not_specific")
+
+    deciding_logic = str(payload.get("deciding_logic", "") or "")
+    for marker in ("BOWLING_SWING_CAP_CHECK:", "BATTING_COLLAPSE_GATE:", "VENUE_CORRECTION_CHECK:"):
+        if marker not in deciding_logic:
+            violations.append(f"missing_marker_{marker[:-1].lower()}")
+
+    if violations:
+        raise ValueError("pre_match_contract_violation: " + ", ".join(violations[:12]))
+
+
 async def _claude_json(prompt: str, system_msg: str = "You are a precise data parser. Output ONLY valid JSON with no markdown formatting, no code blocks, no explanation.") -> dict:
     """Send a prompt to Claude and parse the JSON response."""
     chat = _get_claude_chat(f"parse-{uuid.uuid4().hex[:8]}", system_msg)
@@ -1520,10 +1596,10 @@ Return a JSON object with this EXACT structure:
   }},
   "deciding_factor": "One paragraph. What is THE single variable that determines this match? State it plainly and explain what happens if it goes each way.",
   "first_6_overs_signal": "Name exactly what to watch in the powerplay — a specific player/matchup that tells you how the match unfolds.",
-  "deciding_logic": "3-5 sentences — your complete reasoning chain for the final probability.",
+  "deciding_logic": "3-7 sentences — your complete reasoning chain for the final probability. Must include these exact marker lines: 'BOWLING_SWING_CAP_CHECK: ...', 'BATTING_COLLAPSE_GATE: ...', 'VENUE_CORRECTION_CHECK: ...'.",
   "prediction_summary": "1-2 sentence bold prediction with percentage",
-  "algo_divergence_note": "If your prediction differs from the algorithm by >10%, explain why in 2-3 sentences. Otherwise null.",
-  "confidence": "Low" or "Low-medium" or "Medium" or "Medium-high" or "High",
+  "algo_divergence_note": "If your prediction differs from the algorithm by >5%, mandatory 2-3 sentence reconciliation with specific misses in algorithm. Otherwise null.",
+  "confidence": "Low" or "Medium" or "Medium-high",
   "confidence_reason": "Why this confidence level"
 }}
 {addendum_block}
@@ -1531,12 +1607,22 @@ RULES:
 - All 7 layers MUST have an ADVANTAGE verdict. No ties.
 - Starters and matchups: only players in the Expected Playing XI. Squad cards may inform injuries, depth, and Layer 7 impact subs.
 - Win probabilities must add to 100.
+- Confidence bands are strict: 50-54 => Low; 55-61 => Medium; 62+ => Medium-high allowed.
+- If |team1_win_pct - algo_team1_win_pct| > 5, algo_divergence_note is mandatory and specific.
+- Include deciding_logic markers exactly: BOWLING_SWING_CAP_CHECK, BATTING_COLLAPSE_GATE, VENUE_CORRECTION_CHECK.
 - Be opinionated and bold. If one team is structurally superior, reflect it (e.g. 65/35).
 - Every claim needs a stat or specific recent event behind it."""
 
     try:
         response = await chat.send_message(UserMessage(text=prompt))
-        return _extract_json(response)
+        parsed = _extract_json(response)
+        _validate_pre_match_opus_payload(
+            parsed,
+            algo_prediction=algo_prediction,
+            team1_short=t1_short,
+            team2_short=t2_short,
+        )
+        return parsed
     except Exception as e:
         logger.error(f"Claude deep analysis error: {e}")
         return {"error": str(e), "team1_win_pct": 50, "team2_win_pct": 50, "layers": [], "headline": "Analysis unavailable"}
