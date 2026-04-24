@@ -1006,6 +1006,9 @@ async def fetch_fixture_batting_bowling(fixture_id: int, include_balls: bool = T
         "bowling": bowling,
         "player_names": player_names,
         "balls": balls,
+        "winner_team_id": fixture.get("winner_team_id"),
+        "localteam_id": fixture.get("localteam_id"),
+        "visitorteam_id": fixture.get("visitorteam_id"),
     }
 
 
@@ -1250,6 +1253,16 @@ async def sync_player_career_enrichment_to_db(db, limit: int = 500) -> dict:
     return {"players_touched": len(ids), "mongodb_writes": len(ops), "errors": errors}
 
 
+def _team_result_from_fixture(team_id: Any, winner_team_id: Any) -> Optional[str]:
+    """W / L for the player's team in a finished fixture; None if unknown or no result."""
+    if team_id is None or winner_team_id is None:
+        return None
+    try:
+        return "W" if int(team_id) == int(winner_team_id) else "L"
+    except (TypeError, ValueError):
+        return None
+
+
 async def sync_player_performance_to_db(db) -> dict:
     """Sync player performance stats from last 3 IPL seasons (2024-2026) into MongoDB.
 
@@ -1273,6 +1286,8 @@ async def sync_player_performance_to_db(db) -> dict:
             except Exception as e:
                 logger.warning(f"Error fetching fixture {fid}: {e}")
                 continue
+
+            winner_team_id = data.get("winner_team_id")
 
             seen_bat = set()
             for b in data.get("batting", []):
@@ -1318,10 +1333,14 @@ async def sync_player_performance_to_db(db) -> dict:
                     bb["hundreds"] += 1
 
                 sr = round((b["runs"] / max(b["balls"], 1)) * 100, 1)
+                tid_bat = b.get("team_id")
                 ps["_bat_entries"].append({
                     "date": fix_started,
                     "season_year": year,
                     "fixture_id": fid,
+                    "team_id": tid_bat,
+                    "winner_team_id": winner_team_id,
+                    "team_result": _team_result_from_fixture(tid_bat, winner_team_id),
                     "runs": int(b.get("runs") or 0),
                     "balls": int(b.get("balls") or 0),
                     "sr": sr,
@@ -1357,10 +1376,14 @@ async def sync_player_performance_to_db(db) -> dict:
                 eco = float(bw.get("economy") or 0) or (
                     float(bw.get("runs_conceded") or 0) / max(float(bw.get("overs") or 0), 0.01)
                 )
+                tid_bowl = bw.get("team_id")
                 ps["_bowl_entries"].append({
                     "date": fix_started,
                     "season_year": year,
                     "fixture_id": fid,
+                    "team_id": tid_bowl,
+                    "winner_team_id": winner_team_id,
+                    "team_result": _team_result_from_fixture(tid_bowl, winner_team_id),
                     "overs": float(bw.get("overs") or 0),
                     "wickets": int(bw.get("wickets") or 0),
                     "runs_conceded": int(bw.get("runs_conceded") or 0),
@@ -1414,6 +1437,11 @@ async def sync_player_performance_to_db(db) -> dict:
                     "sr": sr_val,
                     "season_year": sy,
                     "date": e.get("date"),
+                    "fixture_id": e.get("fixture_id"),
+                    "team_id": e.get("team_id"),
+                    "winner_team_id": e.get("winner_team_id"),
+                    "team_result": e.get("team_result")
+                    or _team_result_from_fixture(e.get("team_id"), e.get("winner_team_id")),
                 }
             )
         ps["csa_season_bat_innings"] = csa_season_bat
@@ -1433,6 +1461,9 @@ async def sync_player_performance_to_db(db) -> dict:
                 "sr": e["sr"],
                 "season_year": e.get("season_year"),
                 "date": e.get("date"),
+                "fixture_id": e.get("fixture_id"),
+                "team_result": e.get("team_result")
+                or _team_result_from_fixture(e.get("team_id"), e.get("winner_team_id")),
             }
             if len(recent_bat) < _csa_recent_cap:
                 recent_bat.append(row)
@@ -1476,6 +1507,11 @@ async def sync_player_performance_to_db(db) -> dict:
                     "economy": round(eco, 2),
                     "season_year": sy,
                     "date": e.get("date"),
+                    "fixture_id": e.get("fixture_id"),
+                    "team_id": e.get("team_id"),
+                    "winner_team_id": e.get("winner_team_id"),
+                    "team_result": e.get("team_result")
+                    or _team_result_from_fixture(e.get("team_id"), e.get("winner_team_id")),
                 }
             )
         ps["csa_season_bowl_spells"] = csa_season_bowl
@@ -1496,6 +1532,9 @@ async def sync_player_performance_to_db(db) -> dict:
                 "economy": e["economy"],
                 "season_year": e.get("season_year"),
                 "date": e.get("date"),
+                "fixture_id": e.get("fixture_id"),
+                "team_result": e.get("team_result")
+                or _team_result_from_fixture(e.get("team_id"), e.get("winner_team_id")),
             }
             if len(recent_bowl) < _csa_recent_cap:
                 recent_bowl.append(row)

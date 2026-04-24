@@ -1351,6 +1351,7 @@ Each object includes BOTH baseline and season-form numerics:
 - BatIP, BowlIP (post-CSA impact points used for team strength construction)
 - CSA_primary_output_pct / CSA_primary_effective_pct and discipline splits (form vs BPR)
 - csa_scope + current_season_sample (CSA rows used from current IPL season)
+- recent_form_this_ipl_season: every batting innings and bowling spell recorded for this player in **ipl_season_year** (chronological), from the same Mongo rows as CSA; each row may include **team_result** \"W\" or \"L\" (that player’s franchise in that fixture vs SportMonks winner). Use W/L together with runs/wickets as momentum context. If team_result is absent, the row predates sync enrichment — don’t invent results. If data_quality_note mentions legacy_last5_proxy, season_year was missing and rows are a short proxy — say so briefly.
 Use BPR+CSA together (correlation), not CSA in isolation.
 CSA is scoped to current IPL season rows from Mongo sync (full available season set, recency-weighted), with explicit legacy/no-row flags when incomplete.
 Use team1_strength_from_ip / team2_strength_from_ip (batting_strength, bowling_strength, allrounder_strength) as the primary numeric summary for strength calls.

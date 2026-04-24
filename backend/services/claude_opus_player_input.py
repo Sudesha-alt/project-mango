@@ -11,7 +11,12 @@ from typing import Any, Dict, List, Optional, Set
 
 from services.ai_service import normalize_primary_cricket_role
 from services.player_impact_bpr_csa import IMPACT_FORMULAS, compute_player_impact_profile
-from services.player_impact_br_bor import CURRENT_IPL_YEAR
+from services.player_impact_br_bor import (
+    CURRENT_IPL_YEAR,
+    _csa_bat_entry_source,
+    _csa_bowl_entry_source,
+    _csa_entries_ipl_year_only,
+)
 from services.pre_match_predictor import resolve_star_player_rating
 
 logger = logging.getLogger(__name__)
@@ -223,6 +228,75 @@ def _manual_impact_name_matches(selected: str, card_name: str) -> bool:
 def _is_expected_xi_card(card: dict) -> bool:
     st = str(card.get("status") or "").lower()
     return "expected xi" in st or "swapped into expected xi" in st
+
+
+def _team_result_wl(team_id: Any, winner_team_id: Any) -> Optional[str]:
+    if team_id is None or winner_team_id is None:
+        return None
+    try:
+        return "W" if int(team_id) == int(winner_team_id) else "L"
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_recent_form_this_ipl_season(doc: Optional[dict]) -> Dict[str, Any]:
+    """
+    All batting innings / bowling spells in Mongo for the configured IPL year, oldest→newest.
+    Uses the same row sources as CSA (``csa_season_*`` when present; else legacy capped lists).
+    """
+    if not doc:
+        return {
+            "ipl_season_year": CURRENT_IPL_YEAR,
+            "batting_innings_chronological": [],
+            "bowling_spells_chronological": [],
+            "data_quality_note": "no_player_performance_row",
+        }
+    bat_all, bat_note = _csa_entries_ipl_year_only(_csa_bat_entry_source(doc), CURRENT_IPL_YEAR)
+    bowl_all, bowl_note = _csa_entries_ipl_year_only(_csa_bowl_entry_source(doc), CURRENT_IPL_YEAR)
+
+    def _dkey(e: dict) -> str:
+        return str(e.get("date") or "")
+
+    bat_sorted = sorted([e for e in bat_all if isinstance(e, dict)], key=_dkey)
+    bowl_sorted = sorted([e for e in bowl_all if isinstance(e, dict)], key=_dkey)
+
+    def _bat_compact(e: dict) -> dict:
+        out: Dict[str, Any] = {}
+        for k in ("date", "runs", "balls", "sr", "season_year", "fixture_id"):
+            v = e.get(k)
+            if v is not None:
+                out[k] = v
+        tr = e.get("team_result")
+        if tr not in ("W", "L"):
+            tr = _team_result_wl(e.get("team_id"), e.get("winner_team_id"))
+        if tr in ("W", "L"):
+            out["team_result"] = tr
+        return out
+
+    def _bowl_compact(e: dict) -> dict:
+        out: Dict[str, Any] = {}
+        for k in ("date", "overs", "wickets", "runs_conceded", "economy", "season_year", "fixture_id"):
+            v = e.get(k)
+            if v is not None:
+                out[k] = v
+        tr = e.get("team_result")
+        if tr not in ("W", "L"):
+            tr = _team_result_wl(e.get("team_id"), e.get("winner_team_id"))
+        if tr in ("W", "L"):
+            out["team_result"] = tr
+        return out
+
+    notes: List[str] = []
+    if bat_note:
+        notes.append(f"batting:{bat_note}")
+    if bowl_note:
+        notes.append(f"bowling:{bowl_note}")
+    return {
+        "ipl_season_year": CURRENT_IPL_YEAR,
+        "batting_innings_chronological": [_bat_compact(e) for e in bat_sorted],
+        "bowling_spells_chronological": [_bowl_compact(e) for e in bowl_sorted],
+        "data_quality_note": " · ".join(notes) if notes else None,
+    }
 
 
 def _team_strength_from_cards(cards: List[dict], *, alpha: float = 0.5) -> Dict[str, float]:
@@ -458,6 +532,7 @@ async def build_opus_player_cards_for_claude(
                         "bat_innings": len(_csa_entries_ipl_year_only(_csa_bat_entry_source(doc), CURRENT_IPL_YEAR)[0]) if doc else 0,
                         "bowl_spells": len(_csa_entries_ipl_year_only(_csa_bowl_entry_source(doc), CURRENT_IPL_YEAR)[0]) if doc else 0,
                     },
+                    "recent_form_this_ipl_season": _build_recent_form_this_ipl_season(doc),
                     "sample_size_confidence": sample,
                     "status": st,
                     "replacement": None,
